@@ -1,0 +1,166 @@
+package domain
+
+import "time"
+
+// Priority levels for backlog items
+type Priority string
+
+const (
+	P0 Priority = "p0"
+	P1 Priority = "p1"
+	P2 Priority = "p2"
+	P3 Priority = "p3"
+)
+
+// ItemType categorizes backlog items
+type ItemType string
+
+const (
+	Bug      ItemType = "bug"
+	Feature  ItemType = "feature"
+	Task     ItemType = "task"
+	Refactor ItemType = "refactor"
+	Research ItemType = "research"
+)
+
+// Effort estimation
+type Effort string
+
+const (
+	Small      Effort = "s"
+	Medium     Effort = "m"
+	Large      Effort = "l"
+	ExtraLarge Effort = "xl"
+)
+
+// Horizon planning buckets
+type Horizon string
+
+const (
+	Now   Horizon = "now"
+	Next  Horizon = "next"
+	Later Horizon = "later"
+)
+
+// Consensus strength between council members
+type Consensus string
+
+const (
+	Strong   Consensus = "strong"
+	Moderate Consensus = "moderate"
+	Split    Consensus = "split"
+)
+
+// ContextQuality assessment
+type ContextQuality string
+
+const (
+	HighQuality   ContextQuality = "high"
+	MediumQuality ContextQuality = "medium"
+	LowQuality    ContextQuality = "low"
+)
+
+// CouncilInput is what each council agent receives
+type CouncilInput struct {
+	Vision     string
+	RepoState  RepoState
+	HumanInput string
+	Date       string
+}
+
+// RepoState captures repository context
+type RepoState struct {
+	RecentCommits []string
+	OpenIssues    []string
+	OpenPRs       []string
+	FileTree      string
+}
+
+// CouncilOutput is what each council agent returns
+type CouncilOutput struct {
+	Councilor   string        `json:"councilor"`
+	Perspective string        `json:"perspective"`
+	Confidence  float64       `json:"confidence"`
+	Summary     string        `json:"summary"`
+	Items       []CouncilItem `json:"items"`
+	Meta        CouncilMeta   `json:"meta"`
+}
+
+// CouncilItem is a single backlog item proposed by a council member
+type CouncilItem struct {
+	Title        string   `json:"title"`
+	Priority     Priority `json:"priority"`
+	Type         ItemType `json:"type"`
+	Rationale    string   `json:"rationale"`
+	Risk         string   `json:"risk"`
+	Effort       Effort   `json:"effort"`
+	Dependencies []string `json:"dependencies"`
+	Evidence     string   `json:"evidence"`
+}
+
+// CouncilMeta has metadata about the council run
+type CouncilMeta struct {
+	ItemsProposed   int            `json:"items_proposed"`
+	ContextQuality  ContextQuality `json:"context_quality"`
+	VisionAlignment string         `json:"vision_alignment"`
+}
+
+// SynthesisResult is ORACLE's unified output
+type SynthesisResult struct {
+	Synthesizer string          `json:"synthesizer"`
+	Model       string          `json:"model"`
+	Summary     string          `json:"summary"`
+	Items       []SynthesisItem `json:"items"`
+	Conflicts   []Conflict      `json:"conflicts_resolved"`
+	Dropped     []DroppedItem   `json:"dropped_items"`
+}
+
+// SynthesisItem is a final backlog item ready for issue creation
+type SynthesisItem struct {
+	Title           string         `json:"title"`
+	Priority        Priority       `json:"priority"`
+	Type            ItemType       `json:"type"`
+	Horizon         Horizon        `json:"horizon"`
+	Effort          Effort         `json:"effort"`
+	Body            string         `json:"body"`
+	Labels          []string       `json:"labels"`
+	CouncilSupport  CouncilSupport `json:"council_support"`
+	VisionAlignment string         `json:"vision_alignment"`
+}
+
+// CouncilSupport tracks which council members supported an item
+type CouncilSupport struct {
+	ProposedBy []string  `json:"proposed_by"`
+	OpposedBy  []string  `json:"opposed_by"`
+	Consensus  Consensus `json:"consensus"`
+}
+
+// Conflict records a resolved disagreement
+type Conflict struct {
+	Item         string `json:"item"`
+	Disagreement string `json:"disagreement"`
+	Resolution   string `json:"resolution"`
+}
+
+// DroppedItem is an item that didn't make the cut
+type DroppedItem struct {
+	Title  string `json:"title"`
+	Reason string `json:"reason"`
+}
+
+// SpawnResult tracks outcome of running a single council agent
+type SpawnResult struct {
+	Output   *CouncilOutput
+	Skipped  bool
+	Error    error
+	Model    string
+	Retries  int
+	Duration time.Duration
+}
+
+// CreatedIssue represents a GitHub issue that was created
+type CreatedIssue struct {
+	Number int
+	URL    string
+	Title  string
+}
