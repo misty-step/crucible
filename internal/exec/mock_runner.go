@@ -15,12 +15,12 @@ type MockCall struct {
 }
 
 // MockRunner is a test double for CommandRunner. Configure expected results
-// via Results (keyed by command name by default, or by command+args for
-// per-invocation behavior). All calls are recorded in Calls.
+// via Results (keyed by exact invocation key or command name for fallback).
+// All calls are recorded in Calls.
 type MockRunner struct {
 	mu      sync.Mutex
-	Results map[string]*RunResult // keyed by command or command+args
-	Errors  map[string]error      // keyed by command or command+args
+	Results map[string]*RunResult // keyed by invocation key or command name
+	Errors  map[string]error      // keyed by invocation key or command name
 	Calls   []MockCall
 }
 
@@ -36,14 +36,21 @@ func (m *MockRunner) Run(_ context.Context, name string, args []string, opts Run
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.Calls = append(m.Calls, MockCall{Name: name, Args: args, Opts: opts})
+	m.Calls = append(m.Calls, MockCall{
+		Name: name,
+		Args: append([]string(nil), args...),
+		Opts: copyRunOpts(opts),
+	})
 
-	key := mockCommandKey(name, args)
+	key := invocationKey(name, args)
+
+	// Exact invocation match first (command + args)
 	if err, ok := m.Errors[key]; ok {
 		result := m.Results[key] // may be nil
 		return result, err
 	}
 
+	// Fallback to command-name-only match
 	if err, ok := m.Errors[name]; ok {
 		result := m.Results[name] // may be nil
 		return result, err
@@ -60,6 +67,15 @@ func (m *MockRunner) Run(_ context.Context, name string, args []string, opts Run
 	return result, nil
 }
 
-func mockCommandKey(name string, args []string) string {
-	return name + "\x00" + strings.Join(args, "\x00")
+func copyRunOpts(opts RunOpts) RunOpts {
+	optsCopy := opts
+	optsCopy.Env = append([]string(nil), opts.Env...)
+	return optsCopy
+}
+
+func invocationKey(name string, args []string) string {
+	if len(args) == 0 {
+		return name
+	}
+	return name + "\x1f" + strings.Join(args, "\x1e")
 }

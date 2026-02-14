@@ -1,0 +1,43 @@
+{
+  "councilor": "ARCHITECT",
+  "perspective": "engineering",
+  "confidence": 0.90,
+  "summary": "Foundational infrastructure must precede feature work",
+  "items": [
+    {
+      "title": "Add CommandRunner interface for testable exec",
+      "priority": "p0",
+      "type": "task",
+      "rationale": "Every component shells out to opencode or gh; tests need mocks",
+      "risk": "All integration tests require real API calls",
+      "effort": "m",
+      "dependencies": [],
+      "evidence": "No exec abstraction exists in internal/"
+    },
+    {
+      "title": "Implement council spawner with retry and fallback",
+      "priority": "p1",
+      "type": "feature",
+      "rationale": "Core execution engine for running council agents in parallel",
+      "risk": "No council deliberation possible without spawner",
+      "effort": "l",
+      "dependencies": ["Add CommandRunner interface for testable exec"],
+      "evidence": "cmd/council.go:12 is a stub"
+    },
+    {
+      "title": "Add input sanitizer for exec arguments",
+      "priority": "p1",
+      "type": "feature",
+      "rationale": "Model outputs are untrusted; argument injection is possible",
+      "risk": "Security vulnerability in exec calls",
+      "effort": "s",
+      "dependencies": [],
+      "evidence": "No sanitization layer exists"
+    }
+  ],
+  "meta": {
+    "items_proposed": 3,
+    "context_quality": "high",
+    "vision_alignment": "Engineering foundation enables all vision goals"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "councilor": "STRATEGIST",
+  "perspective": "product",
+  "confidence": 0.85,
+  "summary": "Core pipeline needs completion before any polish work",
+  "items": [
+    {
+      "title": "Implement end-to-end council execution",
+      "priority": "p0",
+      "type": "feature",
+      "rationale": "Users cannot run crucible without a working council pipeline",
+      "risk": "Project remains unusable as a product",
+      "effort": "l",
+      "dependencies": [],
+      "evidence": "cmd/council.go prints 'not yet implemented'"
+    },
+    {
+      "title": "Add progress indicators during council run",
+      "priority": "p2",
+      "type": "feature",
+      "rationale": "Multi-model runs take time; users need feedback",
+      "risk": "Users think the tool is hung during long operations",
+      "effort": "s",
+      "dependencies": ["Implement end-to-end council execution"],
+      "evidence": "No output between invocation and result"
+    }
+  ],
+  "meta": {
+    "items_proposed": 2,
+    "context_quality": "medium",
+    "vision_alignment": "Vision emphasizes interactive and actionable output"
+  }
+}

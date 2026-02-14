@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	domain "github.com/misty-step/crucible/internal/domain"
 	cruxexec "github.com/misty-step/crucible/internal/exec"
 )
 
@@ -65,10 +66,10 @@ func TestCLIGathererWithMock(t *testing.T) {
 	if len(mock.Calls) != 3 {
 		t.Fatalf("got %d command calls, want 3", len(mock.Calls))
 	}
-	if err := assertCalledWithArgs(mock.Calls, "gh", []string{"issue", "list", "--state", "open", "--limit", "30", "--json", "number,title", "--jq", `.[] | "#\\(.number) \\(.title)"`}); err != nil {
+	if err := assertCalledWithArgs(mock.Calls, "gh", []string{"issue", "list", "--state", "open", "--limit", "30", "--json", "number,title", "--jq", `.[] | "#\(.number) \(.title)"`}); err != nil {
 		t.Fatalf("expected issue call: %v", err)
 	}
-	if err := assertCalledWithArgs(mock.Calls, "gh", []string{"pr", "list", "--state", "open", "--limit", "20", "--json", "number,title", "--jq", `.[] | "#\\(.number) \\(.title)"`}); err != nil {
+	if err := assertCalledWithArgs(mock.Calls, "gh", []string{"pr", "list", "--state", "open", "--limit", "20", "--json", "number,title", "--jq", `.[] | "#\(.number) \(.title)"`}); err != nil {
 		t.Fatalf("expected PR call: %v", err)
 	}
 
@@ -82,7 +83,10 @@ func TestCLIGathererWithMock(t *testing.T) {
 }
 
 func mockCommandKey(name string, args []string) string {
-	return name + "\x00" + strings.Join(args, "\x00")
+	if len(args) == 0 {
+		return name
+	}
+	return name + "\x1f" + strings.Join(args, "\x1e")
 }
 
 func TestCLIGathererGracefulFallback(t *testing.T) {
@@ -209,11 +213,13 @@ func TestRepoContextRender(t *testing.T) {
 	t.Parallel()
 
 	rc := &RepoContext{
-		RecentCommits: []string{"abc fix: thing", "def feat: other"},
-		OpenIssues:    []string{"#1 Bug report"},
-		OpenPRs:       []string{"#10 Feature PR"},
-		FileTree:      "./main.go\n./cmd/root.go",
-		Vision:        "Build great things.",
+		RepoState: domain.RepoState{
+			RecentCommits: []string{"abc fix: thing", "def feat: other"},
+			OpenIssues:    []string{"#1 Bug report"},
+			OpenPRs:       []string{"#10 Feature PR"},
+			FileTree:      "./main.go\n./cmd/root.go",
+		},
+		Vision: "Build great things.",
 	}
 
 	rendered := rc.Render()
