@@ -118,6 +118,12 @@ func (r *OSRunner) Run(ctx context.Context, name string, args []string, opts Run
 				return result, fmt.Errorf("command canceled: %s %v: %w", name, args, err)
 			}
 		}
+		// Non-zero exit is captured in result.ExitCode, not propagated as error.
+		// Only return errors for failures to execute (not found, permission, etc).
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return result, nil
+		}
 		return result, err
 	}
 

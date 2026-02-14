@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // Model identifies an LLM available via OpenRouter.
 type Model struct {
@@ -60,12 +63,13 @@ func (r *Registry) Get(perspective string) (PerspectiveConfig, bool) {
 	return cfg, ok
 }
 
-// Perspectives returns all registered perspective names.
+// Perspectives returns all registered perspective names in sorted order.
 func (r *Registry) Perspectives() []string {
 	names := make([]string, 0, len(r.perspectives))
 	for name := range r.perspectives {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 
