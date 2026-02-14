@@ -1,24 +1,36 @@
 package cmd
 
-import "fmt"
+import (
+	"os"
 
-// RootCmd represents the root command for crucible
-var RootCmd = &Command{
+	"github.com/spf13/cobra"
+)
+
+var version = "dev"
+
+var (
+	verbose bool
+	vision  string
+	dryRun  bool
+)
+
+var rootCmd = &cobra.Command{
 	Use:   "crucible",
 	Short: "Multi-model backlog grooming CLI",
-	Long: `Crucible transforms raw ideas into prioritized, actionable work
-through a multi-model council approach.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmd.Help()
+	},
 }
 
-// Command represents a CLI command (placeholder for future cobra migration)
-type Command struct {
-	Use   string
-	Short string
-	Long  string
+func Execute() {
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
 }
 
-// Execute runs the command (placeholder)
-func (c *Command) Execute() error {
-	fmt.Println(c.Long)
-	return nil
+func init() {
+	rootCmd.Version = version
+	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "verbose output")
+	rootCmd.PersistentFlags().StringVar(&vision, "vision", "VISION.md", "path to vision file")
+	rootCmd.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "dry run")
 }
