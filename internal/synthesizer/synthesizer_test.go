@@ -14,7 +14,7 @@ import (
 func validSynthesisJSON() []byte {
 	result := domain.SynthesisResult{
 		Synthesizer: "ORACLE",
-		Model:       "anthropic/claude-opus-4-6",
+		Model:       "anthropic/claude-opus-4.6",
 		Summary:     "Focused backlog for MVP",
 		Items: []domain.SynthesisItem{
 			{
@@ -122,6 +122,45 @@ func TestSynthesizeInvalidJSON(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no JSON") {
 		t.Fatalf("got %q, want no JSON error", err)
+	}
+}
+
+func TestSynthesizeSanitizesPrompt(t *testing.T) {
+	t.Parallel()
+
+	mock := cruxexec.NewMockRunner()
+	mock.Results["opencode"] = &cruxexec.RunResult{
+		Stdout:   validSynthesisJSON(),
+		ExitCode: 0,
+	}
+
+	svc := &Service{
+		Runner:   mock,
+		Registry: models.DefaultRegistry(),
+		Env:      []string{"HOME=/tmp"},
+	}
+
+	input := domain.SynthesisInput{
+		Vision: "  --trusted  ",
+	}
+
+	_, err := svc.Synthesize(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mock.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(mock.Calls))
+	}
+
+	call := mock.Calls[0]
+	if len(call.Args) != 6 {
+		t.Fatalf("unexpected args length %d", len(call.Args))
+	}
+
+	sanitized := cruxexec.SanitizeArg(RenderSynthesisPrompt(input))
+	if got := call.Args[len(call.Args)-1]; got != sanitized {
+		t.Fatalf("got prompt arg %q, want %q", got, sanitized)
 	}
 }
 

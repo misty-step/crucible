@@ -65,8 +65,8 @@ func TestNextModelPrimary(t *testing.T) {
 	if !ok {
 		t.Fatal("expected primary model")
 	}
-	if model.ID != "anthropic/claude-sonnet-4-5" {
-		t.Fatalf("got %q, want anthropic/claude-sonnet-4-5", model.ID)
+	if model.ID != "anthropic/claude-sonnet-4.5" {
+		t.Fatalf("got %q, want anthropic/claude-sonnet-4.5", model.ID)
 	}
 }
 
@@ -74,7 +74,7 @@ func TestNextModelFallback(t *testing.T) {
 	t.Parallel()
 
 	r := DefaultRegistry()
-	model, ok := r.NextModel("product", "anthropic/claude-sonnet-4-5")
+	model, ok := r.NextModel("product", "anthropic/claude-sonnet-4.5")
 	if !ok {
 		t.Fatal("expected fallback model")
 	}
@@ -97,7 +97,7 @@ func TestNextModelSynthesisExhausted(t *testing.T) {
 	t.Parallel()
 
 	r := DefaultRegistry()
-	_, ok := r.NextModel("synthesis", "anthropic/claude-opus-4-6")
+	_, ok := r.NextModel("synthesis", "anthropic/claude-opus-4.6")
 	if ok {
 		t.Fatal("synthesis should have no fallback")
 	}
