@@ -2,11 +2,17 @@ package reposcanner
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	domain "github.com/misty-step/crucible/internal/domain"
 	cruxexec "github.com/misty-step/crucible/internal/exec"
 )
 
@@ -17,11 +23,8 @@ type Gatherer interface {
 
 // RepoContext holds all gathered repository state.
 type RepoContext struct {
-	RecentCommits []string
-	OpenIssues    []string
-	OpenPRs       []string
-	FileTree      string
-	Vision        string
+	domain.RepoState
+	Vision string
 }
 
 // Render formats the context as a markdown section for prompt injection.
@@ -77,19 +80,68 @@ type CLIGatherer struct {
 }
 
 const cmdTimeout = 10 * time.Second
+const defaultVisionPath = "VISION.md"
+const maxFileTreeEntries = 300
+
+var errFileTreeLimitReached = errors.New("file tree entry limit reached")
+
+func (g *CLIGatherer) ensureRunner() cruxexec.CommandRunner {
+	if g.Runner != nil {
+		return g.Runner
+	}
+
+	g.Runner = &cruxexec.OSRunner{}
+	return g.Runner
+}
 
 func (g *CLIGatherer) Gather(ctx context.Context) (*RepoContext, error) {
-	rc := &RepoContext{}
+	g.ensureRunner()
 
-	rc.RecentCommits = g.runLines(ctx, "git", []string{"log", "--oneline", "-20"})
-	rc.OpenIssues = g.runLines(ctx, "gh", []string{"issue", "list", "--state", "open", "--limit", "30", "--json", "number,title", "--jq", `.[] | "#\(.number) \(.title)"`})
-	rc.OpenPRs = g.runLines(ctx, "gh", []string{"pr", "list", "--state", "open", "--limit", "20", "--json", "number,title", "--jq", `.[] | "#\(.number) \(.title)"`})
-	rc.FileTree = g.runString(ctx, "find", []string{".", "-type", "f", "-not", "-path", "./.git/*", "-not", "-path", "./vendor/*"})
+	var commitResult, issueResult, prResult []string
+	var fileTree string
+
+	var wg sync.WaitGroup
+	wg.Add(4)
+
+	go func() {
+		defer wg.Done()
+		commitResult = g.runLines(ctx, "git", []string{"log", "--oneline", "-20"})
+	}()
+
+	go func() {
+		defer wg.Done()
+		issueResult = g.runLines(ctx, "gh", []string{"issue", "list", "--state", "open", "--limit", "30", "--json", "number,title", "--jq", `.[] | "#\(.number) \(.title)"`})
+	}()
+
+	go func() {
+		defer wg.Done()
+		prResult = g.runLines(ctx, "gh", []string{"pr", "list", "--state", "open", "--limit", "20", "--json", "number,title", "--jq", `.[] | "#\(.number) \(.title)"`})
+	}()
+
+	go func() {
+		defer wg.Done()
+		fileTree = g.getFileTree()
+	}()
+
+	wg.Wait()
 
 	visionPath := g.VisionPath
 	if visionPath == "" {
-		visionPath = "VISION.md"
+		visionPath = defaultVisionPath
 	}
+	if g.Dir != "" && !filepath.IsAbs(visionPath) {
+		visionPath = filepath.Join(g.Dir, visionPath)
+	}
+
+	rc := &RepoContext{
+		RepoState: domain.RepoState{
+			RecentCommits: commitResult,
+			OpenIssues:    issueResult,
+			OpenPRs:       prResult,
+			FileTree:      fileTree,
+		},
+	}
+
 	if data, err := os.ReadFile(visionPath); err == nil {
 		rc.Vision = string(data)
 	}
@@ -125,4 +177,50 @@ func (g *CLIGatherer) runString(ctx context.Context, name string, args []string)
 		return ""
 	}
 	return strings.TrimSpace(string(result.Stdout))
+}
+
+// getFileTree returns a deterministic file list rooted at g.Dir.
+func (g *CLIGatherer) getFileTree() string {
+	root := g.Dir
+	if root == "" {
+		root = "."
+	}
+
+	entries := make([]string, 0)
+
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+
+		if d.IsDir() {
+			if d.Name() == ".git" || d.Name() == "vendor" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		if rel == "." {
+			return nil
+		}
+
+		entries = append(entries, "./"+filepath.ToSlash(rel))
+
+		if len(entries) >= maxFileTreeEntries {
+			return errFileTreeLimitReached
+		}
+
+		return nil
+	})
+
+	if err != nil && !errors.Is(err, errFileTreeLimitReached) {
+		return ""
+	}
+
+	sort.Strings(entries)
+	return strings.Join(entries, "\n")
 }
