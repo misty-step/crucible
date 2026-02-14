@@ -26,7 +26,6 @@ type Spawner struct {
 	Runner   cruxexec.CommandRunner
 	Registry *models.Registry
 	Env      []string // pre-filtered env vars for child processes
-	Verbose  bool
 }
 
 // NewSpawner creates a Spawner with filtered environment variables.
@@ -213,7 +212,8 @@ func extractJSON(data []byte) []byte {
 		}
 	}
 
-	// Try to find bare JSON object
+	// Try to find bare JSON object via brace-counting, validated with json.Valid
+	// to handle braces inside string values.
 	if idx := strings.Index(s, "{"); idx != -1 {
 		depth := 0
 		for i := idx; i < len(s); i++ {
@@ -223,7 +223,11 @@ func extractJSON(data []byte) []byte {
 			case '}':
 				depth--
 				if depth == 0 {
-					return []byte(s[idx : i+1])
+					candidate := []byte(s[idx : i+1])
+					if json.Valid(candidate) {
+						return candidate
+					}
+					// False match (brace inside string); keep scanning
 				}
 			}
 		}

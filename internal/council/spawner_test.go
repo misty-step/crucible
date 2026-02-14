@@ -170,6 +170,11 @@ func TestExtractJSON(t *testing.T) {
 			`{"outer": {"inner": true}}`,
 		},
 		{
+			"braces_in_strings",
+			`{"msg": "use {braces} here"}`,
+			`{"msg": "use {braces} here"}`,
+		},
+		{
 			"no_json",
 			"no json here",
 			"",
@@ -200,6 +205,7 @@ func TestRenderPrompt(t *testing.T) {
 		RepoState: domain.RepoState{
 			RecentCommits: []string{"abc feat: add thing"},
 			OpenIssues:    []string{"#1 Bug"},
+			OpenPRs:       []string{"#2 Add feature"},
 		},
 		HumanInput: "Focus on MVP",
 	}
@@ -211,6 +217,7 @@ func TestRenderPrompt(t *testing.T) {
 		"Build great things",
 		"abc feat: add thing",
 		"#1 Bug",
+		"#2 Add feature",
 		"Focus on MVP",
 	}
 
@@ -218,6 +225,30 @@ func TestRenderPrompt(t *testing.T) {
 		if !strings.Contains(prompt, check) {
 			t.Errorf("prompt missing %q", check)
 		}
+	}
+}
+
+func TestRenderPromptIssuesOnly(t *testing.T) {
+	t.Parallel()
+
+	input := domain.CouncilInput{
+		Date: "2026-02-14",
+		RepoState: domain.RepoState{
+			OpenIssues: []string{"#5 Critical bug"},
+			OpenPRs:    []string{"#6 WIP feature"},
+		},
+	}
+
+	prompt := RenderPrompt(input)
+
+	if !strings.Contains(prompt, "Repository State") {
+		t.Error("expected Repository State section when only issues/PRs present")
+	}
+	if !strings.Contains(prompt, "#5 Critical bug") {
+		t.Error("prompt missing open issue")
+	}
+	if !strings.Contains(prompt, "#6 WIP feature") {
+		t.Error("prompt missing open PR")
 	}
 }
 
