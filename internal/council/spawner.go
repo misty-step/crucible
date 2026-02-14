@@ -82,7 +82,7 @@ func (s *Spawner) RunCouncil(ctx context.Context, input domain.CouncilInput) ([]
 func (s *Spawner) councilPerspectives() []string {
 	var council []string
 	for _, name := range s.Registry.Perspectives() {
-		if name != "synthesis" {
+		if name != models.SynthesisPerspective {
 			council = append(council, name)
 		}
 	}
@@ -213,8 +213,6 @@ func (s *Spawner) invokeAgent(ctx context.Context, perspective string, model mod
 
 // extractJSON finds the first JSON object in output, handling markdown code fences.
 func ExtractJSON(data []byte) []byte {
-	s := string(data)
-
 	tryDecode := func(raw []byte) []byte {
 		var value json.RawMessage
 		dec := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(raw)))
@@ -224,67 +222,31 @@ func ExtractJSON(data []byte) []byte {
 		return []byte(value)
 	}
 
-	// Try to find JSON in code fence
-	if idx := strings.Index(s, "```json"); idx != -1 {
-		start := idx + len("```json")
-		if end := strings.Index(s[start:], "```"); end != -1 {
-			if decoded := tryDecode([]byte(s[start : start+end])); decoded != nil {
+	decodeFrom := func(start int) []byte {
+		for start < len(data) {
+			i := bytes.IndexByte(data[start:], '{')
+			if i == -1 {
+				return nil
+			}
+			i += start
+			if decoded := tryDecode(data[i:]); decoded != nil {
 				return decoded
 			}
+			start = i + 1
+		}
+		return nil
+	}
+
+	// Try to find JSON in fenced output
+	if idx := bytes.Index(data, []byte("```json")); idx != -1 {
+		if decoded := decodeFrom(idx + len("```json")); decoded != nil {
+			return decoded
 		}
 	}
 
-	// Try to find bare JSON object
-	if idx := strings.Index(s, "{"); idx != -1 {
-		for i := idx; i < len(s); i++ {
-			if s[i] != '{' {
-				continue
-			}
-			if i > 0 && s[i-1] == '{' {
-				continue
-			}
+	// Try bare JSON object
+	return decodeFrom(0)
 
-			depth := 0
-			inString := false
-			escaped := false
-
-		candidateSearch:
-			for j := i; j < len(s); j++ {
-				ch := s[j]
-
-				if inString {
-					if escaped {
-						escaped = false
-						continue
-					}
-					switch ch {
-					case '\\':
-						escaped = true
-					case '"':
-						inString = false
-					}
-					continue
-				}
-
-				switch ch {
-				case '"':
-					inString = true
-				case '{':
-					depth++
-				case '}':
-					depth--
-					if depth == 0 {
-						if decoded := tryDecode([]byte(s[i : j+1])); decoded != nil {
-							return decoded
-						}
-						break candidateSearch
-					}
-				}
-			}
-		}
-	}
-
-	return nil
 }
 
 // Error classification

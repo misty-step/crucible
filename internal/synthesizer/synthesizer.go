@@ -32,7 +32,7 @@ func NewService(runner cruxexec.CommandRunner, registry *models.Registry) *Servi
 
 // Synthesize runs ORACLE to merge council outputs against the vision.
 func (s *Service) Synthesize(ctx context.Context, input domain.SynthesisInput) (*domain.SynthesisResult, error) {
-	cfg, ok := s.Registry.Get("synthesis")
+	cfg, ok := s.Registry.Get(models.SynthesisPerspective)
 	if !ok {
 		return nil, fmt.Errorf("synthesis perspective not found in registry")
 	}

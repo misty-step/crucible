@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,12 +50,39 @@ func TestExtractJSONWithBracesInsideStrings(t *testing.T) {
 	}
 }
 
-func TestExtractJSONRejectsLeadingLiteralBraces(t *testing.T) {
+func TestExtractJSONHandlesLeadingLiteralBraces(t *testing.T) {
 	t.Parallel()
 
 	raw := []byte("{{ { \"note\": \"not json\" } }}")
-	if got := ExtractJSON(raw); got != nil {
-		t.Fatalf("expected nil, got %q", string(got))
+	got := ExtractJSON(raw)
+	if got == nil {
+		t.Fatal("expected JSON bytes")
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if payload["note"] != "not json" {
+		t.Fatalf("got note=%q, want %q", payload["note"], "not json")
+	}
+}
+
+func TestExtractJSONWithFenceBackticksInString(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte("```json\n{ \"note\": \"```go\\ncode\\n```\" }\n```\n")
+	got := ExtractJSON(raw)
+	if got == nil {
+		t.Fatal("expected JSON bytes")
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if payload["note"] != "```go\ncode\n```" {
+		t.Fatalf("got note=%q, want %q", payload["note"], "```go\ncode\n```")
 	}
 }
 
@@ -182,8 +210,8 @@ func TestTryModelWithRetriesHonorsRetriesBeforeCancellation(t *testing.T) {
 
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
-	if len(runner.calls) != 2 {
-		t.Fatalf("got %d calls, want 2", len(runner.calls))
+	if len(runner.calls) != 1 {
+		t.Fatalf("got %d calls, want 1", len(runner.calls))
 	}
 }
 
@@ -223,6 +251,29 @@ func TestRunPerspectiveStopsFallbackOnCancellation(t *testing.T) {
 	defer runner.mu.Unlock()
 	if len(runner.calls) != 1 {
 		t.Fatalf("expected 1 call before cancellation stop, got %d", len(runner.calls))
+	}
+}
+
+func TestInvokeAgentValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	mock := cruxexec.NewMockRunner()
+	mock.Results["opencode"] = &cruxexec.RunResult{
+		Stdout:   []byte(`{"councilor":"STRATEGIST","confidence":0.9}`),
+		ExitCode: 0,
+	}
+
+	spawner := &Spawner{
+		Runner:   mock,
+		Registry: models.DefaultRegistry(),
+	}
+
+	_, err := spawner.invokeAgent(context.Background(), "product", models.Model{ID: "moonshotai/kimi-k2.5"}, "prompt", 0)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "invalid council output") {
+		t.Fatalf("got error %q, want invalid council output", err)
 	}
 }
 

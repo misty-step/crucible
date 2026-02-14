@@ -1,6 +1,11 @@
 package models
 
-import "time"
+import (
+	"sort"
+	"time"
+)
+
+const SynthesisPerspective = "synthesis"
 
 // Model identifies an LLM available via OpenRouter.
 type Model struct {
@@ -45,7 +50,7 @@ func DefaultRegistry() *Registry {
 				Fallbacks: []Model{{ID: "z-ai/glm-5", Provider: "z-ai", Name: "glm-5"}},
 				Timeout:   120 * time.Second,
 			},
-			"synthesis": {
+			SynthesisPerspective: {
 				Primary:   Model{ID: "anthropic/claude-opus-4.6", Provider: "anthropic", Name: "claude-opus-4.6"},
 				Fallbacks: []Model{}, // No fallback — synthesis quality is non-negotiable
 				Timeout:   300 * time.Second,
@@ -66,6 +71,7 @@ func (r *Registry) Perspectives() []string {
 	for name := range r.perspectives {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 
