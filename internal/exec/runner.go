@@ -110,11 +110,13 @@ func (r *OSRunner) Run(ctx context.Context, name string, args []string, opts Run
 	}
 
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return result, fmt.Errorf("command timed out: %s %v: %w", name, args, err)
-		}
-		if errors.Is(err, context.Canceled) {
-			return result, fmt.Errorf("command canceled: %s %v: %w", name, args, err)
+		if ctx.Err() != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return result, fmt.Errorf("command timed out: %s %v: %w", name, args, err)
+			}
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return result, fmt.Errorf("command canceled: %s %v: %w", name, args, err)
+			}
 		}
 		return result, err
 	}

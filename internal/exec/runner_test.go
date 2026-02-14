@@ -12,7 +12,7 @@ func TestMockRunnerRecordsCalls(t *testing.T) {
 	t.Parallel()
 
 	m := NewMockRunner()
-	m.Results["echo"] = &RunResult{Stdout: []byte("hello\n")}
+	m.Results[invocationKey("echo", []string{"hello"})] = &RunResult{Stdout: []byte("hello\n")}
 
 	result, err := m.Run(context.Background(), "echo", []string{"hello"}, RunOpts{})
 	if err != nil {
