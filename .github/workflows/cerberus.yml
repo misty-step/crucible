@@ -16,6 +16,7 @@ jobs:
   review:
     name: "${{ matrix.reviewer }}"
     runs-on: ubuntu-latest
+    continue-on-error: true
     strategy:
       matrix:
         include:
@@ -28,7 +29,7 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
-      - uses: misty-step/cerberus@v2
+      - uses: misty-step/cerberus@v2.14.0
         with:
           perspective: ${{ matrix.perspective }}
           model: ${{ matrix.model }}
@@ -44,6 +45,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: misty-step/cerberus/verdict@v2
+      - uses: misty-step/cerberus/verdict@v2.14.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
