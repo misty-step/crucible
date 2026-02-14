@@ -1,0 +1,49 @@
+name: Cerberus Council
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: cerberus-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: "${{ matrix.reviewer }}"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { reviewer: APOLLO,    perspective: correctness,      model: "openrouter/moonshotai/kimi-k2.5" }
+          - { reviewer: ATHENA,    perspective: architecture,     model: "openrouter/z-ai/glm-5" }
+          - { reviewer: SENTINEL,  perspective: security,         model: "openrouter/minimax/minimax-m2.5" }
+          - { reviewer: VULCAN,    perspective: performance,      model: "openrouter/google/gemini-3-flash-preview" }
+          - { reviewer: ARTEMIS,   perspective: maintainability,  model: "openrouter/qwen/qwen3-max-thinking" }
+          - { reviewer: CASSANDRA, perspective: testing,          model: "openrouter/qwen/qwen3-max-thinking" }
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: misty-step/cerberus@v2
+        with:
+          perspective: ${{ matrix.perspective }}
+          model: ${{ matrix.model }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          context: "Go CLI for multi-model backlog grooming. Council-synthesizer pattern. Early development."
+          timeout: "600"
+
+  verdict:
+    name: "Council Verdict"
+    needs: review
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: misty-step/cerberus/verdict@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
