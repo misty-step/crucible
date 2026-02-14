@@ -2,7 +2,7 @@
 
 ## Summary
 - PR 34 failed in `CASSANDRA` because the configured primary model for testing reviews intermittently returned empty output and triggered the fail-fast path.
-- A second model produced output, but the run still ended with `FAIL` from CASSANDRA due that model's findings against current code.
+- A second model produced output, but the run still ended with `FAIL` from CASSANDRA due to that model's findings against current code.
 
 ## TODO
 
@@ -26,4 +26,3 @@
   - **Fix:** Ensure future PRs include explicit decision for merge-blocking vs follow-up items in response comments and CI plan.
   - **Verify:** Next CI review cycle.
   - **Estimate:** 15m
-

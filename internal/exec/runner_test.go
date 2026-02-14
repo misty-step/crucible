@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	osexec "os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -28,12 +29,48 @@ func TestMockRunnerRecordsCalls(t *testing.T) {
 	}
 }
 
+func TestMockRunnerInvocationKeying(t *testing.T) {
+	t.Parallel()
+
+	m := NewMockRunner()
+	m.Results[invocationKey("echo", []string{"hello"})] = &RunResult{Stdout: []byte("hello\n")}
+	m.Results[invocationKey("echo", []string{"world"})] = &RunResult{Stdout: []byte("world\n")}
+
+	if _, err := m.Run(context.Background(), "echo", []string{"hello"}, RunOpts{}); err != nil {
+		t.Fatalf("unexpected error for hello: %v", err)
+	}
+	if _, err := m.Run(context.Background(), "echo", []string{"world"}, RunOpts{}); err != nil {
+		t.Fatalf("unexpected error for world: %v", err)
+	}
+
+	if _, err := m.Run(context.Background(), "echo", nil, RunOpts{}); err == nil {
+		t.Fatal("expected error for unspecified invocation")
+	}
+}
+
+func TestMockRunnerRecordsArgsByValue(t *testing.T) {
+	t.Parallel()
+
+	args := []string{"hello"}
+	m := NewMockRunner()
+	m.Results[invocationKey("echo", args)] = &RunResult{Stdout: []byte("hello\n")}
+
+	if _, err := m.Run(context.Background(), "echo", args, RunOpts{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	args[0] = "modified"
+	if got := m.Calls[0].Args[0]; got != "hello" {
+		t.Fatalf("got %q call arg, want %q", got, "hello")
+	}
+}
+
 func TestMockRunnerReturnsError(t *testing.T) {
 	t.Parallel()
 
 	m := NewMockRunner()
 	m.Results["fail"] = &RunResult{Stderr: []byte("boom"), ExitCode: 1}
-	m.Errors["fail"] = &exec_error{msg: "exit status 1"}
+	m.Errors["fail"] = &execError{msg: "exit status 1"}
 
 	result, err := m.Run(context.Background(), "fail", nil, RunOpts{})
 	if err == nil {
@@ -62,6 +99,7 @@ func TestMockRunnerUnconfiguredCommand(t *testing.T) {
 
 func TestOSRunnerEcho(t *testing.T) {
 	t.Parallel()
+	requireCommand(t, "echo")
 
 	r := &OSRunner{}
 	result, err := r.Run(context.Background(), "echo", []string{"test"}, RunOpts{})
@@ -78,6 +116,7 @@ func TestOSRunnerEcho(t *testing.T) {
 
 func TestOSRunnerTimeout(t *testing.T) {
 	t.Parallel()
+	requireCommand(t, "sleep")
 
 	r := &OSRunner{}
 	_, err := r.Run(context.Background(), "sleep", []string{"10"}, RunOpts{
@@ -93,6 +132,7 @@ func TestOSRunnerTimeout(t *testing.T) {
 
 func TestOSRunnerStdin(t *testing.T) {
 	t.Parallel()
+	requireCommand(t, "cat")
 
 	r := &OSRunner{}
 	result, err := r.Run(context.Background(), "cat", nil, RunOpts{
@@ -106,7 +146,14 @@ func TestOSRunnerStdin(t *testing.T) {
 	}
 }
 
-// exec_error is a simple error type for tests.
-type exec_error struct{ msg string }
+// execError is a simple error type for tests.
+type execError struct{ msg string }
 
-func (e *exec_error) Error() string { return e.msg }
+func (e *execError) Error() string { return e.msg }
+
+func requireCommand(t *testing.T, name string) {
+	t.Helper()
+	if _, err := osexec.LookPath(name); err != nil {
+		t.Skipf("command %q not found in PATH", name)
+	}
+}
