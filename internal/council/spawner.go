@@ -211,7 +211,7 @@ func (s *Spawner) invokeAgent(ctx context.Context, perspective string, model mod
 	return &output, nil
 }
 
-// extractJSON finds the first JSON object in output, handling markdown code fences.
+// ExtractJSON finds the first JSON object in output, handling markdown code fences.
 func ExtractJSON(data []byte) []byte {
 	tryDecode := func(raw []byte) []byte {
 		var value json.RawMessage
@@ -246,7 +246,6 @@ func ExtractJSON(data []byte) []byte {
 
 	// Try bare JSON object
 	return decodeFrom(0)
-
 }
 
 // Error classification

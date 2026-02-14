@@ -21,10 +21,8 @@ func RenderPrompt(input domain.CouncilInput) string {
 		b.WriteString("\n\n")
 	}
 
-	if input.RepoState.FileTree != "" ||
-		len(input.RepoState.RecentCommits) > 0 ||
-		len(input.RepoState.OpenIssues) > 0 ||
-		len(input.RepoState.OpenPRs) > 0 {
+	if input.RepoState.FileTree != "" || len(input.RepoState.RecentCommits) > 0 ||
+		len(input.RepoState.OpenIssues) > 0 || len(input.RepoState.OpenPRs) > 0 {
 		b.WriteString("## Repository State\n\n")
 
 		if len(input.RepoState.RecentCommits) > 0 {

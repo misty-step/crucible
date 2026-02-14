@@ -65,7 +65,7 @@ func (r *Registry) Get(perspective string) (PerspectiveConfig, bool) {
 	return cfg, ok
 }
 
-// Perspectives returns all registered perspective names.
+// Perspectives returns all registered perspective names in sorted order.
 func (r *Registry) Perspectives() []string {
 	names := make([]string, 0, len(r.perspectives))
 	for name := range r.perspectives {
