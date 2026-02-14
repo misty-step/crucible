@@ -69,35 +69,11 @@ Task
 5. Recommend an implementation sequence that maximizes cumulative value
 
 Output Format
-Your FINAL message MUST end with exactly one `json` block containing your output.
-The JSON block must be the LAST thing in your response. Nothing after the closing ```.
+Your FINAL message MUST end with exactly one fenced code block labeled `json` containing your output.
+The JSON block must be the LAST thing in your response. Nothing after the closing code fence.
 
 JSON Schema
-```json
-{
-  "councilor": "MERCHANT",
-  "perspective": "business",
-  "confidence": 0.0,
-  "summary": "One-sentence summary of business value assessment",
-  "items": [
-    {
-      "title": "Short imperative title (max 200 chars)",
-      "priority": "p0|p1|p2|p3",
-      "type": "feature|bug|task|refactor|research",
-      "rationale": "Why this matters from a business value perspective",
-      "risk": "What value is lost or delayed if we don't do this",
-      "effort": "s|m|l|xl",
-      "dependencies": ["titles of items this depends on"],
-      "evidence": "Specific project state, issue, or doc that supports this"
-    }
-  ],
-  "meta": {
-    "items_proposed": 0,
-    "context_quality": "high|medium|low",
-    "vision_alignment": "How well context supports business decisions"
-  }
-}
-```
+See `.opencode/agent-schemas/council-output.schema.md`.
 
 Field Constraints
 - priority: p0 (critical), p1 (high), p2 (medium), p3 (low)

@@ -74,8 +74,8 @@ You will receive:
 - Repository context: summary of current project state
 
 Output Format
-Your FINAL message MUST end with exactly one ```json block containing your output.
-The JSON block must be the LAST thing in your response. Nothing after the closing ```.
+Your FINAL message MUST end with exactly one fenced code block labeled `json` containing your output.
+The JSON block must be the LAST thing in your response. Nothing after the closing code fence.
 
 Every council item must appear in either `items` (kept/merged) or `dropped_items` (cut).
 
