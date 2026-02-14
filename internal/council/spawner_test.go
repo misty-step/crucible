@@ -3,12 +3,36 @@ package council
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/misty-step/crucible/internal/domain"
 	cruxexec "github.com/misty-step/crucible/internal/exec"
 	"github.com/misty-step/crucible/internal/models"
 )
+
+func validCouncilJSON() []byte {
+	output := domain.CouncilOutput{
+		Councilor:   "STRATEGIST",
+		Perspective: "product",
+		Confidence:  0.9,
+		Summary:     "aligned",
+		Items: []domain.CouncilItem{
+			{
+				Title:     "Ship council synthesis",
+				Priority:  "p1",
+				Type:      "feature",
+				Effort:    "m",
+				Rationale: "value",
+			},
+		},
+	}
+	data, _ := json.Marshal(output)
+	return data
+}
 
 func TestExtractJSONWithBracesInsideStrings(t *testing.T) {
 	t.Parallel()
@@ -25,6 +49,15 @@ func TestExtractJSONWithBracesInsideStrings(t *testing.T) {
 	}
 }
 
+func TestExtractJSONRejectsLeadingLiteralBraces(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte("{{ { \"note\": \"not json\" } }}")
+	if got := ExtractJSON(raw); got != nil {
+		t.Fatalf("expected nil, got %q", string(got))
+	}
+}
+
 func TestIsPermanentError(t *testing.T) {
 	t.Parallel()
 
@@ -38,6 +71,161 @@ func TestIsPermanentError(t *testing.T) {
 	}
 }
 
+func TestRunCouncilSpawnsPerspectivesInParallel(t *testing.T) {
+	t.Parallel()
+
+	runner := &concurrentRunner{}
+	spawner := &Spawner{
+		Runner:   runner,
+		Registry: models.DefaultRegistry(),
+	}
+
+	_, err := spawner.RunCouncil(context.Background(), domain.CouncilInput{})
+	if err != nil {
+		t.Fatalf("RunCouncil() unexpected error: %v", err)
+	}
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+
+	expected := len(spawner.councilPerspectives())
+	if runner.calls != expected {
+		t.Fatalf("got %d runner calls, want %d", runner.calls, expected)
+	}
+	if runner.maxActive < 2 {
+		t.Fatalf("expected parallel execution, maxActive=%d", runner.maxActive)
+	}
+}
+
+func TestRunPerspectiveFallsBackToSecondaryModel(t *testing.T) {
+	t.Parallel()
+
+	runner := &scriptedRunner{
+		responses: []scriptResponse{
+			{
+				Result: &cruxexec.RunResult{
+					ExitCode: 1,
+					Stderr:   []byte("401 unauthorized"),
+				},
+			},
+			{
+				Result: &cruxexec.RunResult{
+					Stdout:   validCouncilJSON(),
+					ExitCode: 0,
+				},
+			},
+		},
+	}
+	spawner := &Spawner{
+		Runner:   runner,
+		Registry: models.DefaultRegistry(),
+	}
+
+	result := spawner.runPerspective(context.Background(), "product", "prompt")
+	if result.Output == nil {
+		t.Fatal("expected output from fallback model")
+	}
+	if result.Model != "google/gemini-3-flash-preview" {
+		t.Fatalf("got model %q, want google/gemini-3-flash-preview", result.Model)
+	}
+	if result.Retries != 0 {
+		t.Fatalf("got retries %d, want 0", result.Retries)
+	}
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.calls) != 2 {
+		t.Fatalf("got %d calls, want 2", len(runner.calls))
+	}
+	if got := runner.calls[0].Args[4]; got != "openrouter/anthropic/claude-sonnet-4.5" {
+		t.Fatalf("first model call was %q, want anthropic primary", got)
+	}
+	if got := runner.calls[1].Args[4]; got != "openrouter/google/gemini-3-flash-preview" {
+		t.Fatalf("fallback call was %q, want gemini fallback", got)
+	}
+}
+
+func TestTryModelWithRetriesHonorsRetriesBeforeCancellation(t *testing.T) {
+	t.Parallel()
+
+	runner := &scriptedRunner{
+		responses: []scriptResponse{
+			{
+				Result: &cruxexec.RunResult{
+					ExitCode: 1,
+					Stderr:   []byte("temporary issue"),
+				},
+			},
+			{
+				Result: &cruxexec.RunResult{
+					ExitCode: 1,
+					Stderr:   []byte("temporary issue"),
+				},
+			},
+		},
+	}
+	spawner := &Spawner{
+		Runner:   runner,
+		Registry: models.DefaultRegistry(),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	result := spawner.tryModelWithRetries(ctx, "product", models.Model{ID: "moonshotai/kimi-k2.5"}, "prompt", 0)
+	if result.Retries != 1 {
+		t.Fatalf("got retries %d, want 1", result.Retries)
+	}
+	if !errors.Is(result.Error, context.DeadlineExceeded) {
+		t.Fatalf("got error %v, want context deadline exceeded", result.Error)
+	}
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.calls) != 2 {
+		t.Fatalf("got %d calls, want 2", len(runner.calls))
+	}
+}
+
+func TestRunPerspectiveStopsFallbackOnCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	runner := &scriptedRunner{
+		responses: []scriptResponse{
+			{
+				Result: &cruxexec.RunResult{
+					ExitCode: 1,
+					Stderr:   []byte("temporary issue"),
+				},
+			},
+			{
+				Result: &cruxexec.RunResult{
+					Stdout:   validCouncilJSON(),
+					ExitCode: 0,
+				},
+			},
+		},
+	}
+	spawner := &Spawner{
+		Runner:   runner,
+		Registry: models.DefaultRegistry(),
+	}
+
+	result := spawner.runPerspective(ctx, "product", "prompt")
+	if !errors.Is(result.Error, context.Canceled) {
+		t.Fatalf("got error %v, want context canceled", result.Error)
+	}
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 call before cancellation stop, got %d", len(runner.calls))
+	}
+}
+
 func TestInvokeAgentSanitizesPrompt(t *testing.T) {
 	t.Parallel()
 
@@ -48,10 +236,10 @@ func TestInvokeAgentSanitizesPrompt(t *testing.T) {
 	}
 
 	output := map[string]interface{}{
-		"councilor": "STRATEGIST",
+		"councilor":   "STRATEGIST",
 		"perspective": "product",
-		"confidence": 0.9,
-		"summary": "ok",
+		"confidence":  0.9,
+		"summary":     "ok",
 	}
 	stdout, _ := json.Marshal(output)
 
@@ -75,4 +263,62 @@ func TestInvokeAgentSanitizesPrompt(t *testing.T) {
 	if got != want {
 		t.Fatalf("got sanitized prompt %q, want %q", got, want)
 	}
+}
+
+type concurrentRunner struct {
+	mu        sync.Mutex
+	calls     int
+	active    int
+	maxActive int
+}
+
+func (r *concurrentRunner) Run(_ context.Context, _ string, _ []string, _ cruxexec.RunOpts) (*cruxexec.RunResult, error) {
+	r.mu.Lock()
+	r.calls++
+	r.active++
+	if r.active > r.maxActive {
+		r.maxActive = r.active
+	}
+	r.mu.Unlock()
+
+	// Slow down each perspective so parallel overlap is observable.
+	time.Sleep(40 * time.Millisecond)
+
+	r.mu.Lock()
+	r.active--
+	r.mu.Unlock()
+
+	return &cruxexec.RunResult{
+		Stdout:   validCouncilJSON(),
+		ExitCode: 0,
+	}, nil
+}
+
+type scriptedRunner struct {
+	mu        sync.Mutex
+	calls     []scriptedCall
+	responses []scriptResponse
+}
+
+type scriptedCall struct {
+	Args []string
+}
+
+type scriptResponse struct {
+	Result *cruxexec.RunResult
+	Error  error
+}
+
+func (r *scriptedRunner) Run(_ context.Context, _ string, args []string, _ cruxexec.RunOpts) (*cruxexec.RunResult, error) {
+	r.mu.Lock()
+	idx := len(r.calls)
+	r.calls = append(r.calls, scriptedCall{Args: append([]string{}, args...)})
+	r.mu.Unlock()
+
+	if idx >= len(r.responses) {
+		return nil, fmt.Errorf("unexpected call %d", idx)
+	}
+
+	resp := r.responses[idx]
+	return resp.Result, resp.Error
 }

@@ -39,6 +39,26 @@ func validSynthesisJSON() []byte {
 	return data
 }
 
+func invalidSynthesisJSON() []byte {
+	result := domain.SynthesisResult{
+		Synthesizer: "ORACLE",
+		Model:       "anthropic/claude-opus-4.6",
+		Summary:     "Invalid synthesis for test",
+		Items: []domain.SynthesisItem{
+			{
+				Title:    "",
+				Priority: domain.P0,
+				Type:     domain.Feature,
+				Horizon:  domain.Now,
+				Effort:   domain.Large,
+				Body:     "Missing title should fail validation",
+			},
+		},
+	}
+	data, _ := json.Marshal(result)
+	return data
+}
+
 func TestSynthesizeSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -122,6 +142,32 @@ func TestSynthesizeInvalidJSON(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no JSON") {
 		t.Fatalf("got %q, want no JSON error", err)
+	}
+}
+
+func TestSynthesizeValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	mock := cruxexec.NewMockRunner()
+	mock.Results["opencode"] = &cruxexec.RunResult{
+		Stdout:   invalidSynthesisJSON(),
+		ExitCode: 0,
+	}
+
+	svc := &Service{
+		Runner:   mock,
+		Registry: models.DefaultRegistry(),
+		Env:      []string{"HOME=/tmp"},
+	}
+
+	_, err := svc.Synthesize(context.Background(), domain.SynthesisInput{
+		Vision: "Prioritize reliability",
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "invalid synthesis result") {
+		t.Fatalf("got %q, want invalid synthesis result error", err)
 	}
 }
 
