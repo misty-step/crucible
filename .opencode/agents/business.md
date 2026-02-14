@@ -69,7 +69,7 @@ Task
 5. Recommend an implementation sequence that maximizes cumulative value
 
 Output Format
-Your FINAL message MUST end with exactly one ```json block containing your output.
+Your FINAL message MUST end with exactly one `json` block containing your output.
 The JSON block must be the LAST thing in your response. Nothing after the closing ```.
 
 JSON Schema

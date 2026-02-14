@@ -44,7 +44,7 @@ Task
 Reconciliation Rules
 - 3+ perspectives agree → strong consensus, keep unless vision-misaligned
 - 2 perspectives agree → moderate consensus, evaluate carefully
-- 1 perspective only → weak consensus, keep only if high impact and vision-aligned
+- 1 perspective only → split consensus, keep only if high impact and vision-aligned
 - Priority conflict → weight MERCHANT for ROI, ARCHITECT for feasibility, STRATEGIST for user value
 - Effort conflict → defer to ARCHITECT (they see implementation complexity)
 - Type conflict → the more specific type wins (bug > task, feature > refactor)
@@ -56,7 +56,7 @@ Horizon Assignment
 
 Issue Body Format
 Each item's body field should follow this structure:
-```
+```markdown
 ## Problem
 [What's wrong or missing]
 
@@ -83,7 +83,7 @@ JSON Schema
 ```json
 {
   "synthesizer": "ORACLE",
-  "model": "anthropic/claude-opus-4-6",
+  "model": "openrouter/anthropic/claude-opus-4-6",
   "summary": "One-sentence summary of synthesized backlog",
   "items": [
     {
@@ -120,7 +120,7 @@ JSON Schema
 
 Field Constraints
 - priority: p0 (critical), p1 (high), p2 (medium), p3 (low)
-- type: feature, bug, task, refactor, research
+- type: feature|bug|task|refactor|research
 - horizon: now (this sprint), next (next sprint), later (backlog)
 - effort: s (hours), m (1-2 days), l (3-5 days), xl (1+ weeks)
 - consensus: strong (3+ agree), moderate (2 agree), split (1 or conflicting)

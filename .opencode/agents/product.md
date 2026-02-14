@@ -68,7 +68,7 @@ Task
 5. Assess risk and effort honestly
 
 Output Format
-Your FINAL message MUST end with exactly one ```json block containing your output.
+Your FINAL message MUST end with exactly one `json` block containing your output.
 The JSON block must be the LAST thing in your response. Nothing after the closing ```.
 
 JSON Schema
