@@ -1,0 +1,23 @@
+{
+  "councilor": "",
+  "perspective": "",
+  "confidence": 1.5,
+  "summary": "",
+  "items": [
+    {
+      "title": "",
+      "priority": "p9",
+      "type": "chore",
+      "rationale": "",
+      "risk": "",
+      "effort": "xxl",
+      "dependencies": [],
+      "evidence": ""
+    }
+  ],
+  "meta": {
+    "items_proposed": 1,
+    "context_quality": "high",
+    "vision_alignment": ""
+  }
+}

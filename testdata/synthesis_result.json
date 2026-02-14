@@ -1,0 +1,50 @@
+{
+  "synthesizer": "ORACLE",
+  "model": "anthropic/claude-opus-4-6",
+  "summary": "Focus on foundational infrastructure then end-to-end pipeline",
+  "items": [
+    {
+      "title": "Add CommandRunner interface for testable exec",
+      "priority": "p0",
+      "type": "task",
+      "horizon": "now",
+      "effort": "m",
+      "body": "## Problem\n\nEvery component shells out to opencode or gh CLI. Tests need mocks.\n\n## Impact\n\nBlocks TDD on all pipeline components.\n\n## Suggested Approach\n\nCreate internal/exec with CommandRunner interface and MockRunner.",
+      "labels": ["domain/infra", "source/groom"],
+      "council_support": {
+        "proposed_by": ["ARCHITECT"],
+        "opposed_by": [],
+        "consensus": "moderate"
+      },
+      "vision_alignment": "Enables reliable development of all vision features"
+    },
+    {
+      "title": "Implement end-to-end council execution",
+      "priority": "p0",
+      "type": "feature",
+      "horizon": "now",
+      "effort": "l",
+      "body": "## Problem\n\nCouncil command is a stub. Users cannot run crucible.\n\n## Impact\n\nProject is unusable without working council pipeline.\n\n## Suggested Approach\n\nImplement council spawner, integrate with model registry, wire to CLI.",
+      "labels": ["domain/council", "source/groom"],
+      "council_support": {
+        "proposed_by": ["STRATEGIST", "ARCHITECT"],
+        "opposed_by": [],
+        "consensus": "strong"
+      },
+      "vision_alignment": "Core pipeline is the product"
+    }
+  ],
+  "conflicts_resolved": [
+    {
+      "item": "Add progress indicators during council run",
+      "disagreement": "STRATEGIST rated p2, not proposed by others",
+      "resolution": "Deferred to next horizon — usable without progress indicators"
+    }
+  ],
+  "dropped_items": [
+    {
+      "title": "Add progress indicators during council run",
+      "reason": "Nice-to-have, not on critical path. Deferred to v0.2.0."
+    }
+  ]
+}
