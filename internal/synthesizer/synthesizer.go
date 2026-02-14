@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/misty-step/crucible/internal/council"
@@ -38,11 +39,13 @@ func (s *Service) Synthesize(ctx context.Context, input domain.SynthesisInput) (
 
 	prompt := RenderSynthesisPrompt(input)
 
+	sanitizedPrompt := cruxexec.SanitizeArg(prompt)
+
 	args := []string{
 		"run",
 		"--agent", "synthesis",
 		"-m", "openrouter/" + cfg.Primary.ID,
-		prompt,
+		sanitizedPrompt,
 	}
 
 	start := time.Now()
@@ -76,8 +79,13 @@ func (s *Service) Synthesize(ctx context.Context, input domain.SynthesisInput) (
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) > maxLen {
-		return s[:maxLen] + "..."
+	s = strings.TrimSpace(s)
+	if maxLen <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) > maxLen {
+		return string(runes[:maxLen]) + "..."
 	}
 	return s
 }

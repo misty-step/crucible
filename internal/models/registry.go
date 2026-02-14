@@ -4,9 +4,9 @@ import "time"
 
 // Model identifies an LLM available via OpenRouter.
 type Model struct {
-	ID       string // e.g. "anthropic/claude-sonnet-4-5"
+	ID       string // e.g. "anthropic/claude-sonnet-4.5"
 	Provider string // e.g. "anthropic"
-	Name     string // e.g. "claude-sonnet-4-5"
+	Name     string // e.g. "claude-sonnet-4.5"
 }
 
 // PerspectiveConfig maps a council perspective to its model chain.
@@ -26,27 +26,27 @@ func DefaultRegistry() *Registry {
 	return &Registry{
 		perspectives: map[string]PerspectiveConfig{
 			"product": {
-				Primary:   Model{ID: "anthropic/claude-sonnet-4-5", Provider: "anthropic", Name: "claude-sonnet-4-5"},
+				Primary:   Model{ID: "anthropic/claude-sonnet-4.5", Provider: "anthropic", Name: "claude-sonnet-4.5"},
 				Fallbacks: []Model{{ID: "google/gemini-3-flash-preview", Provider: "google", Name: "gemini-3-flash-preview"}},
 				Timeout:   120 * time.Second,
 			},
 			"engineering": {
 				Primary:   Model{ID: "moonshotai/kimi-k2.5", Provider: "moonshotai", Name: "kimi-k2.5"},
-				Fallbacks: []Model{{ID: "zhipu-ai/glm-5", Provider: "zhipu-ai", Name: "glm-5"}},
+				Fallbacks: []Model{{ID: "z-ai/glm-5", Provider: "z-ai", Name: "glm-5"}},
 				Timeout:   120 * time.Second,
 			},
 			"design": {
 				Primary:   Model{ID: "google/gemini-3-flash-preview", Provider: "google", Name: "gemini-3-flash-preview"},
-				Fallbacks: []Model{{ID: "zhipu-ai/glm-5", Provider: "zhipu-ai", Name: "glm-5"}},
+				Fallbacks: []Model{{ID: "z-ai/glm-5", Provider: "z-ai", Name: "glm-5"}},
 				Timeout:   120 * time.Second,
 			},
 			"business": {
 				Primary:   Model{ID: "qwen/qwen3-max-thinking", Provider: "qwen", Name: "qwen3-max-thinking"},
-				Fallbacks: []Model{{ID: "zhipu-ai/glm-5", Provider: "zhipu-ai", Name: "glm-5"}},
+				Fallbacks: []Model{{ID: "z-ai/glm-5", Provider: "z-ai", Name: "glm-5"}},
 				Timeout:   120 * time.Second,
 			},
 			"synthesis": {
-				Primary:   Model{ID: "anthropic/claude-opus-4-6", Provider: "anthropic", Name: "claude-opus-4-6"},
+				Primary:   Model{ID: "anthropic/claude-opus-4.6", Provider: "anthropic", Name: "claude-opus-4.6"},
 				Fallbacks: []Model{}, // No fallback — synthesis quality is non-negotiable
 				Timeout:   300 * time.Second,
 			},

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -26,7 +27,6 @@ type Spawner struct {
 	Runner   cruxexec.CommandRunner
 	Registry *models.Registry
 	Env      []string // pre-filtered env vars for child processes
-	Verbose  bool
 }
 
 // NewSpawner creates a Spawner with filtered environment variables.
@@ -163,11 +163,12 @@ func (s *Spawner) tryModelWithRetries(ctx context.Context, perspective string, m
 
 // invokeAgent runs opencode with the given agent and model, parses JSON output.
 func (s *Spawner) invokeAgent(ctx context.Context, perspective string, model models.Model, prompt string, timeout time.Duration) (*domain.CouncilOutput, error) {
+	sanitizedPrompt := cruxexec.SanitizeArg(prompt)
 	args := []string{
 		"run",
 		"--agent", perspective,
 		"-m", "openrouter/" + model.ID,
-		prompt,
+		sanitizedPrompt,
 	}
 
 	result, err := s.Runner.Run(ctx, "opencode", args, cruxexec.RunOpts{
@@ -216,14 +217,34 @@ func ExtractJSON(data []byte) []byte {
 	// Try to find bare JSON object
 	if idx := strings.Index(s, "{"); idx != -1 {
 		depth := 0
+		inString := false
+		escaped := false
 		for i := idx; i < len(s); i++ {
-			switch s[i] {
+			ch := s[i]
+
+			if inString {
+				if escaped {
+					escaped = false
+					continue
+				}
+				switch ch {
+				case '\\':
+					escaped = true
+				case '"':
+					inString = false
+				}
+				continue
+			}
+
+			switch ch {
+			case '"':
+				inString = true
 			case '{':
 				depth++
 			case '}':
 				depth--
 				if depth == 0 {
-					return []byte(s[idx : i+1])
+					return []byte(strings.TrimSpace(s[idx : i+1]))
 				}
 			}
 		}
@@ -237,8 +258,8 @@ func ExtractJSON(data []byte) []byte {
 type permanentError struct{ error }
 
 func isPermanentError(err error) bool {
-	_, ok := err.(*permanentError)
-	return ok
+	var pe *permanentError
+	return errors.As(err, &pe)
 }
 
 func categorizeError(perspective string, exitCode int, stderr string) error {
@@ -257,8 +278,12 @@ func categorizeError(perspective string, exitCode int, stderr string) error {
 
 func truncate(s string, maxLen int) string {
 	s = strings.TrimSpace(s)
-	if len(s) > maxLen {
-		return s[:maxLen] + "..."
+	if maxLen <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) > maxLen {
+		return string(runes[:maxLen]) + "..."
 	}
 	return s
 }
