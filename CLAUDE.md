@@ -34,6 +34,8 @@ Input Sources → Council (N agents) → Synthesizer → GitHub Issues
 - `main.go` — Entry point, calls `cmd.Execute()`
 - `cmd/` — Cobra commands: `root.go` (global flags), `council.go`, `synthesize.go`, `issues.go`
 - `internal/domain/` — Shared types (`types.go`), interfaces (`interfaces.go`), validation (`validate.go`)
+- `internal/models/` — OpenRouter model registry with per-perspective primary/fallback chains
+- `internal/exec/` — Input sanitization (`SanitizeArg`, `SanitizeTitle`) and env filtering for child processes
 - `VISION.md` — Product vision; used by the synthesizer as evaluation criteria
 
 ### Key Interfaces (`internal/domain/interfaces.go`)
@@ -42,9 +44,25 @@ Input Sources → Council (N agents) → Synthesizer → GitHub Issues
 - `Synthesizer` — `Synthesize(ctx, SynthesisInput) → SynthesisResult`
 - `Emitter` — `Emit(ctx, []SynthesisItem) → []CreatedIssue`
 
+### Model Registry (`internal/models/registry.go`)
+
+Each council perspective has a primary model + fallback chain via OpenRouter. Synthesis uses `claude-opus-4-6` with no fallback (quality is non-negotiable). `Registry.NextModel()` walks the chain on failure.
+
+### Security Invariants
+
+- **Argument injection**: All model-derived strings passed to `exec.Command` must go through `exec.SanitizeArg()` (strips leading dashes, null bytes)
+- **Env allowlist**: Child processes only receive `AllowedEnvKeys` via `exec.FilterEnv()` — prevents leaking secrets
+- **Output size limit**: Model output reads capped at 1MB via `exec.LimitedReader()`
+
 ### Global Flags
 
 `--verbose`, `--vision <path>` (default `VISION.md`), `--dry-run`
+
+### Environment
+
+- Requires `OPENROUTER_API_KEY` for model access
+- Requires `gh` CLI authenticated for issue creation
+- Go 1.24+ (version from `go.mod`)
 
 ### CI
 
@@ -52,4 +70,4 @@ GitHub Actions runs `go build`, `go vet`, `go test` on push/PR to main/master. S
 
 ## Status
 
-Cobra CLI wired, domain types and validation implemented with tests. Council, synthesizer, and emitter are stub commands awaiting implementation. Requires `gh` CLI authenticated for issue creation.
+Cobra CLI wired, domain types and validation implemented with tests. Council, synthesizer, and emitter are stub commands awaiting implementation.
