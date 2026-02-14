@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	maxRetries     = 3
-	initialBackoff = 2 * time.Second
+	maxRetries      = 3
+	initialBackoff  = 2 * time.Second
 	minPerspectives = 2
 )
 
@@ -115,6 +115,15 @@ func (s *Spawner) runPerspective(ctx context.Context, perspective string, prompt
 			return result
 		}
 
+		if errors.Is(result.Error, ctx.Err()) {
+			return domain.SpawnResult{
+				Error:    result.Error,
+				Model:    model.ID,
+				Retries:  totalRetries,
+				Duration: time.Since(start),
+			}
+		}
+
 		// Try next fallback
 		next, hasNext := s.Registry.NextModel(perspective, model.ID)
 		if !hasNext {
@@ -206,45 +215,70 @@ func (s *Spawner) invokeAgent(ctx context.Context, perspective string, model mod
 func ExtractJSON(data []byte) []byte {
 	s := string(data)
 
+	tryDecode := func(raw []byte) []byte {
+		var value json.RawMessage
+		dec := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(raw)))
+		if err := dec.Decode(&value); err != nil {
+			return nil
+		}
+		return []byte(value)
+	}
+
 	// Try to find JSON in code fence
 	if idx := strings.Index(s, "```json"); idx != -1 {
 		start := idx + len("```json")
 		if end := strings.Index(s[start:], "```"); end != -1 {
-			return bytes.TrimSpace([]byte(s[start : start+end]))
+			if decoded := tryDecode([]byte(s[start : start+end])); decoded != nil {
+				return decoded
+			}
 		}
 	}
 
 	// Try to find bare JSON object
 	if idx := strings.Index(s, "{"); idx != -1 {
-		depth := 0
-		inString := false
-		escaped := false
 		for i := idx; i < len(s); i++ {
-			ch := s[i]
-
-			if inString {
-				if escaped {
-					escaped = false
-					continue
-				}
-				switch ch {
-				case '\\':
-					escaped = true
-				case '"':
-					inString = false
-				}
+			if s[i] != '{' {
+				continue
+			}
+			if i > 0 && s[i-1] == '{' {
 				continue
 			}
 
-			switch ch {
-			case '"':
-				inString = true
-			case '{':
-				depth++
-			case '}':
-				depth--
-				if depth == 0 {
-					return []byte(strings.TrimSpace(s[idx : i+1]))
+			depth := 0
+			inString := false
+			escaped := false
+
+		candidateSearch:
+			for j := i; j < len(s); j++ {
+				ch := s[j]
+
+				if inString {
+					if escaped {
+						escaped = false
+						continue
+					}
+					switch ch {
+					case '\\':
+						escaped = true
+					case '"':
+						inString = false
+					}
+					continue
+				}
+
+				switch ch {
+				case '"':
+					inString = true
+				case '{':
+					depth++
+				case '}':
+					depth--
+					if depth == 0 {
+						if decoded := tryDecode([]byte(s[i : j+1])); decoded != nil {
+							return decoded
+						}
+						break candidateSearch
+					}
 				}
 			}
 		}
