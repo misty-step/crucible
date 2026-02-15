@@ -13,8 +13,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Skip cerberus on fork PRs since they don't have access to OPENROUTER_API_KEY
+  check-fork:
+    name: "Check Fork PR"
+    runs-on: ubuntu-latest
+    outputs:
+      is-fork: ${{ steps.check.outputs.is-fork }}
+    steps:
+      - id: check
+        run: |
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.event.pull_request.base.repo.full_name }}" ]; then
+            echo "is-fork=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is-fork=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Post a comment on fork PRs explaining why cerberus is skipped
+  fork-comment:
+    name: "Fork PR Notice"
+    needs: check-fork
+    if: (needs.check-fork.result == 'success' || needs.check-fork.result == 'skipped') && needs.check-fork.outputs.is-fork == 'true' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '> 🤖 **Cerberus Council Skipped**\n>\n> This PR originates from a fork. External contributions cannot access repository secrets (including the OPENROUTER_API_KEY required for AI code review).\n>\n> A maintainer will review this PR manually. Thank you for your contribution!'
+            })
+
   review:
     name: "${{ matrix.reviewer }}"
+    needs: check-fork
+    if: (needs.check-fork.result == 'success' || needs.check-fork.result == 'skipped') && needs.check-fork.outputs.is-fork == 'false'
     runs-on: ubuntu-latest
     continue-on-error: true
     strategy:
@@ -40,8 +74,8 @@ jobs:
 
   verdict:
     name: "Council Verdict"
-    needs: review
-    if: always()
+    needs: [check-fork, review]
+    if: always() && (needs.check-fork.result == 'success' || needs.check-fork.result == 'skipped') && needs.check-fork.outputs.is-fork == 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
