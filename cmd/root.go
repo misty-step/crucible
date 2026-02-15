@@ -17,11 +17,12 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "crucible",
 	Short: "Multi-model backlog grooming CLI",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		return cmd.Help()
 	},
 }
 
+// Execute runs the root command.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
