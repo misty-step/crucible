@@ -6,9 +6,13 @@ import "time"
 type Priority string
 
 const (
+	// P0 is the highest priority.
 	P0 Priority = "p0"
+	// P1 is high priority.
 	P1 Priority = "p1"
+	// P2 is medium priority.
 	P2 Priority = "p2"
+	// P3 is lowest priority.
 	P3 Priority = "p3"
 )
 
@@ -16,10 +20,15 @@ const (
 type ItemType string
 
 const (
-	Bug      ItemType = "bug"
-	Feature  ItemType = "feature"
-	Task     ItemType = "task"
+	// Bug represents a bug report.
+	Bug ItemType = "bug"
+	// Feature represents a new feature request.
+	Feature ItemType = "feature"
+	// Task represents a general task.
+	Task ItemType = "task"
+	// Refactor represents a refactoring task.
 	Refactor ItemType = "refactor"
+	// Research represents a research task.
 	Research ItemType = "research"
 )
 
@@ -27,9 +36,13 @@ const (
 type Effort string
 
 const (
-	Small      Effort = "s"
-	Medium     Effort = "m"
-	Large      Effort = "l"
+	// Small indicates small effort.
+	Small Effort = "s"
+	// Medium indicates medium effort.
+	Medium Effort = "m"
+	// Large indicates large effort.
+	Large Effort = "l"
+	// ExtraLarge indicates extra large effort.
 	ExtraLarge Effort = "xl"
 )
 
@@ -37,8 +50,11 @@ const (
 type Horizon string
 
 const (
-	Now   Horizon = "now"
-	Next  Horizon = "next"
+	// Now indicates immediate horizon.
+	Now Horizon = "now"
+	// Next indicates next sprint horizon.
+	Next Horizon = "next"
+	// Later indicates future horizon.
 	Later Horizon = "later"
 )
 
@@ -46,18 +62,24 @@ const (
 type Consensus string
 
 const (
-	Strong   Consensus = "strong"
+	// Strong indicates strong consensus.
+	Strong Consensus = "strong"
+	// Moderate indicates moderate consensus.
 	Moderate Consensus = "moderate"
-	Split    Consensus = "split"
+	// Split indicates split/weak consensus.
+	Split Consensus = "split"
 )
 
 // ContextQuality assessment
 type ContextQuality string
 
 const (
-	HighQuality   ContextQuality = "high"
+	// HighQuality indicates high context quality.
+	HighQuality ContextQuality = "high"
+	// MediumQuality indicates medium context quality.
 	MediumQuality ContextQuality = "medium"
-	LowQuality    ContextQuality = "low"
+	// LowQuality indicates low context quality.
+	LowQuality ContextQuality = "low"
 )
 
 // CouncilInput is what each council agent receives

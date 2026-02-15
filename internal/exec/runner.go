@@ -68,6 +68,7 @@ func (b *limitedBuffer) Bytes() []byte {
 // OSRunner executes commands via os/exec.
 type OSRunner struct{}
 
+// Run executes a command and returns the result.
 func (r *OSRunner) Run(ctx context.Context, name string, args []string, opts RunOpts) (*RunResult, error) {
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc

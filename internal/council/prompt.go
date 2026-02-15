@@ -1,3 +1,4 @@
+// Package council provides multi-model deliberation logic.
 package council
 
 import (
