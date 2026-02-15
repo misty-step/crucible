@@ -19,6 +19,6 @@ linters:
           disabled: true
         - name: package-comments
           disabled: true
-issues:
-  exclude-dirs:
-    - testdata
+  exclusions:
+    paths:
+      - "testdata/.*"
