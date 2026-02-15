@@ -64,6 +64,37 @@ Each council perspective has a primary model + fallback chain via OpenRouter. Sy
 - Requires `gh` CLI authenticated for issue creation
 - Go 1.24+ (version from `go.mod`)
 
+## Configurable Perspectives
+
+Perspectives can be configured via YAML files:
+
+**Defaults** (`defaults/config.yml`):
+```yaml
+perspectives:
+  - name: product
+    agent: product.md
+    model:
+      id: anthropic/claude-sonnet-4.5
+      provider: anthropic
+      name: claude-sonnet-4.5
+    fallbacks:
+      - id: google/gemini-3-flash-preview
+        provider: google
+        name: gemini-3-flash-preview
+    timeout: 120s
+    enabled: true
+```
+
+**Local Override** (`.crucible.yml` in repo root):
+- Disables perspectives: `enabled: false`
+- Overrides values: specify only what changes
+- Adds new perspectives: define entirely new entries
+
+**CLI Flag**:
+```bash
+crucible council --repo . --config /path/to/config.yml
+```
+
 ### CI
 
 GitHub Actions runs `go build`, `go vet`, `go test` on push/PR to main/master. Semantic release on `master` branch.

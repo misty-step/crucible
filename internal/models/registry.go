@@ -4,6 +4,8 @@ package models
 import (
 	"sort"
 	"time"
+
+	"github.com/misty-step/crucible/internal/config"
 )
 
 const SynthesisPerspective = "synthesis"
@@ -29,35 +31,50 @@ type Registry struct {
 
 // DefaultRegistry returns the standard model assignments for all 5 perspectives.
 func DefaultRegistry() *Registry {
-	return &Registry{
-		perspectives: map[string]PerspectiveConfig{
-			"product": {
-				Primary:   Model{ID: "anthropic/claude-sonnet-4.5", Provider: "anthropic", Name: "claude-sonnet-4.5"},
-				Fallbacks: []Model{{ID: "google/gemini-3-flash-preview", Provider: "google", Name: "gemini-3-flash-preview"}},
-				Timeout:   120 * time.Second,
-			},
-			"engineering": {
-				Primary:   Model{ID: "moonshotai/kimi-k2.5", Provider: "moonshotai", Name: "kimi-k2.5"},
-				Fallbacks: []Model{{ID: "z-ai/glm-5", Provider: "z-ai", Name: "glm-5"}},
-				Timeout:   120 * time.Second,
-			},
-			"design": {
-				Primary:   Model{ID: "google/gemini-3-flash-preview", Provider: "google", Name: "gemini-3-flash-preview"},
-				Fallbacks: []Model{{ID: "z-ai/glm-5", Provider: "z-ai", Name: "glm-5"}},
-				Timeout:   120 * time.Second,
-			},
-			"business": {
-				Primary:   Model{ID: "qwen/qwen3-max-thinking", Provider: "qwen", Name: "qwen3-max-thinking"},
-				Fallbacks: []Model{{ID: "z-ai/glm-5", Provider: "z-ai", Name: "glm-5"}},
-				Timeout:   120 * time.Second,
-			},
-			SynthesisPerspective: {
-				Primary:   Model{ID: "anthropic/claude-opus-4.6", Provider: "anthropic", Name: "claude-opus-4.6"},
-				Fallbacks: []Model{}, // No fallback — synthesis quality is non-negotiable
-				Timeout:   300 * time.Second,
-			},
-		},
+	return FromConfig(config.DefaultPerspectives())
+}
+
+// FromConfig creates a Registry from config perspectives.
+func FromConfig(perspectives []config.PerspectiveConfig) *Registry {
+	r := &Registry{
+		perspectives: make(map[string]PerspectiveConfig),
 	}
+
+	for _, p := range perspectives {
+		if !p.Enabled {
+			continue
+		}
+
+		fallbacks := make([]Model, len(p.Fallbacks))
+		for i, fb := range p.Fallbacks {
+			fallbacks[i] = Model{
+				ID:       fb.ID,
+				Provider: fb.Provider,
+				Name:     fb.Name,
+			}
+		}
+
+		r.perspectives[p.Name] = PerspectiveConfig{
+			Primary: Model{
+				ID:       p.Model.ID,
+				Provider: p.Model.Provider,
+				Name:     p.Model.Name,
+			},
+			Fallbacks: fallbacks,
+			Timeout:   p.Timeout,
+		}
+	}
+
+	return r
+}
+
+// LoadRegistry loads a registry from default and local config files.
+func LoadRegistry(defaultsPath, localPath string) (*Registry, error) {
+	cfg, err := config.LoadMerged(defaultsPath, localPath)
+	if err != nil {
+		return nil, err
+	}
+	return FromConfig(cfg.Perspectives), nil
 }
 
 // Get returns the config for a perspective, or false if not found.

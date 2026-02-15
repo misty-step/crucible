@@ -1,0 +1,66 @@
+# Crucible default perspective configuration
+# This file defines the default council perspectives.
+# Users can override by creating a .crucible.yml in their repo root.
+
+perspectives:
+  - name: product
+    agent: product.md
+    model:
+      id: anthropic/claude-sonnet-4.5
+      provider: anthropic
+      name: claude-sonnet-4.5
+    fallbacks:
+      - id: google/gemini-3-flash-preview
+        provider: google
+        name: gemini-3-flash-preview
+    timeout: 120s
+    enabled: true
+
+  - name: engineering
+    agent: engineering.md
+    model:
+      id: moonshotai/kimi-k2.5
+      provider: moonshotai
+      name: kimi-k2.5
+    fallbacks:
+      - id: z-ai/glm-5
+        provider: z-ai
+        name: glm-5
+    timeout: 120s
+    enabled: true
+
+  - name: design
+    agent: design.md
+    model:
+      id: google/gemini-3-flash-preview
+      provider: google
+      name: gemini-3-flash-preview
+    fallbacks:
+      - id: z-ai/glm-5
+        provider: z-ai
+        name: glm-5
+    timeout: 120s
+    enabled: true
+
+  - name: business
+    agent: business.md
+    model:
+      id: qwen/qwen3-max-thinking
+      provider: qwen
+      name: qwen3-max-thinking
+    fallbacks:
+      - id: z-ai/glm-5
+        provider: z-ai
+        name: glm-5
+    timeout: 120s
+    enabled: true
+
+  - name: synthesis
+    agent: synthesis.md
+    model:
+      id: anthropic/claude-opus-4.6
+      provider: anthropic
+      name: claude-opus-4.6
+    fallbacks: []
+    timeout: 300s
+    enabled: true

@@ -44,6 +44,8 @@ go test ./...
 | Runs synthesizer (placeholder) | ☐ | |
 | Creates GitHub issues with labels | ☐ | |
 | Handles missing input gracefully | ☐ | |
+| Configurable perspectives via --config flag | ☐ | |
+| Configurable perspectives via .crucible.yml | ☐ | |
 
 ## Debugging
 
