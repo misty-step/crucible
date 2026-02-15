@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -181,12 +182,10 @@ func extractIssueNumber(urlOrJSON string) int {
 
 	// Parse from URL: https://github.com/owner/repo/issues/42
 	parts := strings.Split(s, "/")
-	if len(parts) >= 2 {
-		var n int
-		if _, err := fmt.Sscanf(parts[len(parts)-1], "%d", &n); err == nil {
+	if len(parts) > 0 {
+		if n, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
 			return n
 		}
-		return 0
 	}
 
 	return 0

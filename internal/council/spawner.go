@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -81,7 +82,7 @@ func (s *Spawner) RunCouncil(ctx context.Context, input domain.CouncilInput) ([]
 func (s *Spawner) councilPerspectives() []string {
 	var council []string
 	for _, name := range s.Registry.Perspectives() {
-		if name != "synthesis" {
+		if name != models.SynthesisPerspective {
 			council = append(council, name)
 		}
 	}
@@ -112,6 +113,15 @@ func (s *Spawner) runPerspective(ctx context.Context, perspective string, prompt
 			result.Duration = time.Since(start)
 			result.Retries = totalRetries
 			return result
+		}
+
+		if errors.Is(result.Error, ctx.Err()) {
+			return domain.SpawnResult{
+				Error:    result.Error,
+				Model:    model.ID,
+				Retries:  totalRetries,
+				Duration: time.Since(start),
+			}
 		}
 
 		// Try next fallback
@@ -162,11 +172,12 @@ func (s *Spawner) tryModelWithRetries(ctx context.Context, perspective string, m
 
 // invokeAgent runs opencode with the given agent and model, parses JSON output.
 func (s *Spawner) invokeAgent(ctx context.Context, perspective string, model models.Model, prompt string, timeout time.Duration) (*domain.CouncilOutput, error) {
+	sanitizedPrompt := cruxexec.SanitizeArg(prompt)
 	args := []string{
 		"run",
 		"--agent", perspective,
 		"-m", "openrouter/" + model.ID,
-		prompt,
+		sanitizedPrompt,
 	}
 
 	result, err := s.Runner.Run(ctx, "opencode", args, cruxexec.RunOpts{
@@ -183,7 +194,7 @@ func (s *Spawner) invokeAgent(ctx context.Context, perspective string, model mod
 	}
 
 	// Extract JSON from output (may be wrapped in markdown code fences)
-	jsonBytes := extractJSON(result.Stdout)
+	jsonBytes := ExtractJSON(result.Stdout)
 	if jsonBytes == nil {
 		return nil, fmt.Errorf("opencode %s: no JSON found in output", perspective)
 	}
@@ -200,40 +211,41 @@ func (s *Spawner) invokeAgent(ctx context.Context, perspective string, model mod
 	return &output, nil
 }
 
-// extractJSON finds the first JSON object in output, handling markdown code fences.
-func extractJSON(data []byte) []byte {
-	s := string(data)
-
-	// Try to find JSON in code fence
-	if idx := strings.Index(s, "```json"); idx != -1 {
-		start := idx + len("```json")
-		if end := strings.Index(s[start:], "```"); end != -1 {
-			return bytes.TrimSpace([]byte(s[start : start+end]))
+// ExtractJSON finds the first JSON object in output, handling markdown code fences.
+func ExtractJSON(data []byte) []byte {
+	tryDecode := func(raw []byte) []byte {
+		var value json.RawMessage
+		dec := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(raw)))
+		if err := dec.Decode(&value); err != nil {
+			return nil
 		}
+		return []byte(value)
 	}
 
-	// Try to find bare JSON object via brace-counting, validated with json.Valid
-	// to handle braces inside string values.
-	if idx := strings.Index(s, "{"); idx != -1 {
-		depth := 0
-		for i := idx; i < len(s); i++ {
-			switch s[i] {
-			case '{':
-				depth++
-			case '}':
-				depth--
-				if depth == 0 {
-					candidate := []byte(s[idx : i+1])
-					if json.Valid(candidate) {
-						return candidate
-					}
-					// False match (brace inside string); keep scanning
-				}
+	decodeFrom := func(start int) []byte {
+		for start < len(data) {
+			i := bytes.IndexByte(data[start:], '{')
+			if i == -1 {
+				return nil
 			}
+			i += start
+			if decoded := tryDecode(data[i:]); decoded != nil {
+				return decoded
+			}
+			start = i + 1
+		}
+		return nil
+	}
+
+	// Try to find JSON in fenced output
+	if idx := bytes.Index(data, []byte("```json")); idx != -1 {
+		if decoded := decodeFrom(idx + len("```json")); decoded != nil {
+			return decoded
 		}
 	}
 
-	return nil
+	// Try bare JSON object
+	return decodeFrom(0)
 }
 
 // Error classification
@@ -241,8 +253,8 @@ func extractJSON(data []byte) []byte {
 type permanentError struct{ error }
 
 func isPermanentError(err error) bool {
-	_, ok := err.(*permanentError)
-	return ok
+	var pe *permanentError
+	return errors.As(err, &pe)
 }
 
 func categorizeError(perspective string, exitCode int, stderr string) error {
@@ -261,8 +273,12 @@ func categorizeError(perspective string, exitCode int, stderr string) error {
 
 func truncate(s string, maxLen int) string {
 	s = strings.TrimSpace(s)
-	if len(s) > maxLen {
-		return s[:maxLen] + "..."
+	if maxLen <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) > maxLen {
+		return string(runes[:maxLen]) + "..."
 	}
 	return s
 }

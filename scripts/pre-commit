@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+set -eu
+
+fail() {
+  echo "pre-commit: $*" >&2
+  exit 1
+}
+
+run() {
+  desc="$1"
+  shift
+
+  echo "pre-commit: ${desc}..."
+  "$@" || fail "FAILED: ${desc}"
+}
+
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || fail "not a git repository"
+cd "$root"
+
+run "go vet" go vet ./...
+
+echo "pre-commit: gofmt check..."
+unformatted="$(gofmt -l .)"
+if [ -n "$unformatted" ]; then
+  echo "pre-commit: FAILED: gofmt found unformatted files:" >&2
+  echo "$unformatted" >&2
+  echo "pre-commit: run 'make fmt' and re-commit." >&2
+  exit 1
+fi
+
+run "go build" go build ./...
+
+echo "pre-commit: OK"
