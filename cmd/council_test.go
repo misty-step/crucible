@@ -2,10 +2,14 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/misty-step/crucible/internal/domain"
+	"github.com/misty-step/crucible/internal/telemetry"
 )
 
 func TestCouncilRequiresRepo(t *testing.T) {
@@ -146,4 +150,84 @@ func TestCouncilInteractiveMultiLine(t *testing.T) {
 	if !strings.Contains(stdout.String(), "dry-run") {
 		t.Errorf("expected dry-run output, got: %s", stdout.String())
 	}
+}
+
+func TestTelemetryReportGenerated(t *testing.T) {
+	repoDir := t.TempDir()
+
+	// Create mock council output
+	councilDir := filepath.Join(repoDir, "council-output")
+	if err := os.MkdirAll(councilDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	output := domain.CouncilOutput{
+		Councilor:   "test-councilor",
+		Perspective: "product",
+		Confidence:  0.9,
+		Summary:     "Test summary",
+		Items: []domain.CouncilItem{
+			{Title: "Test item", Priority: domain.P2},
+		},
+	}
+
+	data, _ := json.Marshal(output)
+	if err := os.WriteFile(filepath.Join(councilDir, "council_product.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run synthesize
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	root := rootCmd
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	root.SetArgs([]string{"synthesize", "--input-dir", councilDir, "--verbose"})
+
+	err := root.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify telemetry was written
+	runsDir := filepath.Join(".", ".crucible", "runs")
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		t.Fatalf("failed to read runs directory: %v", err)
+	}
+
+	foundReport := false
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "run_") && strings.HasSuffix(entry.Name(), ".json") {
+			foundReport = true
+
+			// Verify report structure
+			data, err := os.ReadFile(filepath.Join(runsDir, entry.Name()))
+			if err != nil {
+				t.Fatalf("failed to read report: %v", err)
+			}
+
+			var report telemetry.RunReport
+			if err := json.Unmarshal(data, &report); err != nil {
+				t.Fatalf("failed to unmarshal report: %v", err)
+			}
+
+			if report.RunID == "" {
+				t.Error("RunID should not be empty")
+			}
+			if report.Timestamp == "" {
+				t.Error("Timestamp should not be empty")
+			}
+
+			break
+		}
+	}
+
+	if !foundReport {
+		t.Error("No telemetry report found")
+	}
+
+	// Cleanup
+	os.RemoveAll(runsDir)
 }

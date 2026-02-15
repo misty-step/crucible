@@ -6,11 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/misty-step/crucible/internal/domain"
 	"github.com/misty-step/crucible/internal/synthesizer"
+	"github.com/misty-step/crucible/internal/telemetry"
 )
 
 var (
@@ -85,7 +87,9 @@ func runSynthesize(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.ErrOrStderr(), "Running placeholder synthesizer...")
 	}
 
+	synthStart := time.Now()
 	result, err := synth.Synthesize(ctx, input)
+	synthDuration := time.Since(synthStart)
 	if err != nil {
 		return fmt.Errorf("synthesize: %w", err)
 	}
@@ -111,6 +115,25 @@ func runSynthesize(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(cmd.ErrOrStderr(), "Synthesis complete: %d items from %d council outputs\n",
 		len(result.Items), len(councilOutputs))
+
+	// Generate telemetry from synthesis results
+	// Reconstruct spawn results from council outputs (metadata not available post-hoc)
+	spawnResults := make([]domain.SpawnResult, len(councilOutputs))
+	for i, co := range councilOutputs {
+		spawnResults[i] = domain.SpawnResult{
+			Output: &co,
+		}
+	}
+
+	report := telemetry.BuildRunReport(spawnResults, result, synthDuration)
+	writer := telemetry.NewWriter(".")
+	if err := writer.Write(report); err != nil {
+		if verbose {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to write telemetry report: %v\n", err)
+		}
+	} else if verbose {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Wrote telemetry report: run_id=%s\n", report.RunID)
+	}
 
 	return nil
 }
