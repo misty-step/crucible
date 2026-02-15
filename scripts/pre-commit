@@ -1,20 +1,33 @@
-#!/bin/sh
-# Pre-commit hook for Crucible
+#!/usr/bin/env sh
+set -eu
 
-set -e
+fail() {
+  echo "pre-commit: $*" >&2
+  exit 1
+}
 
-echo "Running pre-commit checks..."
+run() {
+  desc="$1"
+  shift
 
-# Check for formatting issues
-echo "Checking formatting..."
-gofmt -l .
+  echo "pre-commit: ${desc}..."
+  "$@" || fail "FAILED: ${desc}"
+}
 
-# Run go vet
-echo "Running go vet..."
-go vet ./...
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || fail "not a git repository"
+cd "$root"
 
-# Build to ensure code compiles
-echo "Building..."
-go build ./...
+run "go vet" go vet ./...
 
-echo "Pre-commit checks passed!"
+echo "pre-commit: gofmt check..."
+unformatted="$(gofmt -l .)"
+if [ -n "$unformatted" ]; then
+  echo "pre-commit: FAILED: gofmt found unformatted files:" >&2
+  echo "$unformatted" >&2
+  echo "pre-commit: run 'make fmt' and re-commit." >&2
+  exit 1
+fi
+
+run "go build" go build ./...
+
+echo "pre-commit: OK"

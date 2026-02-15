@@ -46,7 +46,7 @@ Input Sources → Council (N agents) → Synthesizer → GitHub Issues
 
 ### Model Registry (`internal/models/registry.go`)
 
-Each council perspective has a primary model + fallback chain via OpenRouter. Synthesis uses `claude-opus-4-6` with no fallback (quality is non-negotiable). `Registry.NextModel()` walks the chain on failure.
+Each council perspective has a primary model + fallback chain via OpenRouter. Synthesis uses `claude-opus-4.6` with no fallback (quality is non-negotiable). `Registry.NextModel()` walks the chain on failure.
 
 ### Security Invariants
 
