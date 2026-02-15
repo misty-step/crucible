@@ -1,0 +1,20 @@
+#!/bin/sh
+# Pre-commit hook for Crucible
+
+set -e
+
+echo "Running pre-commit checks..."
+
+# Check for formatting issues
+echo "Checking formatting..."
+gofmt -l .
+
+# Run go vet
+echo "Running go vet..."
+go vet ./...
+
+# Build to ensure code compiles
+echo "Building..."
+go build ./...
+
+echo "Pre-commit checks passed!"
