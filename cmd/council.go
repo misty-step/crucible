@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -17,9 +19,10 @@ import (
 )
 
 var (
-	councilRepo      string
-	councilOutputDir string
-	councilModel     string
+	councilRepo        string
+	councilOutputDir   string
+	councilModel       string
+	councilInteractive bool
 )
 
 var councilCmd = &cobra.Command{
@@ -32,6 +35,7 @@ func init() {
 	councilCmd.Flags().StringVar(&councilRepo, "repo", "", "repository path (required)")
 	councilCmd.Flags().StringVar(&councilOutputDir, "output-dir", "./crucible-output/council/", "directory for council output JSON files")
 	councilCmd.Flags().StringVar(&councilModel, "model", "", "override model for all perspectives")
+	councilCmd.Flags().BoolVar(&councilInteractive, "interactive", false, "prompt for human input before running council")
 	_ = councilCmd.MarkFlagRequired("repo")
 	rootCmd.AddCommand(councilCmd)
 }
@@ -61,6 +65,12 @@ func runCouncil(cmd *cobra.Command, args []string) error {
 		Vision:    repoCtx.Vision,
 		RepoState: repoCtx.RepoState,
 		Date:      time.Now().Format("2006-01-02"),
+	}
+
+	if councilInteractive {
+		if err := promptForHumanInput(cmd, repoCtx, &input); err != nil {
+			return fmt.Errorf("read human input: %w", err)
+		}
 	}
 
 	if verbose {
@@ -121,5 +131,59 @@ func runCouncil(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "Council complete: %d/%d perspectives written to %s\n",
 		written, len(results), councilOutputDir)
 
+	return nil
+}
+
+// promptForHumanInput prints a repo context summary and reads multiline input from the user.
+func promptForHumanInput(cmd *cobra.Command, repoCtx *reposcanner.RepoContext, input *domain.CouncilInput) error {
+	out := cmd.OutOrStdout()
+	in := cmd.InOrStdin()
+
+	fmt.Fprintln(out, "\n=== Repository Context Summary ===")
+	if repoCtx.Vision != "" {
+		fmt.Fprintln(out, "\nVision:")
+		fmt.Fprintln(out, repoCtx.Vision)
+	}
+
+	state := repoCtx.RepoState
+	if len(state.RecentCommits) > 0 {
+		fmt.Fprintf(out, "\nRecent Commits: %d\n", len(state.RecentCommits))
+		for i, c := range state.RecentCommits {
+			if i >= 5 {
+				fmt.Fprintln(out, "  ...")
+				break
+			}
+			fmt.Fprintf(out, "  - %s\n", c)
+		}
+	}
+
+	if len(state.OpenIssues) > 0 {
+		fmt.Fprintf(out, "\nOpen Issues: %d\n", len(state.OpenIssues))
+	}
+
+	if len(state.OpenPRs) > 0 {
+		fmt.Fprintf(out, "Open PRs: %d\n", len(state.OpenPRs))
+	}
+
+	fmt.Fprintln(out, "\n=== Human Input ===")
+	fmt.Fprintln(out, "What priorities, concerns, or ideas should the council consider?")
+	fmt.Fprintln(out, "(Enter multiple lines, end with an empty line or Ctrl+D):")
+
+	scanner := bufio.NewScanner(in)
+	var lines []string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			break
+		}
+		lines = append(lines, line)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	input.HumanInput = strings.Join(lines, "\n")
 	return nil
 }
