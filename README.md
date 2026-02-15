@@ -15,6 +15,13 @@ crucible
 
 Crucible reads context, spawns a multi-model council, synthesizes priorities, and outputs prioritized GitHub issues.
 
+## Development Setup
+
+```bash
+make install-hooks  # Install git hooks
+make check          # Run all checks
+```
+
 ## Architecture
 
 - **Council Pattern**: Spawns N agents with different models/perspectives
