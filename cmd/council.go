@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/misty-step/crucible/internal/config"
 	"github.com/misty-step/crucible/internal/council"
 	"github.com/misty-step/crucible/internal/domain"
 	cruxexec "github.com/misty-step/crucible/internal/exec"
@@ -23,6 +24,7 @@ var (
 	councilOutputDir   string
 	councilModel       string
 	councilInteractive bool
+	councilConfigPath  string
 )
 
 var councilCmd = &cobra.Command{
@@ -36,6 +38,7 @@ func init() {
 	councilCmd.Flags().StringVar(&councilOutputDir, "output-dir", "./crucible-output/council/", "directory for council output JSON files")
 	councilCmd.Flags().StringVar(&councilModel, "model", "", "override model for all perspectives")
 	councilCmd.Flags().BoolVar(&councilInteractive, "interactive", false, "prompt for human input before running council")
+	councilCmd.Flags().StringVar(&councilConfigPath, "config", "", "path to perspective config file (defaults to defaults/config.yml)")
 	_ = councilCmd.MarkFlagRequired("repo")
 	rootCmd.AddCommand(councilCmd)
 }
@@ -44,7 +47,32 @@ func runCouncil(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	runner := &cruxexec.OSRunner{}
-	registry := models.DefaultRegistry()
+
+	// Load registry from config files
+	var registry *models.Registry
+	if councilConfigPath != "" {
+		// User specified explicit config path - must exist
+		cfg, err := config.Load(councilConfigPath)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+		registry = models.FromConfig(cfg.Perspectives)
+	} else {
+		// Try to find local config in repo or use defaults
+		defaultsPath := "defaults/config.yml"
+		var localPath string
+		if path, ok := config.FindLocalConfig(councilRepo); ok {
+			localPath = path
+		}
+		var err error
+		registry, err = models.LoadRegistry(defaultsPath, localPath)
+		if err != nil {
+			if verbose {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: config load failed (%v), using defaults\n", err)
+			}
+			registry = models.DefaultRegistry()
+		}
+	}
 
 	gatherer := &reposcanner.CLIGatherer{
 		Runner:     runner,

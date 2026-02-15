@@ -3,6 +3,8 @@ package models
 import (
 	"testing"
 	"time"
+
+	"github.com/misty-step/crucible/internal/config"
 )
 
 func TestDefaultRegistryHasAllPerspectives(t *testing.T) {
@@ -15,6 +17,99 @@ func TestDefaultRegistryHasAllPerspectives(t *testing.T) {
 		if _, ok := r.Get(name); !ok {
 			t.Errorf("missing perspective %q", name)
 		}
+	}
+}
+
+func TestFromConfigCreatesRegistry(t *testing.T) {
+	t.Parallel()
+
+	cfgPerspectives := []config.PerspectiveConfig{
+		{
+			Name:    "test",
+			Enabled: true,
+			Timeout: 60 * time.Second,
+			Model: config.ModelConfig{
+				ID:       "provider/model",
+				Provider: "provider",
+				Name:     "model",
+			},
+			Fallbacks: []config.ModelConfig{
+				{ID: "fallback/model", Provider: "fallback", Name: "fallback"},
+			},
+		},
+	}
+
+	r := FromConfig(cfgPerspectives)
+
+	cfg, ok := r.Get("test")
+	if !ok {
+		t.Fatal("expected to find test perspective")
+	}
+
+	if cfg.Primary.ID != "provider/model" {
+		t.Errorf("primary model = %q, want provider/model", cfg.Primary.ID)
+	}
+
+	if len(cfg.Fallbacks) != 1 {
+		t.Errorf("fallbacks = %d, want 1", len(cfg.Fallbacks))
+	}
+
+	if cfg.Timeout != 60*time.Second {
+		t.Errorf("timeout = %v, want 60s", cfg.Timeout)
+	}
+}
+
+func TestFromConfigSkipsDisabledPerspectives(t *testing.T) {
+	t.Parallel()
+
+	cfgPerspectives := []config.PerspectiveConfig{
+		{
+			Name:    "enabled",
+			Enabled: true,
+			Timeout: 60 * time.Second,
+			Model:   config.ModelConfig{ID: "provider/enabled", Provider: "p", Name: "n"},
+		},
+		{
+			Name:    "disabled",
+			Enabled: false,
+			Timeout: 60 * time.Second,
+			Model:   config.ModelConfig{ID: "provider/disabled", Provider: "p", Name: "n"},
+		},
+	}
+
+	r := FromConfig(cfgPerspectives)
+
+	if _, ok := r.Get("enabled"); !ok {
+		t.Error("expected to find enabled perspective")
+	}
+
+	if _, ok := r.Get("disabled"); ok {
+		t.Error("expected NOT to find disabled perspective")
+	}
+}
+
+func TestFromConfigEmptyFallbacks(t *testing.T) {
+	t.Parallel()
+
+	cfgPerspectives := []config.PerspectiveConfig{
+		{
+			Name:      "nofallback",
+			Enabled:   true,
+			Timeout:   60 * time.Second,
+			Model:     config.ModelConfig{ID: "provider/model", Provider: "p", Name: "n"},
+			Fallbacks: nil,
+		},
+	}
+
+	r := FromConfig(cfgPerspectives)
+
+	cfg, ok := r.Get("nofallback")
+	if !ok {
+		t.Fatal("expected to find perspective")
+	}
+
+	if len(cfg.Fallbacks) != 0 {
+		t.Errorf("expected 0 fallbacks, got %d", len(cfg.Fallbacks))
 	}
 }
 
