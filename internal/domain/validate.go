@@ -5,6 +5,7 @@ import (
 	"strings"
 )
 
+// Valid returns true if the priority is valid.
 func (p Priority) Valid() bool {
 	switch p {
 	case P0, P1, P2, P3:
@@ -13,6 +14,7 @@ func (p Priority) Valid() bool {
 	return false
 }
 
+// Valid returns true if the item type is valid.
 func (t ItemType) Valid() bool {
 	switch t {
 	case Bug, Feature, Task, Refactor, Research:
@@ -21,6 +23,7 @@ func (t ItemType) Valid() bool {
 	return false
 }
 
+// Valid returns true if the effort is valid.
 func (e Effort) Valid() bool {
 	switch e {
 	case Small, Medium, Large, ExtraLarge:
@@ -29,6 +32,7 @@ func (e Effort) Valid() bool {
 	return false
 }
 
+// Valid returns true if the horizon is valid.
 func (h Horizon) Valid() bool {
 	switch h {
 	case Now, Next, Later:
@@ -37,6 +41,7 @@ func (h Horizon) Valid() bool {
 	return false
 }
 
+// Validate checks the council output for errors.
 func (c CouncilOutput) Validate() error {
 	var errs []string
 	if c.Councilor == "" {
@@ -59,6 +64,7 @@ func (c CouncilOutput) Validate() error {
 	return nil
 }
 
+// Validate checks the council item for errors.
 func (item CouncilItem) Validate() error {
 	var errs []string
 	if item.Title == "" {
@@ -82,6 +88,7 @@ func (item CouncilItem) Validate() error {
 	return nil
 }
 
+// Validate checks the synthesis result for errors.
 func (s SynthesisResult) Validate() error {
 	var errs []string
 	for i, item := range s.Items {
@@ -95,6 +102,7 @@ func (s SynthesisResult) Validate() error {
 	return nil
 }
 
+// Validate checks the synthesis item for errors.
 func (item SynthesisItem) Validate() error {
 	var errs []string
 	if item.Title == "" {

@@ -32,6 +32,7 @@ func NewMockRunner() *MockRunner {
 	}
 }
 
+// Run implements CommandRunner by returning configured mock results.
 func (m *MockRunner) Run(_ context.Context, name string, args []string, opts RunOpts) (*RunResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

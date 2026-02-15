@@ -94,6 +94,7 @@ func (g *CLIGatherer) ensureRunner() cruxexec.CommandRunner {
 	return g.Runner
 }
 
+// Gather collects repository state using CLI tools.
 func (g *CLIGatherer) Gather(ctx context.Context) (*RepoContext, error) {
 	g.ensureRunner()
 

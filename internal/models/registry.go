@@ -1,3 +1,4 @@
+// Package models provides model registry and configuration.
 package models
 
 import (
