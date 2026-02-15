@@ -148,6 +148,7 @@ type SynthesisItem struct {
 	Labels          []string       `json:"labels"`
 	CouncilSupport  CouncilSupport `json:"council_support"`
 	VisionAlignment string         `json:"vision_alignment"`
+	Confidence      float64        `json:"confidence"`
 }
 
 // CouncilSupport tracks which council members supported an item
@@ -166,8 +167,10 @@ type Conflict struct {
 
 // DroppedItem is an item that didn't make the cut
 type DroppedItem struct {
-	Title  string `json:"title"`
-	Reason string `json:"reason"`
+	Title          string   `json:"title"`
+	Reason         string   `json:"reason"`
+	Confidence     float64  `json:"confidence"`
+	CouncilSupport []string `json:"council_support,omitempty"`
 }
 
 // SpawnResult tracks outcome of running a single council agent
@@ -178,6 +181,16 @@ type SpawnResult struct {
 	Model    string
 	Retries  int
 	Duration time.Duration
+}
+
+// IsBorderline returns true if confidence is in the borderline range (0.4-0.6)
+func (item SynthesisItem) IsBorderline() bool {
+	return item.Confidence >= 0.4 && item.Confidence <= 0.6
+}
+
+// IsBorderline returns true if confidence is in the borderline range (0.4-0.6)
+func (item DroppedItem) IsBorderline() bool {
+	return item.Confidence >= 0.4 && item.Confidence <= 0.6
 }
 
 // CreatedIssue represents a GitHub issue that was created

@@ -296,3 +296,58 @@ func TestSynthesisResultValidate(t *testing.T) {
 		}
 	})
 }
+
+func TestSynthesisItemIsBorderline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		confidence float64
+		want       bool
+	}{
+		{"below_range", 0.39, false},
+		{"at_lower_bound", 0.4, true},
+		{"middle", 0.5, true},
+		{"at_upper_bound", 0.6, true},
+		{"above_range", 0.61, false},
+		{"high_confidence", 0.9, false},
+		{"zero", 0.0, false},
+		{"one", 1.0, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			item := SynthesisItem{Confidence: tc.confidence}
+			if got := item.IsBorderline(); got != tc.want {
+				t.Fatalf("IsBorderline() with confidence %.2f = %v, want %v", tc.confidence, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDroppedItemIsBorderline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		confidence float64
+		want       bool
+	}{
+		{"below_range", 0.39, false},
+		{"at_lower_bound", 0.4, true},
+		{"middle", 0.5, true},
+		{"at_upper_bound", 0.6, true},
+		{"above_range", 0.61, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			item := DroppedItem{Confidence: tc.confidence}
+			if got := item.IsBorderline(); got != tc.want {
+				t.Fatalf("IsBorderline() with confidence %.2f = %v, want %v", tc.confidence, got, tc.want)
+			}
+		})
+	}
+}
