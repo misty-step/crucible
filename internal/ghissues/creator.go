@@ -183,8 +183,10 @@ func extractIssueNumber(urlOrJSON string) int {
 	parts := strings.Split(s, "/")
 	if len(parts) >= 2 {
 		var n int
-		fmt.Sscanf(parts[len(parts)-1], "%d", &n)
-		return n
+		if _, err := fmt.Sscanf(parts[len(parts)-1], "%d", &n); err == nil {
+			return n
+		}
+		return 0
 	}
 
 	return 0

@@ -9,7 +9,7 @@ import (
 var synthesizeCmd = &cobra.Command{
 	Use:   "synthesize",
 	Short: "Run synthesizer on council outputs",
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		fmt.Println("not yet implemented")
 	},
 }

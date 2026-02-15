@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	maxRetries     = 3
-	initialBackoff = 2 * time.Second
+	maxRetries      = 3
+	initialBackoff  = 2 * time.Second
 	minPerspectives = 2
 )
 

@@ -1,0 +1,24 @@
+version: "2"
+run:
+  timeout: 5m
+  go: "1.24"
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - ineffassign
+    - gocritic
+    - misspell
+    - revive
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+issues:
+  exclude-dirs:
+    - testdata

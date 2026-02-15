@@ -17,7 +17,7 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "crucible",
 	Short: "Multi-model backlog grooming CLI",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		return cmd.Help()
 	},
 }
