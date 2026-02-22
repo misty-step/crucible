@@ -103,9 +103,9 @@ func gatherRepoContext(ctx context.Context) (*reposcanner.RepoContext, error) {
 
 	if verbose {
 		fmt.Fprintf(os.Stderr, "Found: %d commits, %d issues, %d PRs\n",
-			len(repoCtx.RepoState.RecentCommits),
-			len(repoCtx.RepoState.OpenIssues),
-			len(repoCtx.RepoState.OpenPRs))
+			len(repoCtx.RecentCommits),
+			len(repoCtx.OpenIssues),
+			len(repoCtx.OpenPRs))
 	}
 
 	return repoCtx, nil
