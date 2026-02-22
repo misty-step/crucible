@@ -14,19 +14,19 @@ import (
 
 // RunReport captures quality metrics for a complete council run.
 type RunReport struct {
-	RunID     string                 `json:"run_id"`
-	Timestamp string                 `json:"timestamp"`
+	RunID        string                      `json:"run_id"`
+	Timestamp    string                      `json:"timestamp"`
 	Perspectives map[string]PerspectiveStats `json:"perspectives"`
-	Synthesis    SynthesisStats             `json:"synthesis"`
+	Synthesis    SynthesisStats              `json:"synthesis"`
 }
 
 // PerspectiveStats tracks per-agent metrics.
 type PerspectiveStats struct {
-	Model    string `json:"model"`
-	Retries  int    `json:"retries"`
-	DurationMs int64 `json:"duration_ms"`
-	Items    int    `json:"items"`
-	Skipped  bool   `json:"skipped"`
+	Model      string `json:"model"`
+	Retries    int    `json:"retries"`
+	DurationMs int64  `json:"duration_ms"`
+	Items      int    `json:"items"`
+	Skipped    bool   `json:"skipped"`
 }
 
 // SynthesisStats tracks synthesizer metrics.

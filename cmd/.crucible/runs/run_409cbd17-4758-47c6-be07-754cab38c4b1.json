@@ -1,0 +1,27 @@
+{
+  "run_id": "409cbd17-4758-47c6-be07-754cab38c4b1",
+  "timestamp": "2026-02-22T05:24:23Z",
+  "perspectives": {
+    "engineering": {
+      "model": "",
+      "retries": 0,
+      "duration_ms": 0,
+      "items": 2,
+      "skipped": false
+    },
+    "product": {
+      "model": "",
+      "retries": 0,
+      "duration_ms": 0,
+      "items": 2,
+      "skipped": false
+    }
+  },
+  "synthesis": {
+    "duration_ms": 0,
+    "items_in": 4,
+    "items_out": 3,
+    "conflicts": 0,
+    "dropped": 0
+  }
+}

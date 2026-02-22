@@ -229,5 +229,5 @@ func TestTelemetryReportGenerated(t *testing.T) {
 	}
 
 	// Cleanup
-	os.RemoveAll(runsDir)
+	_ = os.RemoveAll(runsDir)
 }
