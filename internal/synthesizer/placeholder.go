@@ -36,9 +36,8 @@ func (p *Placeholder) Synthesize(_ context.Context, input domain.SynthesisInput)
 
 	// Track items and their support
 	type itemData struct {
-		item       *domain.SynthesisItem
-		support    *domain.CouncilSupport
-		confidence float64
+		item    *domain.SynthesisItem
+		support *domain.CouncilSupport
 	}
 
 	seen := make(map[string]*itemData)
@@ -59,13 +58,13 @@ func (p *Placeholder) Synthesize(_ context.Context, input domain.SynthesisInput)
 				data.support.ProposedBy = appendUnique(data.support.ProposedBy, co.Perspective)
 			} else {
 				si := &domain.SynthesisItem{
-					Title:   councilItem.Title,
+					Title:    councilItem.Title,
 					Priority: councilItem.Priority,
-					Type:    councilItem.Type,
-					Horizon: priorityToHorizon(councilItem.Priority),
-					Effort:  councilItem.Effort,
-					Body:    fmt.Sprintf("## Rationale\n\n%s\n\n## Risk\n\n%s", councilItem.Rationale, councilItem.Risk),
-					Labels:  []string{"source/groom"},
+					Type:     councilItem.Type,
+					Horizon:  priorityToHorizon(councilItem.Priority),
+					Effort:   councilItem.Effort,
+					Body:     fmt.Sprintf("## Rationale\n\n%s\n\n## Risk\n\n%s", councilItem.Rationale, councilItem.Risk),
+					Labels:   []string{"source/groom"},
 				}
 				seen[key] = &itemData{
 					item:    si,

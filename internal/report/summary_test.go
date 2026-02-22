@@ -158,7 +158,7 @@ func TestPrintDroppedItemsSorting(t *testing.T) {
 		t.Fatalf("expected all items in output, got:\n%s", output)
 	}
 
-	if !(lowIdx < mediumIdx && mediumIdx < highIdx) {
+	if lowIdx >= mediumIdx || mediumIdx >= highIdx {
 		t.Errorf("expected ascending order by confidence, got low@%d, medium@%d, high@%d\n%s",
 			lowIdx, mediumIdx, highIdx, output)
 	}
