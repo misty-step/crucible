@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/misty-step/crucible/internal/domain"
+	"github.com/misty-step/crucible/internal/report"
 	"github.com/misty-step/crucible/internal/synthesizer"
 	"github.com/misty-step/crucible/internal/telemetry"
 )
@@ -125,15 +126,19 @@ func runSynthesize(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	report := telemetry.BuildRunReport(spawnResults, result, synthDuration)
+	telReport := telemetry.BuildRunReport(spawnResults, result, synthDuration)
 	writer := telemetry.NewWriter(".")
-	if err := writer.Write(report); err != nil {
+	if err := writer.Write(telReport); err != nil {
 		if verbose {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to write telemetry report: %v\n", err)
 		}
 	} else if verbose {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Wrote telemetry report: run_id=%s\n", report.RunID)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Wrote telemetry report: run_id=%s\n", telReport.RunID)
 	}
+
+	// Print summary table with confidence scores and dropped items
+	reporter := report.NewSummaryReporter(cmd.ErrOrStderr())
+	reporter.PrintSynthesisSummary(result)
 
 	return nil
 }

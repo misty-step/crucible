@@ -215,3 +215,39 @@ func TestSynthesizeDeduplication(t *testing.T) {
 		t.Errorf("expected 1 deduplicated item, got %d", titleCount)
 	}
 }
+
+func TestSynthesizeConfidenceScores(t *testing.T) {
+	dir := t.TempDir()
+	writeCouncilFixtures(t, dir)
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	root := rootCmd
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	root.SetArgs([]string{"synthesize", "--input-dir", dir})
+
+	err := root.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result domain.SynthesisResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	// Check that all items have confidence scores
+	for _, item := range result.Items {
+		if item.Confidence <= 0 || item.Confidence > 1.0 {
+			t.Errorf("item %q has invalid confidence %.2f, expected 0.0-1.0", item.Title, item.Confidence)
+		}
+	}
+
+	// Check that summary table is printed to stderr
+	stderrStr := stderr.String()
+	if !strings.Contains(stderrStr, "SYNTHESIS SUMMARY") {
+		t.Errorf("expected SYNTHESIS SUMMARY in stderr, got: %s", stderrStr)
+	}
+}
