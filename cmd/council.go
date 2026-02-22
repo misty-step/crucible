@@ -17,6 +17,7 @@ import (
 	cruxexec "github.com/misty-step/crucible/internal/exec"
 	"github.com/misty-step/crucible/internal/models"
 	"github.com/misty-step/crucible/internal/reposcanner"
+	"github.com/misty-step/crucible/internal/telemetry"
 )
 
 var (
@@ -158,6 +159,17 @@ func runCouncil(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Council complete: %d/%d perspectives written to %s\n",
 		written, len(results), councilOutputDir)
+
+	// Generate quality telemetry report
+	report := telemetry.BuildRunReport(results, nil, 0)
+	writer := telemetry.NewWriter(councilRepo)
+	if err := writer.Write(report); err != nil {
+		if verbose {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to write telemetry report: %v\n", err)
+		}
+	} else if verbose {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Wrote telemetry report: run_id=%s\n", report.RunID)
+	}
 
 	return nil
 }
