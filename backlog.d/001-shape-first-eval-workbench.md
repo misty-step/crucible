@@ -1,42 +1,33 @@
 # Shape the first Crucible eval workbench slice
 
 Priority: P1
-Status: ready-for-shaping
+Status: done
 Estimate: M
 
 ## Goal
 
 Choose one real eval family and shape the first Crucible implementation around
-it: eval definition, run inputs, grader mix, human-judgment workflow, result
-report, and export target.
+it.
 
-## Why
+## Outcome (completed by /groom 2026-06-29)
 
-Crucible should not start as a generic eval platform. It should prove one useful
-loop end to end, then generalize from the parts that survive contact with real
-use.
+Shaping is complete. The strategic groom on 2026-06-29 answered every oracle
+below and recorded the results in `VISION.md` (rechartered) and the epics it
+emitted:
 
-Good first candidates:
+- First eval family + why first: agentic code-review quality — see `VISION.md`
+  "Early Shape" and epic `002-codereview-eval-wedge`.
+- Eval object (task, inputs, outputs, fixtures, grader mix, human judgment,
+  baselines, aggregation, uncertainty, export): epic `004-eval-object-and-grader-mix`.
+- Human-judgment UI incl. phone path: epic `005-phone-adjudication-queue`.
+- Smallest implementation stack and gate: borrow execution (Daedalus arenas +
+  Cerberus); Crucible owns the eval artifact + calibration + export. Gate work in
+  epic `006-agent-readiness-machine-surface`.
+- Crucible vs Daedalus vs project repos: rechartered in `VISION.md` — Crucible
+  owns eval authoring/calibration; Daedalus optimizes against trusted evals; the
+  migration is epic `007-extract-eval-authoring-from-daedalus`.
 
-- Harness Kit primitive evals: raw agent vs Harness Kit vs alternative
-  primitive.
-- Daedalus eval packages: task/eval surfaces Daedalus can optimize agent
-  configurations against.
-- Product behavior evals for Memory Engine, Allie, or review agents.
+## Disposition
 
-## Oracle
-
-- The shaped packet names the first eval family and why it is first.
-- It defines the eval object: task, inputs, outputs, fixtures, grader mix,
-  human judgment, baselines, aggregation, uncertainty, and export target.
-- It sketches the human-judgment UI, including the phone review path.
-- It names the smallest implementation stack and gate.
-- It explicitly separates Crucible responsibilities from Daedalus and project
-  repos.
-
-## Verification
-
-- Review against `VISION.md`.
-- Confirm the chosen first slice has a real downstream consumer.
-- Confirm the plan does not require building a broad platform before one eval
-  loop works.
+Superseded by epics 002–007. Proposed for archive to `backlog.d/_done/`
+(awaiting operator ratification — groom does not auto-archive).

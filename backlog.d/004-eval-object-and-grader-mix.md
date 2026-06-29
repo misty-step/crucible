@@ -1,0 +1,41 @@
+# The eval object and per-eval grader-mix model
+
+Priority: P1 · Status: pending · Estimate: L (epic)
+
+## Goal
+
+Define the durable, Crucible-owned eval/benchmark artifact: a declarative spec
+that names its own grader mix (deterministic + agentic/model-judge + human) plus
+the record/label/calibration types, with Harbor as the export contract — not a
+reinvented one.
+
+## Oracle
+
+- [ ] An eval is defined in one declarative spec naming task, inputs/outputs,
+  fixtures (by hash), grader manifest (per grader: deterministic | agentic |
+  human), baselines, aggregation, uncertainty rules, and the decision it informs.
+- [ ] The same spec drives both a near-deterministic eval and a
+  human-judgment-heavy eval (the per-eval spectrum) with no change to core code.
+- [ ] Run records, labels (append-only), and calibration records share one serde
+  schema with `schema_version`; export validates against the Harbor
+  task-directory format and round-trips into Daedalus (golden-fixture test).
+
+## Children (ordered)
+
+1. Core types contract — `EvalSpec`, `FixtureRef(hash)`,
+   `GraderManifest{deterministic|agentic|human}`, `RunRecord`, `Label`,
+   `CalibrationRecord`, `Aggregate{score, CI, paired-delta}`, `Provenance`,
+   `schema_version`.
+2. Spec validate + grader classification + deterministic-vs-human cost report.
+3. Store — SQLite index + content-addressed blob dir for diffs/transcripts;
+   append-only labels; queue is a *view*, not a third store.
+4. Harbor export/import + golden-fixture round-trip test.
+
+## Notes
+
+Architecture lane: the type contract is the narrow waist; artifacts ARE the API
+(no daemon/RPC/auth). Do NOT build a storage-backend abstraction or a grader
+plugin registry (three enumerated kinds). Extract this from what the wedge (002)
+actually needed — do not front-run it. The phone UI (005) and Daedalus both read
+these artifacts, so getting the queue + label + export schemas right here means
+the UI adds zero new core design.
