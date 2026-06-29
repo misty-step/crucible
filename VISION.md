@@ -109,27 +109,41 @@ Start by making the eval object clear. A minimal useful eval should name:
 - decision the eval is meant to inform.
 
 The first implementation does not need to solve every eval category. It should
-make one or two real Misty Step evals easier to design and judge this week, then
-expand from evidence.
+make one real Misty Step eval family easier to design, run, judge, and iterate
+this week, then expand from evidence.
 
-Good first candidates:
+The first family should be agentic code-review quality: Cerberus-style review
+and critic lanes over real diffs, with deterministic checks where possible,
+model-judge rubrics where useful, and a phone-friendly human queue for deciding
+whether findings are correct, important, duplicated, actionable, or noise.
+
+That family is the right wedge because it connects immediately to Harness Kit,
+Cerberus, Daedalus, and current Misty Step agent operations. It has real stakes,
+clear artifacts, many observable failure modes, and enough repeatable structure
+to teach Crucible what an eval package, run, label, report, and export should
+look like.
+
+Next candidates after that:
 
 - Harness Kit primitive evals: raw agent vs Harness Kit vs alternative
   primitive.
 - Daedalus search eval packages: task/eval surfaces that Daedalus can optimize
   against.
-- Product behavior evals for Memory Engine, Allie, or agentic review work.
+- Product behavior evals for Memory Engine or Allie.
 
-## Open Questions
+## Decisions For Now
 
-- What is the first concrete eval family Crucible should support?
-- Should the first UI be web-first, mobile-first, or a responsive web app that
-  treats mobile review as a first-class surface?
-- How much runner logic belongs here versus in project repos?
-- What should the export format look like so Harness Kit and Daedalus can
-  consume eval packages without tight coupling?
-- Which parts must be Rust from the start, and which UI surfaces justify a
-  small TypeScript/React layer?
+- The first concrete eval family is agentic code review and critic quality.
+- The first UI should be responsive web, with the human judgment queue designed
+  phone-first rather than desktop-shrunken.
+- Crucible owns eval definition, run records, judging, calibration, reporting,
+  and exports. Project repos and harnesses may own task fixtures and execution
+  adapters when locality matters.
+- Exports should be boring structured packages: task definition, fixture
+  references, grader manifest, runner hints, rubric, baselines, run records,
+  labels, aggregate scores, uncertainty, and provenance.
+- Durable eval core and runners should bias Rust. A thin TypeScript/React layer
+  is justified for the judgment UI.
 
 ## Sources
 
