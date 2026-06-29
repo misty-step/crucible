@@ -1,7 +1,8 @@
 # Crucible Vision
 
 Crucible exists to make evals easier to design, run, judge, understand, and
-improve.
+improve. It is a top-priority Misty Step lab project because better agent work
+requires measurement that survives contact with reality.
 
 It is the eval workbench for Misty Step's agent and product experiments. A good
 eval is not just a prompt and a score. It is a task definition, fixture set,
@@ -108,8 +109,8 @@ Start by making the eval object clear. A minimal useful eval should name:
 - decision the eval is meant to inform.
 
 The first implementation does not need to solve every eval category. It should
-make one or two real Misty Step evals easier to design and judge, then expand
-from evidence.
+make one or two real Misty Step evals easier to design and judge this week, then
+expand from evidence.
 
 Good first candidates:
 
