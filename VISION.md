@@ -1,58 +1,157 @@
 # Crucible Vision
 
-## Purpose
+Crucible exists to make evals easier to design, run, judge, understand, and
+improve. It is a top-priority Misty Step lab project because better agent work
+requires measurement that survives contact with reality.
 
-Transform raw ideas into prioritized, actionable work through multi-model deliberation.
+It is the eval workbench for Misty Step's agent and product experiments. A good
+eval is not just a prompt and a score. It is a task definition, fixture set,
+execution plan, grader mix, human calibration path, result surface, and iteration
+loop that tells us whether a model, agent, prompt, tool surface, product change,
+or workflow is actually getting better.
 
-## Problem
+The product should help turn "we need an eval for this" into a concrete,
+auditable measurement system: what task are we measuring, what counts as good,
+what can be checked deterministically, what needs model judgment, what needs
+human judgment, how confident are we, and what should change next?
 
-Backlog grooming is often:
-- Reactive — teams wait for problems to surface
-- Single-perspective — one model/agent makes decisions
-- Disconnected from strategic vision
+## Why This Exists
 
-## Solution
+Misty Step needs real science around AI systems. Agent work is too nonlinear for
+vibes: a new model, a different system prompt, a tool allowlist, a subagent, a
+reasoning budget, or a UI change can feel better while producing worse outcomes.
+Without evals, every improvement claim collapses into taste, demos, and recent
+memory.
 
-**Crucible** is a proactive backlog shaping tool that:
-1. Engages multiple AI models as a "council" with diverse perspectives
-2. Synthesizes council outputs against product vision using a high-intelligence model
-3. Generates prioritized GitHub issues ready for implementation
+Crucible is where those claims get tested. It should make eval design accessible
+enough to use often, rigorous enough to trust, and humane enough that the
+operator can contribute judgment without turning it into a miserable chore.
 
-## Architecture
+## The Role In The Constellation
 
-```
-Input Sources (Vision, Strategy, Repo Context, Human Input)
-         │
-         ▼
-    ┌─────────┐
-    │ Council │ ← N agents with different models/perspectives
-    └────┬────┘
-         │
-         ▼
-┌─────────────────┐
-│  Synthesizer    │ ← Max-intelligence model evaluates outputs
-└────────┬────────┘
-         │
-         ▼
-   GitHub Issues (prioritized, labeled, milestone-assigned)
-```
+Crucible owns eval design and eval operations.
 
-## Key Principles
+- Harness Kit carries reusable agent primitives and portable eval contracts for
+  primitive-level claims.
+- Daedalus optimizes agent configurations against trusted eval surfaces.
+- Product repos keep project-specific evals close to the behavior they care
+  about.
+- Crucible helps define, run, review, compare, calibrate, export, and iterate
+  those evals.
 
-1. **Interactive**: Requires human vision, strategy, and ad-hoc input
-2. **Deliberative**: Multiple perspectives before decisions
-3. **Vision-grounded**: Every item evaluated against product vision
-4. **Actionable output**: GitHub issues, not just recommendations
+If the question is "which agent configuration wins against this trusted
+measurement surface?", that is Daedalus. If the question is "what should the
+measurement surface be, and do we trust it?", that is Crucible.
 
-## Relationship to Cerberus
+## What Crucible Should Do
 
-- **Cerberus**: Reactive code quality guard — catches problems in PRs
-- **Crucible**: Proactive backlog shaper — shapes what gets into the backlog
+Crucible should support the full eval lifecycle:
 
-Together they ensure:
-- Code quality is maintained (Cerberus)
-- The right work gets prioritized (Crucible)
+- define task families, datasets, fixtures, inputs, outputs, and acceptance
+  criteria;
+- choose grader types: deterministic checks, computed metrics, model judges,
+  human judgment, or hybrids;
+- design rubrics and calibration sets;
+- run evaluations across models, prompts, products, agents, or configurations;
+- show variance, baselines, confidence, disagreement, and cost;
+- surface judgment queues to the operator in a delightful, low-friction UI,
+  especially on a phone;
+- collect human labels, preferences, ratings, comments, and adjudications;
+- compare runs without hiding uncertainty;
+- export eval packages to projects like Harness Kit, Daedalus, or product repos;
+- generate reports that can be used internally, attached to PRs, or published
+  when the eval is credible enough.
 
-## Status
+The mobile judgment surface matters. Instead of scrolling social feeds, the
+operator should be able to review eval outputs, rate examples, resolve
+disagreements, and improve calibration from anywhere.
 
-Early scaffold. Core council and synthesizer patterns to be implemented.
+## What Excellent Looks Like
+
+An excellent Crucible run makes the measurement story legible:
+
+- the task being measured is specific;
+- the eval design names what it can and cannot prove;
+- baselines and known-bad examples are included;
+- deterministic graders are used wherever possible;
+- model judges are calibrated before their scores are trusted;
+- human judgment is captured with enough context to be useful;
+- results include uncertainty, cost, failure modes, and examples;
+- a future agent can reproduce or audit the run without reconstructing a chat.
+
+The ideal product feels like a lab notebook, workbench, and review queue in one:
+serious enough for real decisions, approachable enough to use repeatedly.
+
+## What This Is Not
+
+- Not an optimizer over agent configurations. Daedalus owns that.
+- Not a leaderboard factory that publishes scores before the eval design passes
+  the smell test.
+- Not a generic survey tool with AI branding.
+- Not a place to hide judgment-heavy decisions behind one model judge.
+- Not a dumping ground for every product metric. Crucible is for evals that help
+  decide whether behavior improved.
+
+## Early Shape
+
+Start by making the eval object clear. A minimal useful eval should name:
+
+- task family;
+- input and output contract;
+- fixture or dataset source;
+- grader mix;
+- human-judgment requirements;
+- baseline conditions;
+- run configuration;
+- scoring and aggregation rules;
+- confidence or uncertainty reporting;
+- export target;
+- decision the eval is meant to inform.
+
+The first implementation does not need to solve every eval category. It should
+make one real Misty Step eval family easier to design, run, judge, and iterate
+this week, then expand from evidence.
+
+The first family should be agentic code-review quality: Cerberus-style review
+and critic lanes over real diffs, with deterministic checks where possible,
+model-judge rubrics where useful, and a phone-friendly human queue for deciding
+whether findings are correct, important, duplicated, actionable, or noise.
+
+That family is the right wedge because it connects immediately to Harness Kit,
+Cerberus, Daedalus, and current Misty Step agent operations. It has real stakes,
+clear artifacts, many observable failure modes, and enough repeatable structure
+to teach Crucible what an eval package, run, label, report, and export should
+look like.
+
+Next candidates after that:
+
+- Harness Kit primitive evals: raw agent vs Harness Kit vs alternative
+  primitive.
+- Daedalus search eval packages: task/eval surfaces that Daedalus can optimize
+  against.
+- Product behavior evals for Memory Engine or Allie.
+
+## Decisions For Now
+
+- The first concrete eval family is agentic code review and critic quality.
+- The first UI should be responsive web, with the human judgment queue designed
+  phone-first rather than desktop-shrunken.
+- Crucible owns eval definition, run records, judging, calibration, reporting,
+  and exports. Project repos and harnesses may own task fixtures and execution
+  adapters when locality matters.
+- Exports should be boring structured packages: task definition, fixture
+  references, grader manifest, runner hints, rubric, baselines, run records,
+  labels, aggregate scores, uncertainty, and provenance.
+- Durable eval core and runners should bias Rust. A thin TypeScript/React layer
+  is justified for the judgment UI.
+
+## Sources
+
+- Operator clarification on 2026-06-28: Crucible should own defining, designing,
+  implementing, running, measuring, and iterating evals.
+- Operator clarification on 2026-06-28: evals may mix deterministic automated
+  judgment, model judgment, and human judgment.
+- Operator clarification on 2026-06-28: human-judgment outputs should be
+  surfaced through a delightful, approachable UI that works well from a phone.
+- Operator clarification on 2026-06-28: Daedalus should use evals to optimize
+  agent configurations rather than own the whole eval product.
