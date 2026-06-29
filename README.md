@@ -1,26 +1,36 @@
 # Crucible
 
-Crucible is the eval workbench for Misty Step's AI and agent work.
+Crucible is the eval and benchmark workbench for Misty Step's AI and agent work.
 
-It exists to help design, run, judge, report, and iterate evals: deterministic
-checks where possible, model judges where useful, human judgment where needed,
-and clear uncertainty around every result.
+It is where evals and benchmarks are brainstormed, defined, designed,
+implemented, calibrated, and iterated: deterministic checks where possible,
+agentic/model judges where useful (calibrated before trusted), human judgment
+where needed, and clear uncertainty around every result. Daedalus consumes
+Crucible's trusted evals to optimize harness and agent configurations.
+
+Its one principle: **refuse to report a delta it cannot defend** — every rate
+carries an interval, every judge a calibration, every comparison a noise-floor
+check.
 
 For the project north star and the boundary with Daedalus and Harness Kit, read
 [`VISION.md`](VISION.md).
 
 ## Current State
 
-This is a docs-first seed repo. The first implementation should be shaped around
-one concrete eval family and one real judgment workflow, not a generic platform
-sketch.
+Docs-first seed repo; no application code yet. The first implementation is shaped:
+the agentic **code-review eval wedge** (`backlog.d/002-codereview-eval-wedge.md`)
+— industrialize Daedalus's manual adjudication, calibrate the judge, bootstrap
+labels for real diffs, and emit Harbor benchmark tasks Daedalus re-scores.
 
-## Early Questions
+## Backlog
 
-- What is the first eval family?
-- What does the human-judgment queue need to feel good on a phone?
-- What export shape should Daedalus and Harness Kit consume?
-- Which code belongs in this repo versus project-local eval directories?
+- `001` — shaping (done, completed by /groom 2026-06-29)
+- `002` — code-review eval wedge (ready; the first pickup)
+- `003` — measurement rigor core (the trust machinery / moat)
+- `004` — eval object and per-eval grader-mix model
+- `005` — phone-first adjudication queue
+- `006` — agent-readiness and machine surface
+- `007` — extract eval-authoring from Daedalus (strategic migration)
 
 ## Gate
 
