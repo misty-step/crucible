@@ -226,9 +226,11 @@ pub fn recoverable_misses(result: &GradeResult) -> usize {
 
 /// Whether two rows name the same location: same non-empty `file`, both lines
 /// locatable (`!= 0`), within [`LINE_TOLERANCE`]. The category-free half of
-/// [`key_match`]'s predicate, reused so "location agreement" means the same
-/// thing in both places.
-fn location_agrees(a: &KeyFinding, b: &KeyFinding) -> bool {
+/// [`key_match`]'s predicate, exposed so "location agreement" means the same
+/// thing everywhere it is used: [`recoverable_misses`] here, and the adjudication
+/// queue ([`crate::build_queue`]) when it attaches the misses a disputed
+/// candidate could recover.
+pub fn location_agrees(a: &KeyFinding, b: &KeyFinding) -> bool {
     !a.file.is_empty()
         && a.file == b.file
         && a.line != 0
@@ -308,6 +310,7 @@ mod tests {
             category: category.to_string(),
             severity: "blocking".to_string(),
             description: "d".to_string(),
+            source_id: None,
         }
     }
 

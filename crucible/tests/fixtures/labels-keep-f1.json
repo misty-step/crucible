@@ -1,0 +1,8 @@
+[
+  {
+    "finding_id": "F1",
+    "verdict": "keep",
+    "disposition": { "in_scope": true },
+    "latency_ms": 1500
+  }
+]

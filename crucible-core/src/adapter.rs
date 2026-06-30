@@ -58,7 +58,16 @@ fn to_key_finding(finding: &Finding) -> KeyFinding {
         category: finding.category.clone(),
         severity: map_severity(finding.severity).to_string(),
         description: combined_description(finding),
+        source_id: source_id(finding),
     }
+}
+
+/// The finding's artifact-stable id, threaded onto the projected candidate so a
+/// later adjudication [`Label`](crate::Label) traces back to it. An empty id
+/// (degenerate — [`schema_valid`](crate::schema_valid) rejects it before a row is
+/// ever graded) maps to `None`, never an empty-string id.
+fn source_id(finding: &Finding) -> Option<String> {
+    (!finding.id.trim().is_empty()).then(|| finding.id.clone())
 }
 
 /// Map a Cerberus severity onto the Daedalus severity vocabulary.
@@ -329,5 +338,23 @@ mod tests {
     #[test]
     fn to_key_findings_is_empty_for_no_findings() {
         assert!(to_key_findings(&[]).is_empty());
+    }
+
+    #[test]
+    fn source_id_threads_the_finding_id_onto_the_candidate() {
+        // The id the helper `finding(..)` stamps is `F1`; it must ride onto the
+        // projected candidate so an adjudication label can trace back to it.
+        let f = finding(Severity::Minor, "security", "t", "d", Vec::new());
+        assert_eq!(to_key_finding(&f).source_id.as_deref(), Some("F1"));
+    }
+
+    #[test]
+    fn empty_finding_id_projects_to_no_source_id() {
+        let mut f = finding(Severity::Minor, "security", "t", "d", Vec::new());
+        f.id = "   ".to_string();
+        assert!(
+            to_key_finding(&f).source_id.is_none(),
+            "a blank id is None, not an empty-string id"
+        );
     }
 }

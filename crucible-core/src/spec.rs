@@ -1,0 +1,461 @@
+//! The declarative eval specification and the shape of its aggregated result.
+//!
+//! Per backlog 004, a Crucible eval is *data*, not code: one [`EvalSpec`] names
+//! the task, its inputs/outputs, the fixtures it runs over (by content
+//! [`FixtureRef`]), the [`GraderManifest`] that scores it, the baselines it
+//! compares against, how per-item scores aggregate, the uncertainty rule, and
+//! the decision the result informs. The same spec drives a near-deterministic
+//! eval and a human-judgment-heavy one with no change to core code — the
+//! difference lives entirely in the declared grader mix.
+//!
+//! That grader mix is a closed enum of exactly three [`GraderKind`]s
+//! (`deterministic | agentic | human`), deliberately **not** a plugin registry:
+//! the runner branches on the kind, so the kind is rigid schema; everything a
+//! human or a model reads (task, inputs/outputs, decision) stays free-form text.
+//! There is no store, no blob backend, no daemon — the spec and its result
+//! *are* the API (backlog 004 non-goals).
+//!
+//! [`Aggregate`] is the result shape every run emits: a headline score, its
+//! confidence interval, and an optional [`PairedDelta`] against a baseline —
+//! recording the [`crate::measure`] outputs so no rate is ever reported naked.
+//!
+//! No CLI subcommand runs a spec yet: [`EvalSpec`] and [`Aggregate`] are exported
+//! now as the durable eval-definition and result schemas the runner (epic 005)
+//! and Daedalus (via Harbor) read, so the wire shape is fixed before there is a
+//! reader — part of backlog 004's persisted-artifact contract.
+
+use serde::{Deserialize, Serialize};
+
+use crate::DeltaVerdict;
+
+/// Schema identifier for a persisted [`EvalSpec`].
+pub const EVAL_SPEC_SCHEMA: &str = "crucible.eval_spec.v1";
+
+/// A content-addressed reference to a fixture input, by hash.
+///
+/// The hash *is* the identity — a digest of the fixture bytes (e.g. a sha256
+/// hex), computed by the caller and stored verbatim. Crucible neither hashes nor
+/// stores the bytes here: there is no blob backend (backlog 004), so a fixture
+/// is *named*, not embedded. Serializes transparently as the bare hash string.
+///
+/// ```
+/// use crucible_core::FixtureRef;
+/// let f = FixtureRef("sha256:abc123".to_string());
+/// assert_eq!(f.hash(), "sha256:abc123");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FixtureRef(pub String);
+
+impl FixtureRef {
+    /// The content hash that identifies the fixture.
+    pub fn hash(&self) -> &str {
+        &self.0
+    }
+}
+
+/// One of exactly three grader kinds.
+///
+/// A closed enum, deliberately **not** a plugin registry (backlog 004): the
+/// runner dispatches on the kind, so a fourth kind is a deliberate core change,
+/// not a registration. snake_case on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraderKind {
+    /// A pure, reproducible check — schema validity, dedup, key-match. No model,
+    /// no human, no network.
+    Deterministic,
+    /// A model / agentic judge, gated behind a [`crate::CalibrationRecord`].
+    Agentic,
+    /// A human adjudicator — the phone queue (backlog 005).
+    Human,
+}
+
+/// One named grader in an eval's mix: an id plus which [`GraderKind`] it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Grader {
+    /// Stable grader id, e.g. `key_match` or `claude-judge`.
+    pub id: String,
+    /// Which of the three kinds this grader is.
+    pub kind: GraderKind,
+}
+
+/// The declarative grader mix: the graders that score an eval, in declared
+/// order, each one of exactly three [`GraderKind`]s.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraderManifest {
+    /// The graders, in the order they run. Defaults to empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub graders: Vec<Grader>,
+}
+
+impl GraderManifest {
+    /// Whether the manifest names no graders.
+    pub fn is_empty(&self) -> bool {
+        self.graders.is_empty()
+    }
+}
+
+/// How per-item scores combine into an eval's headline number.
+///
+/// The two variants map onto the two interval methods the [`crate::measure`]
+/// layer ships: a [`Proportion`](Self::Proportion) pairs with a Wilson interval,
+/// a [`Mean`](Self::Mean) with a bootstrap interval. snake_case on the wire.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregationMethod {
+    /// Fraction of items that passed — a single binomial proportion.
+    #[default]
+    Proportion,
+    /// Arithmetic mean of per-item scores — a derived metric.
+    Mean,
+}
+
+/// The interval method an eval attaches to its aggregate.
+///
+/// Mirrors the two [`crate::measure`] primitives: [`Wilson`](Self::Wilson) for a
+/// single proportion (small-n safe), [`Bootstrap`](Self::Bootstrap) for a
+/// derived/composite metric with no closed-form interval. snake_case on the wire.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntervalMethod {
+    /// Wilson score interval — single binomial proportion.
+    #[default]
+    Wilson,
+    /// Percentile bootstrap — derived/composite metric.
+    Bootstrap,
+}
+
+/// The rule for attaching an uncertainty interval to an [`Aggregate`].
+///
+/// Backlog 003 requires every reported rate to carry an interval; this names
+/// *which* interval and at what confidence. Defaults to a 95% Wilson interval.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct UncertaintyRule {
+    /// The interval method to apply.
+    #[serde(default)]
+    pub method: IntervalMethod,
+    /// Target confidence level in `(0, 1)`, e.g. `0.95`.
+    #[serde(
+        default = "default_confidence",
+        serialize_with = "crate::serde_util::serialize_finite"
+    )]
+    pub confidence: f64,
+}
+
+impl Default for UncertaintyRule {
+    fn default() -> Self {
+        Self {
+            method: IntervalMethod::Wilson,
+            confidence: default_confidence(),
+        }
+    }
+}
+
+fn default_confidence() -> f64 {
+    0.95
+}
+
+/// A declarative evaluation specification: the whole eval as data.
+///
+/// Names everything needed to run and judge one eval family. `task`, `inputs`,
+/// `outputs`, and `decision` are free-form text (read by humans and models);
+/// `fixtures`, `graders`, `aggregation`, and `uncertainty` are the rigid schema
+/// the runner branches on. Carries a `schema_version` so a persisted spec
+/// round-trips across versions; optional fields default so an older or
+/// hand-written spec still loads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvalSpec {
+    /// Schema identifier; defaults to [`EVAL_SPEC_SCHEMA`] for specs that predate
+    /// the field. A present value is validated on load — an unknown schema is
+    /// rejected, not assumed v1.
+    #[serde(
+        default = "eval_spec_schema",
+        deserialize_with = "deserialize_eval_spec_schema"
+    )]
+    pub schema_version: String,
+    /// The task this eval measures, e.g. `code-review`.
+    pub task: String,
+    /// Free-form description of the inputs the eval consumes. Defaults to empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub inputs: String,
+    /// Free-form description of the outputs the eval scores. Defaults to empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub outputs: String,
+    /// The fixtures this eval runs over, by content hash. Defaults to empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixtures: Vec<FixtureRef>,
+    /// The declarative grader mix. Defaults to empty.
+    #[serde(default, skip_serializing_if = "GraderManifest::is_empty")]
+    pub graders: GraderManifest,
+    /// Named baseline configs to compare against, e.g. `known-good`, `known-bad`.
+    /// Defaults to empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub baselines: Vec<String>,
+    /// How per-item scores aggregate to the headline number.
+    #[serde(default)]
+    pub aggregation: AggregationMethod,
+    /// The rule for attaching uncertainty to the aggregate.
+    #[serde(default)]
+    pub uncertainty: UncertaintyRule,
+    /// The decision this eval informs, in one human sentence. Defaults to empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub decision: String,
+}
+
+fn eval_spec_schema() -> String {
+    EVAL_SPEC_SCHEMA.to_string()
+}
+
+fn deserialize_eval_spec_schema<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    crate::serde_util::expect_schema(deserializer, EVAL_SPEC_SCHEMA)
+}
+
+/// A paired-configuration delta against a baseline, recorded only when one was
+/// computed.
+///
+/// Records a [`crate::PairedComparison`] outcome for persistence: the point delta
+/// on the shared metric, the McNemar two-sided p-value, and the [`DeltaVerdict`]
+/// that says whether the delta cleared the noise floor. Storing the verdict (not
+/// just the p-value) keeps "refuse to report a delta you cannot defend" legible
+/// in the artifact itself.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PairedDelta {
+    /// The point estimate of the delta (B − A) on the shared metric.
+    #[serde(serialize_with = "crate::serde_util::serialize_finite")]
+    pub delta: f64,
+    /// McNemar two-sided p-value for the paired comparison.
+    #[serde(serialize_with = "crate::serde_util::serialize_finite")]
+    pub p_value: f64,
+    /// Whether the delta is signal or sits inside the noise floor.
+    pub verdict: DeltaVerdict,
+}
+
+/// The aggregated result of an eval run: a score that never travels without its
+/// uncertainty.
+///
+/// Distinct from [`AggregationMethod`] (the *method* a spec declares); this is
+/// the computed *result*. Backlog 003: every score ships with an interval, and a
+/// [`PairedDelta`] is attached only when a paired comparison was run.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Aggregate {
+    /// The headline score (a pass rate, a mean, …).
+    #[serde(serialize_with = "crate::serde_util::serialize_finite")]
+    pub score: f64,
+    /// The confidence interval `(lower, upper)` around `score`.
+    #[serde(serialize_with = "crate::serde_util::serialize_finite_pair")]
+    pub ci: (f64, f64),
+    /// The paired delta against a baseline, when one was computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paired_delta: Option<PairedDelta>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixture_ref_serializes_as_bare_hash_string() {
+        let f = FixtureRef("sha256:abc123".to_string());
+        assert_eq!(serde_json::to_string(&f).unwrap(), "\"sha256:abc123\"");
+        let back: FixtureRef = serde_json::from_str("\"sha256:abc123\"").unwrap();
+        assert_eq!(f, back);
+        assert_eq!(back.hash(), "sha256:abc123");
+    }
+
+    #[test]
+    fn grader_kind_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&GraderKind::Deterministic).unwrap(),
+            "\"deterministic\""
+        );
+        assert_eq!(
+            serde_json::to_string(&GraderKind::Agentic).unwrap(),
+            "\"agentic\""
+        );
+        assert_eq!(
+            serde_json::to_string(&GraderKind::Human).unwrap(),
+            "\"human\""
+        );
+        let k: GraderKind = serde_json::from_str("\"human\"").unwrap();
+        assert_eq!(k, GraderKind::Human);
+    }
+
+    #[test]
+    fn aggregation_and_interval_methods_default() {
+        assert_eq!(AggregationMethod::default(), AggregationMethod::Proportion);
+        assert_eq!(IntervalMethod::default(), IntervalMethod::Wilson);
+    }
+
+    #[test]
+    fn uncertainty_rule_defaults_to_wilson_95() {
+        let u = UncertaintyRule::default();
+        assert_eq!(u.method, IntervalMethod::Wilson);
+        assert_eq!(u.confidence, 0.95);
+        // An empty object fills both field defaults, not f64's 0.0.
+        let from_empty: UncertaintyRule = serde_json::from_str("{}").unwrap();
+        assert_eq!(from_empty, u);
+    }
+
+    #[test]
+    fn minimal_spec_serializes_to_golden_and_round_trips() {
+        let spec = EvalSpec {
+            schema_version: EVAL_SPEC_SCHEMA.to_string(),
+            task: "code-review".to_string(),
+            inputs: String::new(),
+            outputs: String::new(),
+            fixtures: Vec::new(),
+            graders: GraderManifest::default(),
+            baselines: Vec::new(),
+            aggregation: AggregationMethod::Proportion,
+            uncertainty: UncertaintyRule::default(),
+            decision: String::new(),
+        };
+        // Every empty optional is skipped; only the required + non-empty
+        // structured fields remain.
+        let json = serde_json::to_string(&spec).unwrap();
+        assert_eq!(
+            json,
+            r#"{"schema_version":"crucible.eval_spec.v1","task":"code-review","aggregation":"proportion","uncertainty":{"method":"wilson","confidence":0.95}}"#
+        );
+        let back: EvalSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(spec, back);
+    }
+
+    #[test]
+    fn bare_spec_fills_all_defaults() {
+        // A spec naming only its task must load, defaulting schema, aggregation,
+        // uncertainty, and every collection.
+        let spec: EvalSpec = serde_json::from_str(r#"{"task":"code-review"}"#).unwrap();
+        assert_eq!(spec.schema_version, EVAL_SPEC_SCHEMA);
+        assert_eq!(spec.task, "code-review");
+        assert_eq!(spec.aggregation, AggregationMethod::Proportion);
+        assert_eq!(spec.uncertainty, UncertaintyRule::default());
+        assert!(spec.fixtures.is_empty());
+        assert!(spec.graders.is_empty());
+        assert!(spec.baselines.is_empty());
+    }
+
+    #[test]
+    fn full_spec_round_trips_with_mixed_graders() {
+        let spec = EvalSpec {
+            schema_version: EVAL_SPEC_SCHEMA.to_string(),
+            task: "code-review".to_string(),
+            inputs: "Cerberus ReviewArtifact over a diff".to_string(),
+            outputs: "matched / disputed / missed".to_string(),
+            fixtures: vec![
+                FixtureRef("sha256:aa".to_string()),
+                FixtureRef("sha256:bb".to_string()),
+            ],
+            graders: GraderManifest {
+                graders: vec![
+                    Grader {
+                        id: "key_match".to_string(),
+                        kind: GraderKind::Deterministic,
+                    },
+                    Grader {
+                        id: "claude-judge".to_string(),
+                        kind: GraderKind::Agentic,
+                    },
+                    Grader {
+                        id: "operator".to_string(),
+                        kind: GraderKind::Human,
+                    },
+                ],
+            },
+            baselines: vec!["known-good".to_string(), "known-bad".to_string()],
+            aggregation: AggregationMethod::Mean,
+            uncertainty: UncertaintyRule {
+                method: IntervalMethod::Bootstrap,
+                confidence: 0.9,
+            },
+            decision: "ship the config with the higher calibrated keep-rate".to_string(),
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let back: EvalSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(spec, back);
+        assert_eq!(back.graders.graders.len(), 3);
+        assert_eq!(back.graders.graders[1].kind, GraderKind::Agentic);
+    }
+
+    #[test]
+    fn aggregate_omits_paired_delta_when_absent() {
+        let agg = Aggregate {
+            score: 0.8,
+            ci: (0.49, 0.94),
+            paired_delta: None,
+        };
+        let json = serde_json::to_string(&agg).unwrap();
+        // The CI is a JSON array; the absent paired delta is skipped entirely.
+        assert_eq!(json, r#"{"score":0.8,"ci":[0.49,0.94]}"#);
+        let back: Aggregate = serde_json::from_str(&json).unwrap();
+        assert_eq!(agg, back);
+    }
+
+    #[test]
+    fn aggregate_records_paired_delta_verdict() {
+        let agg = Aggregate {
+            score: 0.8,
+            ci: (0.49, 0.94),
+            paired_delta: Some(PairedDelta {
+                delta: 0.1,
+                p_value: 0.0215,
+                verdict: DeltaVerdict::Signal,
+            }),
+        };
+        let json = serde_json::to_string(&agg).unwrap();
+        assert!(
+            json.contains(r#""verdict":"signal""#),
+            "verdict not recorded: {json}"
+        );
+        let back: Aggregate = serde_json::from_str(&json).unwrap();
+        assert_eq!(agg, back);
+        assert_eq!(back.paired_delta.unwrap().verdict, DeltaVerdict::Signal);
+    }
+
+    #[test]
+    fn non_finite_score_or_interval_is_refused() {
+        // A non-finite score or CI bound would serialize to a JSON null that
+        // fails to read back as f64; serialization must error instead.
+        let base = Aggregate {
+            score: 0.8,
+            ci: (0.49, 0.94),
+            paired_delta: None,
+        };
+        let mut bad_score = base;
+        bad_score.score = f64::NAN;
+        assert!(
+            serde_json::to_string(&bad_score).is_err(),
+            "a NaN score must not serialize to a non-round-tripping null"
+        );
+        let mut bad_ci = base;
+        bad_ci.ci = (0.49, f64::INFINITY);
+        assert!(
+            serde_json::to_string(&bad_ci).is_err(),
+            "a non-finite CI bound must not serialize"
+        );
+        // A non-finite paired-delta p-value is refused too.
+        let bad_delta = Aggregate {
+            score: 0.8,
+            ci: (0.49, 0.94),
+            paired_delta: Some(PairedDelta {
+                delta: 0.1,
+                p_value: f64::NAN,
+                verdict: DeltaVerdict::Signal,
+            }),
+        };
+        assert!(serde_json::to_string(&bad_delta).is_err());
+    }
+
+    #[test]
+    fn unknown_spec_schema_version_is_rejected() {
+        let json = r#"{"schema_version":"crucible.eval_spec.v999","task":"code-review"}"#;
+        let err = serde_json::from_str::<EvalSpec>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("schema_version"),
+            "error should name the bad schema_version: {err}"
+        );
+    }
+}

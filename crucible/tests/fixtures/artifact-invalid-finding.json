@@ -1,0 +1,24 @@
+{
+  "schema_version": "cerberus.review_artifact.v1",
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "minor",
+      "category": "security",
+      "title": "Valid finding the grader keeps",
+      "description": "A well-formed finding anchored where the key expects it.",
+      "evidence": "e",
+      "confidence": 0.8,
+      "anchors": [{ "kind": "inline", "path": "src/harness.rs", "line": 349 }]
+    },
+    {
+      "id": "F2",
+      "severity": "info",
+      "category": "",
+      "title": "",
+      "description": "",
+      "evidence": "e",
+      "confidence": 9.0
+    }
+  ]
+}

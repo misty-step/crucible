@@ -1,0 +1,16 @@
+{
+  "findings": [
+    {
+      "file": "cache.py",
+      "line": 8,
+      "category": "security",
+      "description": "The cache key is joined into a filesystem path without sanitization; a key containing ../ escapes CACHE_DIR and can read or overwrite arbitrary .json files."
+    },
+    {
+      "file": "cache.py",
+      "line": 15,
+      "category": "resource-leak",
+      "description": "get() opens the cache file without a context manager; if json.load raises (corrupt cache entry), the file handle is never closed."
+    }
+  ]
+}

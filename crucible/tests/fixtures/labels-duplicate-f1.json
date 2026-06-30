@@ -1,0 +1,14 @@
+[
+  {
+    "finding_id": "F1",
+    "verdict": "keep",
+    "disposition": { "in_scope": true },
+    "timestamp": "2026-06-29T10:00:00Z"
+  },
+  {
+    "finding_id": "F1",
+    "verdict": "noise",
+    "disposition": { "in_scope": false },
+    "timestamp": "2026-06-29T12:00:00Z"
+  }
+]

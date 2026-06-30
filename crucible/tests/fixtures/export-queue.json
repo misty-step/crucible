@@ -1,0 +1,81 @@
+{
+  "schema_version": "crucible.judgment_queue.v1",
+  "summary": {
+    "matched": 1,
+    "disputed": 3,
+    "missed": 1,
+    "recoverable_misses": 1
+  },
+  "items": [
+    {
+      "finding_id": "F3",
+      "candidate": {
+        "file": "cache.py",
+        "line": 23,
+        "category": "concurrency",
+        "severity": "blocking",
+        "description": "set() uses a deterministic temp file per key, so two concurrent writers interleave writes to the same .tmp and the rename can publish a corrupted partial payload.\n\nThe atomic write-then-rename pattern needs a unique temp file per writer.",
+        "source_id": "F3"
+      },
+      "recoverable_against": [
+        {
+          "file": "cache.py",
+          "line": 23,
+          "category": "resource-leak",
+          "severity": "",
+          "description": "A co-located key row in a different category vocabulary."
+        }
+      ]
+    },
+    {
+      "finding_id": "F1",
+      "candidate": {
+        "file": "cache.py",
+        "line": 26,
+        "category": "portability",
+        "severity": "minor",
+        "description": "os.rename(tmp, _path(key)) raises FileExistsError on Windows when the destination exists; os.replace is the portable atomic move.",
+        "source_id": "F1"
+      }
+    },
+    {
+      "finding_id": "F2",
+      "candidate": {
+        "file": "app.py",
+        "line": 5,
+        "category": "style",
+        "severity": "minor",
+        "description": "Prefer an f-string over string concatenation here.",
+        "source_id": "F2"
+      }
+    }
+  ],
+  "labels": [
+    {
+      "schema_version": "crucible.label.v1",
+      "finding_id": "F3",
+      "verdict": "keep",
+      "disposition": { "in_scope": true },
+      "latency_ms": 90000,
+      "saw_grader_before_commit": false,
+      "timestamp": "2026-06-29T18:12:00Z"
+    },
+    {
+      "schema_version": "crucible.label.v1",
+      "finding_id": "F1",
+      "verdict": "keep",
+      "disposition": { "in_scope": false },
+      "latency_ms": 45000,
+      "saw_grader_before_commit": false,
+      "timestamp": "2026-06-29T18:15:00Z"
+    },
+    {
+      "schema_version": "crucible.label.v1",
+      "finding_id": "F2",
+      "verdict": "noise",
+      "disposition": { "in_scope": true },
+      "latency_ms": 30000,
+      "saw_grader_before_commit": false
+    }
+  ]
+}

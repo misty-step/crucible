@@ -1,0 +1,7 @@
+[
+  {
+    "finding_id": "F404",
+    "verdict": "noise",
+    "disposition": { "in_scope": false }
+  }
+]

@@ -89,5 +89,6 @@ fn key_row(file: &str, line: u32, category: &str) -> KeyFinding {
         category: category.to_string(),
         severity: "blocking".to_string(),
         description: "expected finding".to_string(),
+        source_id: None,
     }
 }
