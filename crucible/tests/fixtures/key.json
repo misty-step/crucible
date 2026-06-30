@@ -1,0 +1,18 @@
+{
+  "findings": [
+    {
+      "file": "src/harness.rs",
+      "line": 349,
+      "category": "security",
+      "severity": "blocking",
+      "description": "Permission config grants web tools without honoring external_research policy."
+    },
+    {
+      "file": "src/prompt.rs",
+      "line": 42,
+      "category": "correctness",
+      "severity": "blocking",
+      "description": "A key row the review did not surface, so grade must report it as missed."
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "findings": [
+    {
+      "file": "src/harness.rs",
+      "line": 349,
+      "category": "correctness",
+      "severity": "blocking",
+      "description": "Same file and line as the review's security finding, but a different category vocabulary. The category-strict matcher cannot confirm the class, so this row lands in missed while the candidate lands in disputed — a recoverable miss."
+    }
+  ]
+}

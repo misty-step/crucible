@@ -1,0 +1,16 @@
+{
+  "findings": [
+    {
+      "file": "app/auth.py",
+      "line": 10,
+      "category": "security",
+      "description": "The SQL query interpolates the user-supplied email directly into the string, allowing SQL injection. Use a parameterized query as the previous code did."
+    },
+    {
+      "file": "app/auth.py",
+      "line": 13,
+      "category": "error-handling",
+      "description": "The broad except swallows all database errors and returns None, so an outage is indistinguishable from invalid credentials and the real error is lost."
+    }
+  ]
+}

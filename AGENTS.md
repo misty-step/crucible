@@ -33,13 +33,23 @@
 
 ## Gate
 
-Until code exists, the repo gate is:
+The repo gate is `scripts/check.sh` (also `make check`):
 
 ```sh
-test -f VISION.md
-rg -n "VISION\\.md" AGENTS.md README.md
+./scripts/check.sh
 ```
 
-When implementation begins, replace this with the repo-owned build/test/lint
-gate (plus Harbor export validation and a secret/content-leak scan) and keep this
-section current. See `backlog.d/006-agent-readiness-machine-surface.md`.
+It runs, across the whole workspace and fails on the first error:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all
+cargo build --all
+```
+
+Run it before pushing and wire it into CI unchanged. Do not weaken it to get
+green (no `--no-verify`, no removed `-D warnings`, no skipped tests). As the
+eval surface lands, extend the gate with Harbor export validation and a
+secret/content-leak scan and keep this section current. See
+`backlog.d/006-agent-readiness-machine-surface.md`.
