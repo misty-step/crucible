@@ -7,4 +7,10 @@ coverage/
 .env.*
 !.env.example
 .evidence/
-runs/*/artifacts/
+
+# Eval run records embed real PR diffs and raw model outputs (potentially
+# proprietary) and the API-keyed transcripts that produced them — never commit
+# them raw. Ignore the whole tree, not just runs/*/artifacts/. Committed test
+# inputs live under crucible*/tests/fixtures/, not here; if a specific run
+# artifact must be tracked as a fixture, add a scoped `!runs/<path>` exception.
+runs/

@@ -9,6 +9,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# Security floor first: fail fast on a leaked credential or raw model
+# output/diff before spending minutes on the build. Uses gitleaks when present,
+# else a self-contained high-signal grep scan (see scripts/leak-scan.sh).
+echo "==> scripts/leak-scan.sh"
+bash "$repo_root/scripts/leak-scan.sh"
+
 echo "==> cargo fmt --all -- --check"
 cargo fmt --all -- --check
 
@@ -20,5 +26,11 @@ cargo test --all
 
 echo "==> cargo build --all"
 cargo build --all
+
+# Documentation must build warning-free: broken/ambiguous intra-doc links,
+# links into private items, and redundant explicit targets all fail the gate so
+# the rustdoc surface cannot silently rot.
+echo "==> RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps"
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
 echo "==> gate passed"

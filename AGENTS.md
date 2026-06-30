@@ -42,6 +42,7 @@ The repo gate is `scripts/check.sh` (also `make check`):
 It runs, across the whole workspace and fails on the first error:
 
 ```sh
+scripts/leak-scan.sh          # credential-leak scan (security floor)
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all
@@ -50,6 +51,26 @@ cargo build --all
 
 Run it before pushing and wire it into CI unchanged. Do not weaken it to get
 green (no `--no-verify`, no removed `-D warnings`, no skipped tests). As the
-eval surface lands, extend the gate with Harbor export validation and a
-secret/content-leak scan and keep this section current. See
-`backlog.d/006-agent-readiness-machine-surface.md`.
+eval surface lands, extend the gate with Harbor export validation and keep this
+section current. See `backlog.d/006-agent-readiness-machine-surface.md`.
+
+### Content & secret policy
+
+Eval runs invoke models with real API keys and store their outputs over real PR
+diffs that can embed proprietary code. Two standing rules, enforced differently:
+
+- **No credentials in the tree** — enforced mechanically by the gate's first
+  step, `scripts/leak-scan.sh`: a self-contained high-signal grep floor over
+  tracked files, plus gitleaks' broad ruleset when it is on PATH. It matches
+  *credential shapes* — private keys (incl. PGP), AWS keys, bearer tokens,
+  OpenAI/Anthropic/Slack/GitHub tokens, Stripe/Google API keys, JWTs,
+  URL-embedded credentials, and `api|secret|token=<value>` assignments — and
+  fails the gate on a hit. If a matched credential was ever real, rotate it. The
+  scan detects credential *shapes*, not arbitrary proprietary text; confining
+  raw content is the next rule, which is policy, not pattern-matching.
+- **Raw model outputs and raw diffs live only under allowlisted fixture dirs**
+  (`crucible*/tests/fixtures/`) — enforced by review, not the scanner. There
+  they are committed deliberately as test inputs and must carry no live secret.
+  Eval run records — which embed real diffs and API-keyed transcripts — are
+  written under `runs/` (gitignored in full), never committed raw; redact or
+  allowlist before anything is published.
