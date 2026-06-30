@@ -16,6 +16,16 @@
 //! exactly the `NaN`/`∞` hazards these primitives exist to avoid. The percentile
 //! interval is the robust, total choice; BCa is an additive follow-up if a
 //! skewed metric ever needs the extra accuracy.
+//!
+//! A single seeded interval is reproducible but not *seed-invariant*: when the
+//! resample distribution has an atom at a decision boundary (a paired delta with
+//! mass piled exactly at `0` is the case that bites a leaderboard), the percentile
+//! bound can land on either side of that atom depending on the seed, so a
+//! verdict read off "does the interval exclude 0" flips with the seed. That is a
+//! reproducibility-of-the-wrong-thing trap. [`bootstrap_envelope`] closes it by
+//! taking the conservative envelope over an ensemble of seeds, so a directional
+//! "excludes 0" decision becomes unanimous across the ensemble by construction
+//! and therefore stable across *which* seed the caller picked.
 
 /// SplitMix64: a tiny, seeded, reproducible `u64` stream.
 ///
@@ -113,6 +123,101 @@ where
         point: metric(data),
         lower: percentile(&stats, alpha / 2.0),
         upper: percentile(&stats, 1.0 - alpha / 2.0),
+        resamples,
+    })
+}
+
+/// A seed-robust bootstrap interval: the conservative envelope of an ensemble of
+/// independently seeded percentile intervals.
+///
+/// Same shape as [`BootstrapInterval`], but [`lower`](Self::lower) /
+/// [`upper`](Self::upper) are the *widest* bounds seen across the ensemble (the
+/// minimum lower and maximum upper), and [`seeds`](Self::seeds) records how many
+/// members were folded in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnsembleInterval {
+    /// The metric on the original sample — seed-free, identical to every member.
+    pub point: f64,
+    /// The *minimum* lower bound across the ensemble (the widest interval's floor).
+    pub lower: f64,
+    /// The *maximum* upper bound across the ensemble (the widest interval's ceiling).
+    pub upper: f64,
+    /// How many independently seeded members were folded into the envelope.
+    pub seeds: usize,
+    /// Resamples drawn per member (echoed for reporting).
+    pub resamples: usize,
+}
+
+/// Deterministic, seed-robust bootstrap interval: the conservative envelope over
+/// `ensemble` independently seeded percentile intervals.
+///
+/// Runs [`bootstrap_interval`] under `ensemble` distinct seeds — derived
+/// deterministically from `base_seed`, so the whole result is reproducible from
+/// `base_seed` alone — and returns the union of their intervals: `lower` is the
+/// MINIMUM lower bound any member produced and `upper` the MAXIMUM upper bound.
+///
+/// # Why the envelope, not one interval
+///
+/// The envelope excludes `0` (or any threshold) on a side **iff every member
+/// does**: `lower > 0` means the smallest member-lower is still positive, i.e.
+/// all members put their lower bound above `0`. So a directional "excludes 0"
+/// decision read off this envelope is unanimous across the ensemble *by
+/// construction*. A borderline interval that some seeds would exclude and others
+/// would not collapses to "includes 0" (a refusal) — and it does so for *any*
+/// `base_seed`, because no ensemble of that size will be unanimous on a genuinely
+/// borderline atom. That converts seeded-but-flippy into seed-invariant: the
+/// published directional verdict no longer depends on which seed was chosen. The
+/// price is conservatism (the envelope is wider than any single member), which is
+/// the right bias for a "refuse a delta you cannot defend" gate.
+///
+/// Returns `None` on the same degenerate inputs as [`bootstrap_interval`] (empty
+/// `data`, zero `resamples`, `confidence` outside `(0, 1)`) and additionally when
+/// `ensemble == 0` — never a `NaN` or a panic.
+///
+/// ```
+/// use crucible_core::bootstrap_envelope;
+/// let data = [0.2, 0.4, 0.6, 0.8, 1.0];
+/// let mean = |s: &[f64]| s.iter().sum::<f64>() / s.len() as f64;
+/// let env = bootstrap_envelope(&data, mean, 500, 0.95, 7, 32).unwrap();
+/// // Reproducible from the base seed, and at least as wide as any one member.
+/// assert_eq!(env, bootstrap_envelope(&data, mean, 500, 0.95, 7, 32).unwrap());
+/// assert!(env.lower <= env.point && env.point <= env.upper);
+/// ```
+pub fn bootstrap_envelope<T, F>(
+    data: &[T],
+    metric: F,
+    resamples: usize,
+    confidence: f64,
+    base_seed: u64,
+    ensemble: usize,
+) -> Option<EnsembleInterval>
+where
+    T: Clone,
+    F: Fn(&[T]) -> f64,
+{
+    if ensemble == 0 {
+        return None;
+    }
+    // Sub-seeds are SplitMix64-derived from `base_seed` (not `base_seed + i`), so
+    // two nearby base seeds produce *decorrelated* ensembles — a stricter
+    // stability guarantee than overlapping windows would give.
+    let mut seeder = SplitMix64::new(base_seed);
+    let mut point = None;
+    let mut lower = f64::INFINITY;
+    let mut upper = f64::NEG_INFINITY;
+    for _ in 0..ensemble {
+        let seed = seeder.next_u64();
+        // Any member is degenerate iff all are (same data/args), so propagate.
+        let member = bootstrap_interval(data, &metric, resamples, confidence, seed)?;
+        point = Some(member.point);
+        lower = lower.min(member.lower);
+        upper = upper.max(member.upper);
+    }
+    point.map(|point| EnsembleInterval {
+        point,
+        lower,
+        upper,
+        seeds: ensemble,
         resamples,
     })
 }
@@ -228,5 +333,96 @@ mod tests {
         assert!(bootstrap_interval(&data, mean, 0, 0.95, 1).is_none());
         assert!(bootstrap_interval(&data, mean, 100, 0.0, 1).is_none());
         assert!(bootstrap_interval(&data, mean, 100, 1.0, 1).is_none());
+    }
+
+    // ----- The seed-robust envelope -----------------------------------------
+
+    #[test]
+    fn envelope_is_deterministic_for_a_base_seed() {
+        let data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let a = bootstrap_envelope(&data, mean, 1000, 0.95, 42, 32).unwrap();
+        let b = bootstrap_envelope(&data, mean, 1000, 0.95, 42, 32).unwrap();
+        assert_eq!(a, b, "same base seed must reproduce the envelope exactly");
+        assert_eq!(a.seeds, 32);
+        assert_eq!(a.point, mean(&data));
+    }
+
+    #[test]
+    fn envelope_contains_every_member_interval() {
+        // The envelope is the union of its members, so it is at least as wide as
+        // any single member's interval — the conservatism the verdict relies on.
+        let data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        let env = bootstrap_envelope(&data, mean, 2000, 0.95, 7, 64).unwrap();
+        // The first member uses the first SplitMix64 draw off the base seed.
+        let mut seeder = SplitMix64::new(7);
+        let member = bootstrap_interval(&data, mean, 2000, 0.95, seeder.next_u64()).unwrap();
+        assert!(env.lower <= member.lower, "envelope floor not below member");
+        assert!(
+            env.upper >= member.upper,
+            "envelope ceiling not above member"
+        );
+        assert!(env.lower <= env.point && env.point <= env.upper);
+    }
+
+    #[test]
+    fn envelope_refuses_a_zero_atom_that_a_single_seed_would_exclude() {
+        // A paired-delta shape with ~2.3% of resample mass piled exactly on 0:
+        // three "+1" buckets and five "0" buckets, ratio-of-sums metric. A single
+        // seed's 2.5th percentile can land on either side of that atom (the
+        // leaderboard seed-flip bug). The envelope's floor must sit at 0 — i.e.
+        // include 0, a stable refusal — because some member always lands on the
+        // atom. And it must do so for several unrelated base seeds.
+        let data = [
+            (1.0_f64, 1u64),
+            (1.0, 1),
+            (1.0, 1),
+            (0.0, 1),
+            (0.0, 1),
+            (0.0, 1),
+            (0.0, 1),
+            (0.0, 1),
+        ];
+        let ratio = |s: &[(f64, u64)]| {
+            let (sum, n) = s.iter().fold((0.0, 0u64), |(a, c), &(x, k)| (a + x, c + k));
+            sum / n as f64
+        };
+        for base in [1u64, 7, 99, 2024, 0xDEAD_BEEF] {
+            let env = bootstrap_envelope(&data, ratio, 4000, 0.95, base, 64).unwrap();
+            assert!(
+                env.lower <= 0.0,
+                "base {base}: envelope floor {} should include the zero-atom",
+                env.lower
+            );
+            assert!((env.point - 0.375).abs() < 1e-12, "point {}", env.point);
+        }
+    }
+
+    #[test]
+    fn envelope_keeps_a_clear_exclusion_across_seeds() {
+        // A real, well-separated positive metric: every member excludes 0 below,
+        // so the envelope floor stays above 0 for any base seed — a stable
+        // signal, not a stable refusal.
+        let data = [0.7, 0.8, 0.9, 1.0, 0.75, 0.85, 0.95, 0.65];
+        for base in [1u64, 7, 99, 2024] {
+            let env = bootstrap_envelope(&data, mean, 4000, 0.95, base, 64).unwrap();
+            assert!(env.lower > 0.0, "base {base}: floor {} left 0", env.lower);
+        }
+    }
+
+    #[test]
+    fn envelope_collapses_on_constant_data() {
+        let data = [3.0, 3.0, 3.0];
+        let env = bootstrap_envelope(&data, mean, 200, 0.95, 5, 16).unwrap();
+        assert_eq!((env.point, env.lower, env.upper), (3.0, 3.0, 3.0));
+    }
+
+    #[test]
+    fn envelope_rejects_degenerate_args() {
+        let data = [1.0, 2.0, 3.0];
+        assert!(bootstrap_envelope::<f64, _>(&[], mean, 100, 0.95, 1, 8).is_none());
+        assert!(bootstrap_envelope(&data, mean, 0, 0.95, 1, 8).is_none());
+        assert!(bootstrap_envelope(&data, mean, 100, 0.0, 1, 8).is_none());
+        assert!(bootstrap_envelope(&data, mean, 100, 1.0, 1, 8).is_none());
+        assert!(bootstrap_envelope(&data, mean, 100, 0.95, 1, 0).is_none());
     }
 }

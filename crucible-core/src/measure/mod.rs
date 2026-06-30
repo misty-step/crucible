@@ -25,7 +25,8 @@
 //! - [`power`](self) — the [`required_sample_size`] to detect an effect and the
 //!   [`power_warning`] that flags an underpowered fixture set.
 //! - [`bootstrap`](self) — a deterministic, seeded [`bootstrap_interval`] for a
-//!   composite/derived metric.
+//!   composite/derived metric, and the seed-robust [`bootstrap_envelope`] whose
+//!   directional "excludes 0" decision is invariant to the seed.
 
 mod agreement;
 mod bootstrap;
@@ -35,7 +36,14 @@ mod power;
 mod rate;
 
 pub use agreement::{agreement, cohen_kappa};
-pub use bootstrap::{bootstrap_interval, BootstrapInterval};
+pub use bootstrap::{bootstrap_envelope, bootstrap_interval, BootstrapInterval, EnsembleInterval};
 pub use paired::{DeltaVerdict, PairedComparison};
 pub use power::{power_warning, required_sample_size, PowerWarning};
 pub use rate::{proportion, wilson_interval};
+
+/// The inverse standard-normal CDF, exposed crate-internally so a caller that
+/// needs the `z` quantile for a confidence level — e.g. [`crate::Leaderboard`]
+/// turning its `confidence` into the `z` that [`wilson_interval`] takes — reuses
+/// the same kernel [`power`] does, rather than hard-coding `1.96`. Not public:
+/// callers outside the crate want a finished interval, not a raw quantile.
+pub(crate) use normal::inv_normal_cdf;

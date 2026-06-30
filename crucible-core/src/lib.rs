@@ -57,6 +57,21 @@
 //!   a closed-enum [`GraderManifest`] of deterministic / agentic / human graders
 //!   ([`GraderKind`]), baselines, aggregation, uncertainty rule, and the
 //!   [`Aggregate`] result shape (score + CI + optional paired delta).
+//! - [`dashboard`] — the read side of the eval: ingests a tree of real Daedalus
+//!   arenas and runs into a [`Dataset`] of [`Eval`] / [`EvalTask`] / [`Config`] /
+//!   [`Run`] / [`Trial`]. Each [`Eval`] is one `(arena_id, arena_version)` group,
+//!   its identity read from `trials.jsonl` — never the run directory name, which
+//!   routinely lies about the arena — and [`Trial`]s pool under a [`Config`] keyed
+//!   by `composition_hash` (the stable config identity; `id`/`kind` are mutable
+//!   labels). The loader is total: a malformed or unplaceable line is skipped and
+//!   counted ([`Dataset::skipped`]), never fatal. This is the opposite direction
+//!   from [`export`], which writes Crucible's judgments *back* to Daedalus. The
+//!   [`Leaderboard`] then turns that [`Dataset`] into a per-group ranking: a
+//!   bootstrap interval ([`Estimate`]) on each config's continuous mean reward, a
+//!   Wilson interval on its binary solve rate, and a [`Pairwise`] noise-floor
+//!   verdict (McNemar + paired bootstrap) that refuses an indefensible rank gap —
+//!   the [`measure`] layer applied to real runs. Its `reward_mean` reconciles with
+//!   each run's `summary.json`, so it surfaces Daedalus's own number, not a new one.
 //!
 //! These types are the narrow waist shared by every later step (matcher,
 //! confidence interval). They model only the surface the eval consumes;
@@ -76,6 +91,7 @@ pub mod adapter;
 pub mod adjudication;
 pub mod artifact;
 pub mod calibration;
+pub mod dashboard;
 pub mod export;
 pub mod grade;
 pub mod judgment;
@@ -89,6 +105,11 @@ pub use adapter::{findings_from_artifact, to_key_findings};
 pub use adjudication::{Disposition, Verdict};
 pub use artifact::{Anchor, AnchorKind, Finding, ReviewArtifact, Severity};
 pub use calibration::{CalibrationRecord, ConfusionMatrix, CALIBRATION_RECORD_SCHEMA};
+pub use dashboard::{
+    Config, Dataset, DeltaEstimate, DeltaSign, Estimate, Eval, EvalTask, Leaderboard,
+    LeaderboardEntry, LeaderboardGroup, McnemarOutcome, Pairwise, PairwiseVerdict, Run, SkipReason,
+    SkippedInput, Stronger, Trial,
+};
 pub use error::{Error, Result};
 pub use export::{
     adjudications_from_queue, extended_expected_key, extended_key, parse_adjudications_md,
@@ -106,8 +127,9 @@ pub use judgment::{
 pub use key::{AnswerKey, Defect, ExpectedKey, KeyFinding};
 pub use label::{Label, LABEL_SCHEMA};
 pub use measure::{
-    agreement, bootstrap_interval, cohen_kappa, power_warning, proportion, required_sample_size,
-    wilson_interval, BootstrapInterval, DeltaVerdict, PairedComparison, PowerWarning,
+    agreement, bootstrap_envelope, bootstrap_interval, cohen_kappa, power_warning, proportion,
+    required_sample_size, wilson_interval, BootstrapInterval, DeltaVerdict, EnsembleInterval,
+    PairedComparison, PowerWarning,
 };
 pub use provenance::{EvaluationCard, Provenance, EVALUATION_CARD_SCHEMA};
 pub use spec::{

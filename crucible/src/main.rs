@@ -1,7 +1,7 @@
 //! Crucible CLI — evaluate a Cerberus review run against a Daedalus answer key,
 //! then queue what the deterministic floor cannot resolve for adjudication.
 //!
-//! Three subcommands over the deterministic core:
+//! Five subcommands over the deterministic core:
 //!
 //! - `crucible adapt <artifact.json> [--json]` projects every Cerberus finding
 //!   onto a Daedalus answer-key row and prints the rows. This is an inspection
@@ -36,8 +36,16 @@
 //!   and the extended `tests/expected.json` scorer key (`--expected`) that
 //!   `daedalus-score` reads — the file an accepted finding must land in to
 //!   re-score as a true positive. The write side of the flywheel (epic 002.5).
+//! - `crucible dashboard [--arenas <DIR>] [--runs <DIR>] --out <DIR>` ingests the
+//!   real Daedalus arenas and runs into a [`Dataset`], computes the
+//!   [`Leaderboard`], and writes a self-contained, phone-first `index.html` plus
+//!   the full `data.json` model under `<out>`. The read side made viewable: it
+//!   recomputes no statistic, only renders the measured ranking — every number
+//!   tracing to a run and pinned to its arena version.
 //!
-//! `--json` emits a stable serde object; the default is a human-readable table.
+//! `--json` emits a stable serde object (`adapt`/`grade`/`adjudicate`); the
+//! default is a human-readable table. `dashboard` instead writes files under
+//! `--out` and prints a short receipt.
 //!
 //! **Exit codes** are stable so Cerberus/Daedalus can branch headlessly:
 //! `0` success, `1` a load/parse failure (a bad artifact, key, or labels file),
@@ -53,10 +61,13 @@ use crucible_core::judgment::reconcile_labels;
 use crucible_core::{
     adjudications_from_queue, apply_label, build_queue, dedup, extended_expected_key, extended_key,
     findings_from_artifact, grade, proportion, recoverable_misses, render_adjudications_md,
-    schema_valid, to_key_findings, wilson_interval, AnswerKey, ArenaVersion, Defect, ExpectedKey,
-    ExportContext, GradeResult, JudgmentItem, JudgmentQueue, KeyFinding, Label, LabelConditions,
+    schema_valid, to_key_findings, wilson_interval, AnswerKey, ArenaVersion, Dataset, Defect,
+    ExpectedKey, ExportContext, GradeResult, JudgmentItem, JudgmentQueue, KeyFinding, Label,
+    LabelConditions, Leaderboard, SkipReason,
 };
 use serde::Serialize;
+
+mod dashboard_html;
 
 /// Standard-normal quantile for a two-sided 95% interval.
 const Z_95: f64 = 1.96;
@@ -159,6 +170,29 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         expected: Option<PathBuf>,
     },
+    /// Render the real Daedalus arenas + runs into a self-contained, phone-first
+    /// HTML eval dashboard (plus the full `data.json` model) under `--out`.
+    Dashboard {
+        /// Arenas tree (the answer keys) to read; defaults to the local Daedalus
+        /// checkout.
+        #[arg(
+            long,
+            value_name = "DIR",
+            default_value = "/Users/phaedrus/Development/daedalus/arenas"
+        )]
+        arenas: PathBuf,
+        /// Runs tree (the trials) to read; defaults to the local Daedalus checkout.
+        #[arg(
+            long,
+            value_name = "DIR",
+            default_value = "/Users/phaedrus/Development/daedalus/runs"
+        )]
+        runs: PathBuf,
+        /// Output directory; `index.html` and `data.json` are written under it
+        /// (created if absent). Point it at a scratch/gitignored path.
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -200,6 +234,7 @@ fn main() -> ExitCode {
             key: key.as_deref(),
             expected: expected.as_deref(),
         }),
+        Command::Dashboard { arenas, runs, out } => run_dashboard(&arenas, &runs, &out),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -408,6 +443,80 @@ fn run_export(req: &ExportRequest<'_>) -> anyhow::Result<()> {
     if let Some(p) = expected_path {
         println!("  scorer key    {}", p.display());
     }
+    Ok(())
+}
+
+/// `crucible dashboard`: ingest the real arenas + runs, measure them, and write
+/// the self-contained HTML dashboard and its `data.json` model under `out`.
+///
+/// The [`Dataset`] loader is total (it never errors), so the only failure paths
+/// here are operational: a `runs` path that is not a directory — surfaced up front
+/// rather than silently rendering an empty dashboard — or an I/O error creating
+/// `out` or writing an artifact. Both exit `1` via the caller's error mapping.
+/// `data.json` is the full, stable model (the same [`Dataset`] + [`Leaderboard`]
+/// the page renders); `index.html` recomputes no statistic, only displays them.
+fn run_dashboard(arenas: &Path, runs: &Path, out: &Path) -> anyhow::Result<()> {
+    if !runs.is_dir() {
+        anyhow::bail!(
+            "runs path {} is not a directory — point --runs at a Daedalus runs/ tree",
+            runs.display()
+        );
+    }
+
+    let dataset = Dataset::load(arenas, runs);
+    let leaderboard = Leaderboard::from_dataset(&dataset);
+    let run_details = dashboard_html::run_details(runs);
+    let data = dashboard_html::DashboardData {
+        schema_version: dashboard_html::DASHBOARD_SCHEMA,
+        arenas_dir: arenas.display().to_string(),
+        runs_dir: runs.display().to_string(),
+        dataset: &dataset,
+        leaderboard: &leaderboard,
+        run_details: &run_details,
+    };
+
+    std::fs::create_dir_all(out)
+        .with_context(|| format!("creating output directory {}", out.display()))?;
+
+    let data_path = out.join("data.json");
+    let json = serde_json::to_string_pretty(&data).context("serializing the dashboard model")?;
+    std::fs::write(&data_path, format!("{json}\n"))
+        .with_context(|| format!("writing {}", data_path.display()))?;
+
+    let html_path = out.join("index.html");
+    std::fs::write(&html_path, dashboard_html::render(&data))
+        .with_context(|| format!("writing {}", html_path.display()))?;
+
+    println!("crucible dashboard");
+    println!("  arenas   {}", arenas.display());
+    println!("  runs     {}", runs.display());
+    println!("  evals    {}", dataset.group_count());
+    println!("  runs     {}", dataset.runs.len());
+    println!("  trials   {}", dataset.trial_count());
+    if dataset.skipped > 0 {
+        println!(
+            "  skipped  {}  (unparseable/unplaceable trial lines)",
+            dataset.skipped
+        );
+    }
+    if !dataset.skipped_inputs.is_empty() {
+        let count = |reason: SkipReason| {
+            dataset
+                .skipped_inputs
+                .iter()
+                .filter(|s| s.reason == reason)
+                .count()
+        };
+        println!(
+            "  skipped inputs  {}  ({} no-placeable-trials · {} unsupported-format · {} no-trials-file)",
+            dataset.skipped_inputs.len(),
+            count(SkipReason::NoPlaceableTrials),
+            count(SkipReason::UnsupportedFormat),
+            count(SkipReason::NoTrialsFile),
+        );
+    }
+    println!("  wrote    {}", html_path.display());
+    println!("  wrote    {}", data_path.display());
     Ok(())
 }
 
