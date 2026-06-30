@@ -39,3 +39,12 @@ plugin registry (three enumerated kinds). Extract this from what the wedge (002)
 actually needed — do not front-run it. The phone UI (005) and Daedalus both read
 these artifacts, so getting the queue + label + export schemas right here means
 the UI adds zero new core design.
+
+**Update 2026-06-30:** child 1 (type contract) DELIVERED — `EvalSpec` +
+`GraderManifest{deterministic|agentic|human}` + `FixtureRef(hash)`, `Label`,
+`CalibrationRecord`, `Provenance`/`EvaluationCard`, `Aggregate` — all serde
+`schema_version`-stamped with round-trip tests and a light version-validation guard
+that rejects an unknown version rather than silently treating it as v1. Child 3
+(SQLite index + content-addressed blob store) deliberately NOT built — premature;
+artifacts-on-disk suffice for the wedge (per this epic's own non-goal note). Child 4
+(Harbor export + golden round-trip) landed via 002.5.

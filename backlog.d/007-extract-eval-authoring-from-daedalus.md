@@ -42,3 +42,10 @@ backlog and the reason Crucible is a separate repo rather than a script.
 arena versions / adjudications, clearing the authoring-rights blocker. The actual
 extraction still needs a Daedalus-side ownership handshake before any cross-repo
 change.
+
+**Update 2026-06-30:** child 1 (map) DELIVERED — `docs/daedalus-eval-authoring-map.md`
+classifies the Daedalus eval-authoring surfaces MIGRATE / STAY / SHARED. The
+2026-06-30 review also hardened the contract knowledge that anchors this migration:
+Daedalus's scorer reads `tests/expected.json` (span `defects[]`), and Crucible now
+authors it (002.5) with a verified re-score round-trip. The migration itself still
+needs the Daedalus governance handshake before any cross-repo change.

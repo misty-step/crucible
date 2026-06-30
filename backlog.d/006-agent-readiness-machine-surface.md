@@ -48,3 +48,12 @@ adapt`/`grade`. Still pending: the **secret/content-leak scan** (child 3) —
 thermonuclear review flagged that committed test fixtures vendor real Cerberus
 review content (no live leak today; defense-in-depth before the eval surface
 persists real diffs).
+
+**Update 2026-06-30:** child 1 (CLI JSON + stable exit codes 0/1/2, `schema_version`
+on every `--json`) and child 3 (secret/content-leak scan) DELIVERED. The scan is
+portable — review caught a real macOS bash-3.2 `mapfile` no-op that silently
+disabled the floor on the author's own shell — covers AWS/Stripe/GCP/JWT/URL-cred
+families, warns when gitleaks is absent (no false "clean"), and `runs/` is now fully
+gitignored; AGENTS.md content policy corrected to credential scope + the cargo-doc
+`-D warnings` step was added to the gate. Still pending: child 4 (verification
+`SKILL.md` — author→run→grade→adjudicate→export with the now-real commands).

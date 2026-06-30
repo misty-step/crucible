@@ -52,3 +52,13 @@ make `agreement` reject length-mismatch (return `Option`) so a misaligned
 judge/human pair cannot silently cross an unlock threshold; serialize the
 `--json` rate as `null` (not `0.0`) at n==0 ("no data" ≠ "0%"); surface a
 dropped-invalid-finding count. Fold these into 003's children.
+
+**Update 2026-06-30:** hardening + new primitives shipped — `wilson` successes>n
+guard; `agreement`/`cohen_kappa` return `Option` (None on misaligned/empty, so a
+judge cannot silently cross a threshold); McNemar paired comparison + noise-floor
+refusal (the "refuse a delta you cannot defend" gate — p∈[0,1] after fixing an
+erfc tail-overshoot that produced p>1); power/sample-size check; a seeded,
+reproducible bootstrap; and the `Provenance`/`EvaluationCard` + `CalibrationRecord`
+types (with finiteness + schema-version guards). Remaining: wire the Evaluation Card
+into persisted runs; the κ judge-calibration *unlock* needs real human labels
+(002.6 / 005). Children 2 + 6 of this epic now have shipped primitives.
