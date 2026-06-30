@@ -37,3 +37,8 @@ Daedalus." Large, cross-repo, sequenced AFTER the wedge (002) proves the model.
 Needs Daedalus-side coordination — do NOT unilaterally edit Daedalus. This is the
 "durable eval organ" ambition made concrete; it is the biggest bet in the
 backlog and the reason Crucible is a separate repo rather than a script.
+
+**Governance update 2026-06-29:** operator ratified that Crucible may author
+arena versions / adjudications, clearing the authoring-rights blocker. The actual
+extraction still needs a Daedalus-side ownership handshake before any cross-repo
+change.

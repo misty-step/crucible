@@ -40,3 +40,11 @@ Agent-readiness lane. The export contract is Harbor (epic 004), not a new schema
 Security surface is real: eval runs invoke models with API keys and store outputs
 over real diffs that can embed proprietary code. Defer the TS half of the gate
 until the UI (005) lands, but specify it now so it is not bolted on weakly later.
+
+**Update 2026-06-29:** child 2 (real repo gate) DELIVERED — `scripts/check.sh`
+(fmt / clippy `-D warnings` / test / build), AGENTS.md gate section updated, gates
+the diff. CLI `--json` machine surface (child 1) partially landed via `crucible
+adapt`/`grade`. Still pending: the **secret/content-leak scan** (child 3) —
+thermonuclear review flagged that committed test fixtures vendor real Cerberus
+review content (no live leak today; defense-in-depth before the eval surface
+persists real diffs).

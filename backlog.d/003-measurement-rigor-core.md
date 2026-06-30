@@ -44,3 +44,11 @@ n / extreme p; McNemar for paired binary data. Single-operator κ caveat: needs
 coordinate with the wedge (002). This epic is the durable moat; the wedge
 consumes its first primitives. Promote children to `Status: ready` with their own
 verification systems as they are picked up.
+
+**Update 2026-06-29:** the first primitives landed in `crucible-core::measure`
+(Wilson interval, proportion, percent-agreement) via the wedge build. Hardening
+follow-ups from thermonuclear review: guard `wilson_interval` for successes>n;
+make `agreement` reject length-mismatch (return `Option`) so a misaligned
+judge/human pair cannot silently cross an unlock threshold; serialize the
+`--json` rate as `null` (not `0.0`) at n==0 ("no data" ≠ "0%"); surface a
+dropped-invalid-finding count. Fold these into 003's children.
