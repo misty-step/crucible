@@ -19,12 +19,12 @@
 //! confidence interval, and an optional [`PairedDelta`] against a baseline —
 //! recording the [`crate::measure`] outputs so no rate is ever reported naked.
 //!
-//! The CLI can execute the first declared spec shape: key-recall over either a
-//! Daedalus `trials.jsonl` corpus or freshly produced Cerberus review artifacts
-//! handed off with `ReviewReceiptBundle.v1`. Those runner declarations are
-//! deliberately narrow and data-shaped; they name the corpus and candidate
-//! outputs to grade, while the metric and uncertainty still flow through the
-//! same [`AggregationMethod`] and [`UncertaintyRule`] fields as future runners.
+//! The CLI can execute narrow, data-shaped spec runners: key-recall over either
+//! a Daedalus `trials.jsonl` corpus or freshly produced Cerberus review artifacts,
+//! and a prompt benchmark runner that makes Crucible's first live model call.
+//! Those runner declarations are deliberately explicit; they name the corpus,
+//! model config, and outputs to grade, while the metric and uncertainty still
+//! flow through the same [`AggregationMethod`] and [`UncertaintyRule`] fields.
 
 use serde::{Deserialize, Serialize};
 
@@ -155,6 +155,9 @@ pub struct UncertaintyRule {
 pub enum RunnerKind {
     /// Score review findings against expected PR-review key rows.
     KeyRecall,
+    /// Run authored prompt tasks against a model config and grade the text
+    /// response with a deterministic rubric.
+    PromptBenchmark,
 }
 
 /// One executable runner declaration inside an [`EvalSpec`].
@@ -180,6 +183,65 @@ pub struct CerberusReceiptTask {
     /// Daedalus Harbor scorer key (`tests/expected.json`), absolute or relative
     /// to the spec file.
     pub expected: String,
+}
+
+/// The first provider boundary for Crucible-owned prompt execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelProvider {
+    /// OpenAI-compatible Chat Completions through OpenRouter.
+    OpenRouter,
+}
+
+/// Model config for a prompt benchmark runner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptModelConfig {
+    /// Provider adapter to use for the live model call.
+    pub provider: ModelProvider,
+    /// Provider model slug, e.g. `openai/gpt-4o-mini`.
+    pub model: String,
+    /// System prompt shared by every task in this benchmark.
+    pub system_prompt: String,
+    /// Environment variable that contains the provider credential.
+    #[serde(default = "default_openrouter_credential_env")]
+    pub credential_env: String,
+    /// Optional output cap for the model call.
+    #[serde(
+        rename = "max_tokens",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_output_units: Option<u32>,
+    /// Optional integer temperature. v0 intentionally supports only whole
+    /// values, enough for deterministic `0` without pulling float equality into
+    /// the schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<u32>,
+}
+
+fn default_openrouter_credential_env() -> String {
+    "OPENROUTER_API_KEY".to_string()
+}
+
+/// One authored prompt task plus a deterministic rubric.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptBenchmarkTask {
+    /// Stable task id in the benchmark.
+    pub task_id: String,
+    /// User prompt for this task.
+    pub prompt: String,
+    /// Deterministic rubric applied to the model response.
+    pub expectation: PromptExpectation,
+}
+
+/// Deterministic v0 rubric for prompt benchmarks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PromptExpectation {
+    /// The trimmed model response must exactly equal `value`.
+    Exact { value: String },
+    /// The model response must contain `value`.
+    Contains { value: String },
 }
 
 /// The source of examples and candidate outputs for a declared runner.
@@ -213,6 +275,13 @@ pub enum CorpusSpec {
         candidate_id: String,
         /// Cerberus-produced task outputs to grade.
         tasks: Vec<CerberusReceiptTask>,
+    },
+    /// Crucible-authored prompt tasks run against a model config.
+    PromptBenchmark {
+        /// Model provider/config under test.
+        config: PromptModelConfig,
+        /// Authored prompt tasks to execute and grade.
+        tasks: Vec<PromptBenchmarkTask>,
     },
 }
 
@@ -491,6 +560,34 @@ mod tests {
         let json = serde_json::to_string(&corpus).unwrap();
         assert!(
             json.contains(r#""source":"cerberus_receipt_bundles""#),
+            "corpus source is stable: {json}"
+        );
+        let back: CorpusSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, corpus);
+    }
+
+    #[test]
+    fn prompt_benchmark_corpus_round_trips() {
+        let corpus = CorpusSpec::PromptBenchmark {
+            config: PromptModelConfig {
+                provider: ModelProvider::OpenRouter,
+                model: "openai/gpt-4o-mini".to_string(),
+                system_prompt: "Answer exactly.".to_string(),
+                credential_env: "OPENROUTER_API_KEY".to_string(),
+                max_output_units: Some(8),
+                temperature: Some(0),
+            },
+            tasks: vec![PromptBenchmarkTask {
+                task_id: "exact-word".to_string(),
+                prompt: "Reply with exactly: crucible-smoke".to_string(),
+                expectation: PromptExpectation::Exact {
+                    value: "crucible-smoke".to_string(),
+                },
+            }],
+        };
+        let json = serde_json::to_string(&corpus).unwrap();
+        assert!(
+            json.contains(r#""source":"prompt_benchmark""#),
             "corpus source is stable: {json}"
         );
         let back: CorpusSpec = serde_json::from_str(&json).unwrap();

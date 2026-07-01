@@ -18,6 +18,8 @@ Crucible now has a Rust core and CLI for the first eval family: agentic
 code-review quality. The shipped wedge can:
 
 - execute a declared `EvalSpec` with `crucible run <spec>`;
+- run a Crucible-owned prompt benchmark through an OpenRouter-compatible BYOK
+  model boundary and grade it with a deterministic rubric;
 - expose the same run surface as a stdio MCP tool for agents and Threshold;
 - adapt Cerberus review artifacts into Threshold/Daedalus answer-key rows;
 - grade findings against either `solution/findings.json` or
@@ -88,6 +90,20 @@ Each score is binary and small-n by design, so its Wilson interval is wide. That
 is the intended behavior: the eval is runnable evidence, not overclaimed
 precision.
 
+Run the first Crucible-owned prompt benchmark through OpenRouter:
+
+```sh
+OPENROUTER_API_KEY=... \
+cargo run -p crucible -- run evals/prompt-smoke-v0.json \
+  --out runs/local/prompt-smoke \
+  --json
+```
+
+This spec makes a real model call through the OpenRouter chat-completions API,
+captures token/latency metadata when the provider returns it, grades the response
+with a deterministic contains rubric, and writes
+`runs/local/prompt-smoke/prompt-run.json`. Raw model output stays under `runs/`.
+
 ## MCP
 
 Start the stdio MCP server from the repo root:
@@ -104,6 +120,15 @@ Declared spec example:
 ```json
 {
   "spec": "evals/pr-review-key-recall-v0.json"
+}
+```
+
+Prompt benchmark example:
+
+```json
+{
+  "spec": "evals/prompt-smoke-v0.json",
+  "out": "runs/local/prompt-smoke-mcp"
 }
 ```
 

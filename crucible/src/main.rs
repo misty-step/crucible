@@ -1,7 +1,7 @@
 //! Crucible CLI — evaluate a Cerberus review run against a Daedalus answer key,
 //! then queue what the deterministic floor cannot resolve for adjudication.
 //!
-//! Eight subcommands over the deterministic core:
+//! Eight subcommands over Crucible's current eval surface:
 //!
 //! - `crucible adapt <artifact.json> [--json]` projects every Cerberus finding
 //!   onto a Daedalus answer-key row and prints the rows. This is an inspection
@@ -44,8 +44,9 @@
 //!   tracing to a run and pinned to its arena version.
 //! - `crucible run [<spec.json>] [--out <DIR>] [--eval <ID>] [--json]` either
 //!   executes a declared [`EvalSpec`](crucible_core::EvalSpec) runner when a spec
-//!   path is supplied, or runs the three built-in committed receipt checks when
-//!   no spec is supplied. Every score carries a Wilson interval.
+//!   path is supplied (key-recall or prompt benchmark), or runs the three
+//!   built-in committed receipt checks when no spec is supplied. Every score
+//!   carries a Wilson interval.
 //! - `crucible adjudication-panel --queue <queue.json> --out <DIR>` renders an
 //!   existing `crucible.judgment_queue.v1` artifact into a static phone-first
 //!   `index.html` panel plus the copied `queue.json` model.

@@ -9,11 +9,13 @@
 use std::collections::HashSet;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use crucible_core::{
     findings_from_artifact, schema_valid, to_key_findings, AggregationMethod, CerberusReceiptTask,
-    CorpusSpec, Defect, EvalSpec, ExpectedKey, IntervalMethod, KeyFinding, RunnerKind, RunnerSpec,
+    CorpusSpec, Defect, EvalSpec, ExpectedKey, IntervalMethod, KeyFinding, ModelProvider,
+    PromptBenchmarkTask, PromptExpectation, PromptModelConfig, RunnerKind, RunnerSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +63,7 @@ fn run_runner(
 ) -> anyhow::Result<EvalReport> {
     match runner.kind {
         RunnerKind::KeyRecall => run_key_recall(spec, runner, spec_path, out),
+        RunnerKind::PromptBenchmark => run_prompt_benchmark(spec, runner, spec_path, out),
     }
 }
 
@@ -103,6 +106,9 @@ fn run_key_recall(
             candidate_id,
             tasks,
         } => run_key_recall_cerberus_receipts(spec, runner, spec_path, out, candidate_id, tasks),
+        CorpusSpec::PromptBenchmark { .. } => {
+            anyhow::bail!("key_recall runner requires a key-recall corpus source")
+        }
     }
 }
 
@@ -409,6 +415,132 @@ fn run_key_recall_cerberus_receipts(
     })
 }
 
+fn run_prompt_benchmark(
+    spec: &EvalSpec,
+    runner: &RunnerSpec,
+    spec_path: &Path,
+    out: &Path,
+) -> anyhow::Result<EvalReport> {
+    if spec.aggregation != AggregationMethod::Proportion {
+        anyhow::bail!(
+            "prompt_benchmark runner requires aggregation=proportion, got {:?}",
+            spec.aggregation
+        );
+    }
+    if spec.uncertainty.method != IntervalMethod::Wilson {
+        anyhow::bail!(
+            "prompt_benchmark runner requires uncertainty.method=wilson, got {:?}",
+            spec.uncertainty.method
+        );
+    }
+
+    let CorpusSpec::PromptBenchmark { config, tasks } = &runner.corpus else {
+        anyhow::bail!("prompt_benchmark runner requires corpus.source=prompt_benchmark");
+    };
+    let client = OpenRouterClient::from_config(config)?;
+    run_prompt_benchmark_with_client(spec, runner, spec_path, out, config, tasks, &client)
+}
+
+fn run_prompt_benchmark_with_client(
+    spec: &EvalSpec,
+    runner: &RunnerSpec,
+    spec_path: &Path,
+    out: &Path,
+    config: &PromptModelConfig,
+    tasks: &[PromptBenchmarkTask],
+    model_client: &dyn ModelClient,
+) -> anyhow::Result<EvalReport> {
+    if config.provider != ModelProvider::OpenRouter {
+        anyhow::bail!(
+            "unsupported prompt benchmark provider: {:?}",
+            config.provider
+        );
+    }
+    if tasks.is_empty() {
+        anyhow::bail!("prompt_benchmark corpus must declare at least one task");
+    }
+
+    let mut task_results = Vec::new();
+    let mut passed = 0u64;
+
+    for task in tasks {
+        let started = Instant::now();
+        let response = model_client.complete(ModelRequest {
+            model: &config.model,
+            system_prompt: &config.system_prompt,
+            user_prompt: &task.prompt,
+            max_output_units: config.max_output_units,
+            temperature: config.temperature,
+        })?;
+        let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+        let task_passed = prompt_expectation_passes(&response.output, &task.expectation);
+        if task_passed {
+            passed += 1;
+        }
+
+        task_results.push(PromptTaskResult {
+            task_id: task.task_id.clone(),
+            prompt_hash: stable_hash(&[&config.system_prompt, &task.prompt]),
+            rubric_hash: stable_hash(&[
+                expectation_kind(&task.expectation),
+                expectation_value(&task.expectation),
+            ]),
+            expectation: task.expectation.clone(),
+            passed: task_passed,
+            output: response.output,
+            latency_ms,
+            response_id: response.response_id,
+            requested_model: config.model.clone(),
+            response_model: response.response_model,
+            input_units: response.input_units,
+            output_units: response.output_units,
+            total_units: response.total_units,
+            cost_usd: response.cost_usd,
+        });
+    }
+
+    let score = wilson_score("prompt_rubric_pass_rate", passed, tasks.len() as u64);
+    let evidence_path = out.join("prompt-run.json");
+    write_json(
+        &evidence_path,
+        &PromptRunEvidence {
+            schema_version: "crucible.prompt_run_evidence.v1",
+            spec_id: spec_id(spec, spec_path),
+            spec: spec_path.display().to_string(),
+            runner: runner.kind,
+            provider: config.provider,
+            model: config.model.clone(),
+            system_prompt_hash: stable_hash(&[&config.system_prompt]),
+            score: &score,
+            totals: PromptTotals {
+                tasks: tasks.len() as u64,
+                passed,
+                failed: tasks.len() as u64 - passed,
+            },
+            tasks: &task_results,
+        },
+    )?;
+
+    Ok(EvalReport {
+        id: spec_id(spec, spec_path),
+        title: if spec.task.is_empty() {
+            "Prompt benchmark".to_string()
+        } else {
+            spec.task.clone()
+        },
+        score,
+        artifacts: vec![spec_path.display().to_string(), evidence_path.display().to_string()],
+        notes: vec![
+            "Executed from a Crucible-authored prompt benchmark runner with a live model boundary, not Threshold."
+                .to_string(),
+            format!(
+                "Ran {} prompt task(s) against {:?}/{} and graded deterministic text rubrics.",
+                tasks.len(), config.provider, config.model
+            ),
+        ],
+    })
+}
+
 fn grade_key_recall_task(findings: &[KeyFinding], expected: &ExpectedKey) -> KeyRecallTaskScore {
     let grade = score_against_expected_key(findings, expected);
     let matched = grade.matched_ids.len() as u64;
@@ -516,6 +648,226 @@ fn write_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(value)
         .with_context(|| format!("serializing {}", path.display()))?;
     std::fs::write(path, format!("{json}\n")).with_context(|| format!("writing {}", path.display()))
+}
+
+trait ModelClient {
+    fn complete(&self, request: ModelRequest<'_>) -> anyhow::Result<ModelResponse>;
+}
+
+struct OpenRouterClient {
+    api_key: String,
+    http: reqwest::blocking::Client,
+}
+
+impl OpenRouterClient {
+    fn from_config(config: &PromptModelConfig) -> anyhow::Result<Self> {
+        let api_key = std::env::var(&config.credential_env).with_context(|| {
+            format!(
+                "{} is not set; prompt_benchmark requires a BYOK OpenRouter key",
+                config.credential_env
+            )
+        })?;
+        let http = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .context("building OpenRouter HTTP client")?;
+        Ok(Self { api_key, http })
+    }
+}
+
+impl ModelClient for OpenRouterClient {
+    fn complete(&self, request: ModelRequest<'_>) -> anyhow::Result<ModelResponse> {
+        let body = ChatCompletionRequest {
+            model: request.model,
+            messages: vec![
+                ChatMessage {
+                    role: "system",
+                    content: request.system_prompt,
+                },
+                ChatMessage {
+                    role: "user",
+                    content: request.user_prompt,
+                },
+            ],
+            max_output_units: request.max_output_units,
+            temperature: request.temperature,
+        };
+        let response = self
+            .http
+            .post("https://openrouter.ai/api/v1/chat/completions")
+            .bearer_auth(&self.api_key)
+            .header("HTTP-Referer", "https://github.com/misty-step/crucible")
+            .header("X-OpenRouter-Title", "Crucible")
+            .json(&body)
+            .send()
+            .context("sending OpenRouter chat completion request")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response
+                .text()
+                .unwrap_or_else(|_| "<failed to read response body>".to_string());
+            anyhow::bail!(
+                "OpenRouter chat completion failed with status {}: {}",
+                status,
+                truncate_for_error(&text)
+            );
+        }
+
+        let response: ChatCompletionResponse = response
+            .json()
+            .context("parsing OpenRouter chat completion response")?;
+        let choice = response
+            .choices
+            .into_iter()
+            .next()
+            .context("OpenRouter response had no choices")?;
+        let output = chat_content_to_string(choice.message.content)
+            .context("OpenRouter response choice had no text content")?;
+        Ok(ModelResponse {
+            output,
+            response_id: response.id,
+            response_model: response.model,
+            input_units: response.usage.as_ref().and_then(|usage| usage.input_units),
+            output_units: response.usage.as_ref().and_then(|usage| usage.output_units),
+            total_units: response.usage.as_ref().and_then(|usage| usage.total_units),
+            cost_usd: response.usage.and_then(|usage| usage.cost),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModelRequest<'a> {
+    model: &'a str,
+    system_prompt: &'a str,
+    user_prompt: &'a str,
+    max_output_units: Option<u32>,
+    temperature: Option<u32>,
+}
+
+#[derive(Debug)]
+struct ModelResponse {
+    output: String,
+    response_id: Option<String>,
+    response_model: Option<String>,
+    input_units: Option<u64>,
+    output_units: Option<u64>,
+    total_units: Option<u64>,
+    cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatCompletionRequest<'a> {
+    model: &'a str,
+    messages: Vec<ChatMessage<'a>>,
+    #[serde(rename = "max_tokens", skip_serializing_if = "Option::is_none")]
+    max_output_units: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatMessage<'a> {
+    role: &'a str,
+    content: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionResponse {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    choices: Vec<ChatChoice>,
+    #[serde(default)]
+    usage: Option<ChatUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatChoice {
+    message: ChatChoiceMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatChoiceMessage {
+    content: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatUsage {
+    #[serde(rename = "prompt_tokens", default)]
+    input_units: Option<u64>,
+    #[serde(default)]
+    #[serde(rename = "completion_tokens")]
+    output_units: Option<u64>,
+    #[serde(default)]
+    #[serde(rename = "total_tokens")]
+    total_units: Option<u64>,
+    #[serde(default)]
+    cost: Option<f64>,
+}
+
+fn chat_content_to_string(content: serde_json::Value) -> Option<String> {
+    match content {
+        serde_json::Value::String(text) => Some(text),
+        serde_json::Value::Array(parts) => {
+            let mut out = String::new();
+            for part in parts {
+                if let Some(text) = part.get("text").and_then(serde_json::Value::as_str) {
+                    out.push_str(text);
+                }
+            }
+            if out.is_empty() {
+                None
+            } else {
+                Some(out)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn prompt_expectation_passes(output: &str, expectation: &PromptExpectation) -> bool {
+    match expectation {
+        PromptExpectation::Exact { value } => output.trim() == value.trim(),
+        PromptExpectation::Contains { value } => output.contains(value),
+    }
+}
+
+fn expectation_kind(expectation: &PromptExpectation) -> &'static str {
+    match expectation {
+        PromptExpectation::Exact { .. } => "exact",
+        PromptExpectation::Contains { .. } => "contains",
+    }
+}
+
+fn expectation_value(expectation: &PromptExpectation) -> &str {
+    match expectation {
+        PromptExpectation::Exact { value } | PromptExpectation::Contains { value } => value,
+    }
+}
+
+fn stable_hash(parts: &[&str]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for part in parts {
+        for byte in part.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
+fn truncate_for_error(text: &str) -> String {
+    const LIMIT: usize = 320;
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.len() <= LIMIT {
+        compact
+    } else {
+        format!("{}...", &compact[..LIMIT])
+    }
 }
 
 fn load_cerberus_receipt_bundle(path: &Path) -> anyhow::Result<CerberusReviewReceiptBundle> {
@@ -650,6 +1002,53 @@ enum CorpusEvidence {
 }
 
 #[derive(Debug, Serialize)]
+struct PromptRunEvidence<'a> {
+    schema_version: &'static str,
+    spec_id: String,
+    spec: String,
+    runner: RunnerKind,
+    provider: ModelProvider,
+    model: String,
+    system_prompt_hash: String,
+    score: &'a Score,
+    totals: PromptTotals,
+    tasks: &'a [PromptTaskResult],
+}
+
+#[derive(Debug, Serialize)]
+struct PromptTotals {
+    tasks: u64,
+    passed: u64,
+    failed: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct PromptTaskResult {
+    task_id: String,
+    prompt_hash: String,
+    rubric_hash: String,
+    expectation: PromptExpectation,
+    passed: bool,
+    output: String,
+    latency_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_id: Option<String>,
+    requested_model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_model: Option<String>,
+    #[serde(rename = "prompt_tokens", skip_serializing_if = "Option::is_none")]
+    input_units: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "completion_tokens")]
+    output_units: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "total_tokens")]
+    total_units: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
 struct CerberusReceiptEvidence {
     task_id: String,
     artifact: String,
@@ -728,6 +1127,24 @@ struct SpanGrade {
 mod tests {
     use super::*;
 
+    struct FakeModelClient {
+        output: &'static str,
+    }
+
+    impl ModelClient for FakeModelClient {
+        fn complete(&self, request: ModelRequest<'_>) -> anyhow::Result<ModelResponse> {
+            Ok(ModelResponse {
+                output: self.output.to_string(),
+                response_id: Some(format!("fake:{}", request.model)),
+                response_model: Some(request.model.to_string()),
+                input_units: Some(7),
+                output_units: Some(3),
+                total_units: Some(10),
+                cost_usd: Some(0.0),
+            })
+        }
+    }
+
     #[test]
     fn relative_spec_paths_resolve_from_spec_directory() {
         let spec_path = Path::new("/repo/evals/pr-review-key-recall-v0.json");
@@ -768,5 +1185,81 @@ mod tests {
                 false_positives: 1,
             }
         );
+    }
+
+    #[test]
+    fn prompt_benchmark_runner_records_model_output_and_scores_rubric() {
+        let temp = std::env::temp_dir().join(format!("crucible-prompt-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("prompt-smoke.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+        let spec = EvalSpec {
+            schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
+            id: "prompt-smoke".to_string(),
+            task: "prompt-smoke".to_string(),
+            inputs: String::new(),
+            outputs: String::new(),
+            fixtures: Vec::new(),
+            graders: crucible_core::GraderManifest::default(),
+            baselines: Vec::new(),
+            aggregation: AggregationMethod::Proportion,
+            uncertainty: crucible_core::UncertaintyRule::default(),
+            decision: String::new(),
+            runner: None,
+        };
+        let runner = RunnerSpec {
+            kind: RunnerKind::PromptBenchmark,
+            corpus: CorpusSpec::PromptBenchmark {
+                config: PromptModelConfig {
+                    provider: ModelProvider::OpenRouter,
+                    model: "test/model".to_string(),
+                    system_prompt: "Answer exactly.".to_string(),
+                    credential_env: "OPENROUTER_API_KEY".to_string(),
+                    max_output_units: Some(8),
+                    temperature: Some(0),
+                },
+                tasks: vec![PromptBenchmarkTask {
+                    task_id: "exact".to_string(),
+                    prompt: "Reply with exactly: crucible-smoke".to_string(),
+                    expectation: PromptExpectation::Exact {
+                        value: "crucible-smoke".to_string(),
+                    },
+                }],
+            },
+        };
+
+        let report = run_prompt_benchmark_with_client(
+            &spec,
+            &runner,
+            &spec_path,
+            &temp,
+            match &runner.corpus {
+                CorpusSpec::PromptBenchmark { config, .. } => config,
+                _ => unreachable!(),
+            },
+            match &runner.corpus {
+                CorpusSpec::PromptBenchmark { tasks, .. } => tasks,
+                _ => unreachable!(),
+            },
+            &FakeModelClient {
+                output: "crucible-smoke",
+            },
+        )
+        .expect("prompt benchmark runs");
+
+        assert_eq!(report.score.metric, "prompt_rubric_pass_rate");
+        assert_eq!(report.score.successes, 1);
+        assert_eq!(report.score.n, 1);
+        let evidence = std::fs::read_to_string(temp.join("prompt-run.json"))
+            .expect("prompt evidence is written");
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(
+            evidence["schema_version"],
+            "crucible.prompt_run_evidence.v1"
+        );
+        assert_eq!(evidence["tasks"][0]["output"], "crucible-smoke");
+        assert_eq!(evidence["tasks"][0]["passed"], true);
+        assert_eq!(evidence["tasks"][0]["total_tokens"], 10);
     }
 }

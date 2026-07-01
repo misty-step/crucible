@@ -1,0 +1,45 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "prompt-smoke-v0",
+  "task": "prompt-smoke",
+  "inputs": "One authored prompt sent through a BYOK OpenRouter chat-completions model config.",
+  "outputs": "Model text graded by a deterministic contains rubric.",
+  "graders": {
+    "graders": [
+      {
+        "id": "contains_marker",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "decision": "Prove Crucible can author and run a benchmark with a real model call and no Threshold dependency.",
+  "runner": {
+    "kind": "prompt_benchmark",
+    "corpus": {
+      "source": "prompt_benchmark",
+      "config": {
+        "provider": "open_router",
+        "model": "openrouter/auto",
+        "system_prompt": "You are executing a benchmark smoke test. Follow the user instruction directly and keep the answer short.",
+        "credential_env": "OPENROUTER_API_KEY",
+        "max_tokens": 24,
+        "temperature": 0
+      },
+      "tasks": [
+        {
+          "task_id": "marker-echo",
+          "prompt": "Reply with one short sentence that includes this exact marker: crucible-smoke",
+          "expectation": {
+            "kind": "contains",
+            "value": "crucible-smoke"
+          }
+        }
+      ]
+    }
+  }
+}
