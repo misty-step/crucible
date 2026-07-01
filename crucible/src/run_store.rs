@@ -991,10 +991,14 @@ fn declared_fixture_refs(spec_path: Option<&str>) -> Result<Vec<FixtureRef>> {
     let Some(spec_path) = spec_path else {
         return Ok(Vec::new());
     };
-    let text = std::fs::read_to_string(spec_path)
-        .with_context(|| format!("reading eval spec for fixture refs {spec_path}"))?;
-    let spec: EvalSpec = serde_json::from_str(&text)
-        .with_context(|| format!("parsing {spec_path} as EvalSpec for fixture refs"))?;
+    let Ok(text) = std::fs::read_to_string(spec_path) else {
+        eprintln!("warning: could not read eval spec for fixture refs {spec_path}; omitting");
+        return Ok(Vec::new());
+    };
+    let Ok(spec) = serde_json::from_str::<EvalSpec>(&text) else {
+        eprintln!("warning: could not parse {spec_path} as EvalSpec for fixture refs; omitting");
+        return Ok(Vec::new());
+    };
     Ok(spec.fixtures)
 }
 
@@ -1199,6 +1203,36 @@ mod tests {
         assert!(
             card["provenance"].get("temperature").is_none(),
             "provider-default temperature must not be rewritten to 0.0: {card}"
+        );
+    }
+
+    #[test]
+    fn missing_fixture_spec_path_does_not_abort_persistence() {
+        let root = temp_dir("missing-fixture-spec");
+        let db = root.join("runs.sqlite");
+        let report = prompt_report(&root, "test/model-a", true);
+        let prompt_path = Path::new(&report.evals[0].artifacts[1]);
+        let mut evidence: Value = serde_json::from_str(
+            &std::fs::read_to_string(prompt_path).expect("read prompt evidence"),
+        )
+        .expect("prompt evidence is JSON");
+        evidence["spec"] = serde_json::json!(root.join("missing-spec.json").display().to_string());
+        std::fs::write(
+            prompt_path,
+            format!("{}\n", serde_json::to_string_pretty(&evidence).unwrap()),
+        )
+        .expect("rewrite prompt evidence");
+
+        persist_report(&db, &report).expect("missing fixture refs do not abort persistence");
+        let list = list_runs(&db, Some("prompt-smoke-v0")).expect("list runs");
+        let detail = show_run(&db, &list.runs[0].run_id).expect("show run");
+        let card = detail
+            .evaluation_card
+            .as_ref()
+            .expect("evaluation card is persisted");
+        assert!(
+            card["provenance"].get("fixture_refs").is_none(),
+            "unreadable fixture refs are omitted: {card}"
         );
     }
 
