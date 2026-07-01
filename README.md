@@ -18,6 +18,7 @@ Crucible now has a Rust core and CLI for the first eval family: agentic
 code-review quality. The shipped wedge can:
 
 - execute a declared `EvalSpec` with `crucible run <spec>`;
+- expose the same run surface as a stdio MCP tool for agents and Threshold;
 - adapt Cerberus review artifacts into Daedalus answer-key rows;
 - grade findings against either `solution/findings.json` or
   `tests/expected.json`;
@@ -85,6 +86,37 @@ directory per eval:
 Each score is binary and small-n by design, so its Wilson interval is wide. That
 is the intended behavior: the eval is runnable evidence, not overclaimed
 precision.
+
+## MCP
+
+Start the stdio MCP server from the repo root:
+
+```sh
+cargo run -p crucible -- mcp
+```
+
+The server exposes one tool, `crucible_run`, backed by the same implementation as
+`crucible run`.
+
+Declared spec example:
+
+```json
+{
+  "spec": "evals/pr-review-key-recall-v0.json"
+}
+```
+
+Built-in receipt example:
+
+```json
+{
+  "eval": "recoverable-adjudication-queue",
+  "out": "runs/local/recoverable-queue"
+}
+```
+
+The MCP result includes the pretty `crucible.run_report.v1` text, structured
+report content, the output directory, and the written `run-report.json` path.
 
 ## CLI
 

@@ -1,7 +1,7 @@
 //! Crucible CLI — evaluate a Cerberus review run against a Daedalus answer key,
 //! then queue what the deterministic floor cannot resolve for adjudication.
 //!
-//! Seven subcommands over the deterministic core:
+//! Eight subcommands over the deterministic core:
 //!
 //! - `crucible adapt <artifact.json> [--json]` projects every Cerberus finding
 //!   onto a Daedalus answer-key row and prints the rows. This is an inspection
@@ -49,6 +49,9 @@
 //! - `crucible adjudication-panel --queue <queue.json> --out <DIR>` renders an
 //!   existing `crucible.judgment_queue.v1` artifact into a static phone-first
 //!   `index.html` panel plus the copied `queue.json` model.
+//! - `crucible mcp` serves the shared `crucible run` path over stdio MCP as the
+//!   `crucible_run` tool, so agents and Threshold can invoke the same declared
+//!   spec runner and get the same Wilson-scored run report.
 //!
 //! `--json` emits a stable serde object (`adapt`/`grade`/`adjudicate`); the
 //! default is a human-readable table. `dashboard` instead writes files under
@@ -77,6 +80,7 @@ use serde::Serialize;
 mod adjudication_panel;
 mod dashboard_html;
 mod eval_run;
+mod mcp;
 mod spec_run;
 
 /// Standard-normal quantile for a two-sided 95% interval.
@@ -231,6 +235,8 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         out: PathBuf,
     },
+    /// Serve Crucible's run surface as a stdio Model Context Protocol server.
+    Mcp,
 }
 
 fn main() -> ExitCode {
@@ -280,6 +286,7 @@ fn main() -> ExitCode {
             json,
         } => run_eval(spec.as_deref(), eval, out.as_deref(), json),
         Command::AdjudicationPanel { queue, out } => run_adjudication_panel(&queue, &out),
+        Command::Mcp => mcp::run_stdio(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

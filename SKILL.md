@@ -72,6 +72,36 @@ cargo run -p crucible -- run \
   --json
 ```
 
+## Agent/MCP Surface
+
+Serve the same run surface over stdio MCP:
+
+```sh
+cargo run -p crucible -- mcp
+```
+
+Call the `crucible_run` tool with either a declared spec:
+
+```json
+{
+  "spec": "evals/pr-review-key-recall-v0.json"
+}
+```
+
+or a built-in receipt selector:
+
+```json
+{
+  "eval": "recoverable-adjudication-queue",
+  "out": "runs/local/recoverable-queue"
+}
+```
+
+The tool returns `content[0].text` as pretty `crucible.run_report.v1` JSON and
+`structuredContent.report` as the same parsed object. It also writes
+`run-report.json` under the reported output directory. Use this surface when a
+human, agent, Threshold loop, or MCP client needs to invoke evals directly.
+
 ## Headless Eval Loop
 
 Adapt a review artifact:

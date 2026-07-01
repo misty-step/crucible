@@ -9,9 +9,12 @@
 //! expects that finding plus one the review never raised, so a grade over the
 //! pair is a non-trivial 1 matched / 0 disputed / 1 missed.
 
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
+
+use serde_json::json;
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -23,6 +26,18 @@ fn fixture(name: &str) -> PathBuf {
 
 fn crucible() -> Command {
     Command::new(env!("CARGO_BIN_EXE_crucible"))
+}
+
+fn write_jsonrpc(stdin: &mut ChildStdin, message: serde_json::Value) {
+    writeln!(stdin, "{message}").expect("write JSON-RPC message");
+    stdin.flush().expect("flush JSON-RPC stdin");
+}
+
+fn read_jsonrpc(stdout: &mut BufReader<ChildStdout>) -> serde_json::Value {
+    let mut line = String::new();
+    stdout.read_line(&mut line).expect("read JSON-RPC response");
+    assert!(!line.is_empty(), "MCP server closed stdout unexpectedly");
+    serde_json::from_str(&line).expect("MCP response is JSON")
 }
 
 fn temp_root(tag: &str) -> PathBuf {
@@ -791,6 +806,100 @@ fn run_declared_spec_writes_a_scored_key_recall_report() {
     assert_eq!(evidence["totals"]["matched"], 1);
     assert_eq!(evidence["totals"]["expected_defects"], 2);
     assert_eq!(evidence["tasks"].as_array().expect("tasks array").len(), 1);
+}
+
+/// MCP exposes the same declared-spec runner as the CLI: initialize the stdio
+/// server, list tools, call `crucible_run`, and get the scored run report plus
+/// the on-disk evidence packet.
+#[test]
+fn mcp_crucible_run_executes_declared_spec() {
+    let out_dir = temp_root("mcp-run");
+    let spec = fixture("specs/key-recall-fixture.json");
+    let mut child = crucible()
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn crucible mcp");
+    let mut stdin = child.stdin.take().expect("MCP stdin");
+    let stdout = child.stdout.take().expect("MCP stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "protocolVersion": "2025-11-25" }
+        }),
+    );
+    let initialized = read_jsonrpc(&mut stdout);
+    assert!(
+        initialized.get("error").is_none(),
+        "initialize succeeds: {initialized}"
+    );
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "crucible");
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
+    );
+    let tools = read_jsonrpc(&mut stdout);
+    assert!(tools.get("error").is_none(), "tools/list succeeds: {tools}");
+    assert_eq!(
+        tools["result"]["tools"][0]["name"], "crucible_run",
+        "MCP exposes the eval runner as an agent-callable tool"
+    );
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "crucible_run",
+                "arguments": {
+                    "spec": spec,
+                    "out": out_dir
+                }
+            }
+        }),
+    );
+    let call = read_jsonrpc(&mut stdout);
+    assert!(call.get("error").is_none(), "tools/call succeeds: {call}");
+    let report = &call["result"]["structuredContent"]["report"];
+    assert_eq!(report["schema_version"], "crucible.run_report.v1");
+    assert_eq!(report["evals"][0]["id"], "key-recall-fixture");
+    assert_eq!(report["evals"][0]["score"]["successes"], 1);
+    assert_eq!(report["evals"][0]["score"]["n"], 2);
+    assert_eq!(report["evals"][0]["score"]["method"], "Wilson");
+    assert!(call["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text result")
+        .contains("\"schema_version\": \"crucible.run_report.v1\""));
+
+    let run_report_path = call["result"]["structuredContent"]["run_report"]
+        .as_str()
+        .expect("run_report path");
+    assert!(
+        Path::new(run_report_path).exists(),
+        "MCP call writes run-report.json evidence"
+    );
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let shutdown = read_jsonrpc(&mut stdout);
+    assert!(
+        shutdown.get("error").is_none(),
+        "shutdown succeeds: {shutdown}"
+    );
+    drop(stdin);
+    let status = child.wait().expect("MCP process exits");
+    assert!(status.success(), "MCP process exits cleanly");
 }
 
 /// The same declared runner must also consume fresh Cerberus producer handoffs:
