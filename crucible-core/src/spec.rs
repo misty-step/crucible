@@ -19,10 +19,12 @@
 //! confidence interval, and an optional [`PairedDelta`] against a baseline —
 //! recording the [`crate::measure`] outputs so no rate is ever reported naked.
 //!
-//! No CLI subcommand runs a spec yet: [`EvalSpec`] and [`Aggregate`] are exported
-//! now as the durable eval-definition and result schemas the runner (epic 005)
-//! and Daedalus (via Harbor) read, so the wire shape is fixed before there is a
-//! reader — part of backlog 004's persisted-artifact contract.
+//! The CLI can execute the first declared spec shape: key-recall over either a
+//! Daedalus `trials.jsonl` corpus or freshly produced Cerberus review artifacts
+//! handed off with `ReviewReceiptBundle.v1`. Those runner declarations are
+//! deliberately narrow and data-shaped; they name the corpus and candidate
+//! outputs to grade, while the metric and uncertainty still flow through the
+//! same [`AggregationMethod`] and [`UncertaintyRule`] fields as future runners.
 
 use serde::{Deserialize, Serialize};
 
@@ -142,6 +144,78 @@ pub struct UncertaintyRule {
     pub confidence: f64,
 }
 
+/// The runner family a declared eval spec can execute.
+///
+/// This is a closed enum, not an extension registry: adding a new runner means
+/// adding a real Crucible-owned execution path. The first runner is the code
+/// review key-recall benchmark surface that Threshold/Cerberus can optimize
+/// against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerKind {
+    /// Score review findings against expected PR-review key rows.
+    KeyRecall,
+}
+
+/// One executable runner declaration inside an [`EvalSpec`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunnerSpec {
+    /// Which runner family executes this spec.
+    pub kind: RunnerKind,
+    /// The corpus and candidate output source this runner consumes.
+    pub corpus: CorpusSpec,
+}
+
+/// One Cerberus-produced review artifact and receipt bundle to grade.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CerberusReceiptTask {
+    /// Stable task id in the benchmark.
+    pub task_id: String,
+    /// Cerberus `ReviewArtifact` JSON, absolute or relative to the spec file.
+    pub artifact: String,
+    /// Cerberus `ReviewReceiptBundle.v1` JSON, absolute or relative to the spec
+    /// file. Required so Crucible can distinguish a fresh producer artifact from
+    /// an arbitrary JSON fixture.
+    pub receipt_bundle: String,
+    /// Daedalus Harbor scorer key (`tests/expected.json`), absolute or relative
+    /// to the spec file.
+    pub expected: String,
+}
+
+/// The source of examples and candidate outputs for a declared runner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum CorpusSpec {
+    /// A Daedalus arena directory plus one Daedalus `trials.jsonl` file.
+    ///
+    /// Each selected trial supplies candidate findings for one task. The runner
+    /// grades those findings against
+    /// `<arena_dir>/tasks/<task_id>/tests/expected.json`.
+    DaedalusTrials {
+        /// Daedalus arena directory, absolute or relative to the spec file.
+        arena_dir: String,
+        /// Daedalus trials JSONL file, absolute or relative to the spec file.
+        trials_jsonl: String,
+        /// Candidate id to select from the trials file.
+        candidate_id: String,
+        /// Optional allowlist of task ids. Empty means every trial for the
+        /// candidate in the file.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tasks: Vec<String>,
+    },
+    /// Fresh Cerberus review artifacts handed off with receipt bundles.
+    ///
+    /// Each task supplies a validated Cerberus artifact plus the Harbor scorer
+    /// key Crucible owns. Cerberus remains the producer; Crucible owns the score,
+    /// interval, and evidence record.
+    CerberusReceiptBundles {
+        /// Candidate id to attribute these Cerberus artifacts to.
+        candidate_id: String,
+        /// Cerberus-produced task outputs to grade.
+        tasks: Vec<CerberusReceiptTask>,
+    },
+}
+
 impl Default for UncertaintyRule {
     fn default() -> Self {
         Self {
@@ -173,6 +247,9 @@ pub struct EvalSpec {
         deserialize_with = "deserialize_eval_spec_schema"
     )]
     pub schema_version: String,
+    /// Stable eval id, e.g. `pr-review-key-recall-v0`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     /// The task this eval measures, e.g. `code-review`.
     pub task: String,
     /// Free-form description of the inputs the eval consumes. Defaults to empty.
@@ -200,6 +277,9 @@ pub struct EvalSpec {
     /// The decision this eval informs, in one human sentence. Defaults to empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub decision: String,
+    /// Executable runner declaration. Omitted specs are definition-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<RunnerSpec>,
 }
 
 fn eval_spec_schema() -> String {
@@ -303,6 +383,7 @@ mod tests {
     fn minimal_spec_serializes_to_golden_and_round_trips() {
         let spec = EvalSpec {
             schema_version: EVAL_SPEC_SCHEMA.to_string(),
+            id: String::new(),
             task: "code-review".to_string(),
             inputs: String::new(),
             outputs: String::new(),
@@ -312,6 +393,7 @@ mod tests {
             aggregation: AggregationMethod::Proportion,
             uncertainty: UncertaintyRule::default(),
             decision: String::new(),
+            runner: None,
         };
         // Every empty optional is skipped; only the required + non-empty
         // structured fields remain.
@@ -330,18 +412,21 @@ mod tests {
         // uncertainty, and every collection.
         let spec: EvalSpec = serde_json::from_str(r#"{"task":"code-review"}"#).unwrap();
         assert_eq!(spec.schema_version, EVAL_SPEC_SCHEMA);
+        assert!(spec.id.is_empty());
         assert_eq!(spec.task, "code-review");
         assert_eq!(spec.aggregation, AggregationMethod::Proportion);
         assert_eq!(spec.uncertainty, UncertaintyRule::default());
         assert!(spec.fixtures.is_empty());
         assert!(spec.graders.is_empty());
         assert!(spec.baselines.is_empty());
+        assert!(spec.runner.is_none());
     }
 
     #[test]
     fn full_spec_round_trips_with_mixed_graders() {
         let spec = EvalSpec {
             schema_version: EVAL_SPEC_SCHEMA.to_string(),
+            id: "code-review-calibration-v0".to_string(),
             task: "code-review".to_string(),
             inputs: "Cerberus ReviewArtifact over a diff".to_string(),
             outputs: "matched / disputed / missed".to_string(),
@@ -372,12 +457,44 @@ mod tests {
                 confidence: 0.9,
             },
             decision: "ship the config with the higher calibrated keep-rate".to_string(),
+            runner: Some(RunnerSpec {
+                kind: RunnerKind::KeyRecall,
+                corpus: CorpusSpec::DaedalusTrials {
+                    arena_dir: "../daedalus/arenas/pr-review-v0".to_string(),
+                    trials_jsonl: "../daedalus/runs/freeze/trials.jsonl".to_string(),
+                    candidate_id: "probe-oneshot".to_string(),
+                    tasks: vec!["py-file-cache".to_string()],
+                },
+            }),
         };
         let json = serde_json::to_string(&spec).unwrap();
         let back: EvalSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(spec, back);
         assert_eq!(back.graders.graders.len(), 3);
         assert_eq!(back.graders.graders[1].kind, GraderKind::Agentic);
+        assert_eq!(back.runner.unwrap().kind, RunnerKind::KeyRecall);
+    }
+
+    #[test]
+    fn cerberus_receipt_bundle_corpus_round_trips() {
+        let corpus = CorpusSpec::CerberusReceiptBundles {
+            candidate_id: "cerberus-live".to_string(),
+            tasks: vec![CerberusReceiptTask {
+                task_id: "ratio-zero".to_string(),
+                artifact: "../runs/ratio-zero/artifact.json".to_string(),
+                receipt_bundle: "../runs/ratio-zero/receipt-bundle.json".to_string(),
+                expected:
+                    "../../daedalus/arenas/cerberus-fixture-v0/tasks/ratio-zero/tests/expected.json"
+                        .to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&corpus).unwrap();
+        assert!(
+            json.contains(r#""source":"cerberus_receipt_bundles""#),
+            "corpus source is stable: {json}"
+        );
+        let back: CorpusSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, corpus);
     }
 
     #[test]

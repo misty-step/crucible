@@ -1,0 +1,42 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "pr-review-key-recall-v0",
+  "task": "pr-review-key-recall",
+  "inputs": "Daedalus PR-review candidate findings from the frozen pr-review-v0 trials corpus.",
+  "outputs": "Key recall: expected PR-review defects matched by the candidate review output.",
+  "graders": {
+    "graders": [
+      {
+        "id": "daedalus_expected_key_match",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "baselines": [
+    "null",
+    "oracle"
+  ],
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "decision": "Use this benchmark as the first key-recall floor for review-agent/Cerberus quality before Threshold optimizes candidate configurations against richer judged metrics.",
+  "runner": {
+    "kind": "key_recall",
+    "corpus": {
+      "source": "daedalus_trials",
+      "arena_dir": "../../daedalus/arenas/pr-review-v0",
+      "trials_jsonl": "../../daedalus/runs/20260623T000000Z-freeze-pr-review-v0/trials.jsonl",
+      "candidate_id": "probe-oneshot",
+      "tasks": [
+        "js-cart-total",
+        "js-clean-rename",
+        "py-auth-sqli",
+        "py-file-cache",
+        "py-pagination",
+        "rs-retry-backoff"
+      ]
+    }
+  }
+}

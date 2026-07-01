@@ -57,3 +57,14 @@ families, warns when gitleaks is absent (no false "clean"), and `runs/` is now f
 gitignored; AGENTS.md content policy corrected to credential scope + the cargo-doc
 `-D warnings` step was added to the gate. Still pending: child 4 (verification
 `SKILL.md` — author→run→grade→adjudicate→export with the now-real commands).
+
+**Update 2026-07-01:** child 4 (repo-local verification `SKILL.md`) DELIVERED
+for the current code-review wedge, including declared-spec runs, Cerberus
+receipt-bundle handoff shape, headless grade/adjudicate/export commands, and
+the static adjudication-panel path. Agent/Threshold access also landed as
+`crucible mcp`, exposing the shared `crucible run` path as the `crucible_run`
+stdio MCP tool; the integration test initializes MCP, lists the tool, invokes a
+declared spec, and verifies the Wilson-scored `crucible.run_report.v1` plus
+written `run-report.json`. Still pending: child 5 (`AGENTS.md` refresh) and
+Harbor export-schema validation ratcheting when the schema check becomes a
+repo-owned gate.

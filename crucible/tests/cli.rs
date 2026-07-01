@@ -9,8 +9,14 @@
 //! expects that finding plus one the review never raised, so a grade over the
 //! pair is a non-trivial 1 matched / 0 disputed / 1 missed.
 
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use serde_json::json;
+
+static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -20,6 +26,26 @@ fn fixture(name: &str) -> PathBuf {
 
 fn crucible() -> Command {
     Command::new(env!("CARGO_BIN_EXE_crucible"))
+}
+
+fn write_jsonrpc(stdin: &mut ChildStdin, message: serde_json::Value) {
+    writeln!(stdin, "{message}").expect("write JSON-RPC message");
+    stdin.flush().expect("flush JSON-RPC stdin");
+}
+
+fn read_jsonrpc(stdout: &mut BufReader<ChildStdout>) -> serde_json::Value {
+    let mut line = String::new();
+    stdout.read_line(&mut line).expect("read JSON-RPC response");
+    assert!(!line.is_empty(), "MCP server closed stdout unexpectedly");
+    serde_json::from_str(&line).expect("MCP response is JSON")
+}
+
+fn temp_root(tag: &str) -> PathBuf {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("crucible-cli-{}-{tag}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp root");
+    dir
 }
 
 /// The headline test: `grade --json` over the real artifact emits a stable,
@@ -643,6 +669,322 @@ fn adjudicate_human_mode_renders_the_queue_table() {
         text.contains("src/harness.rs:349"),
         "shows the mapped location: {text}"
     );
+}
+
+/// `crucible run` is the runnable-evals contract for cold agents: one command
+/// writes three concrete eval receipts, each with a defensible score shape and
+/// inspectable artifacts.
+#[test]
+fn run_all_writes_three_runnable_eval_receipts() {
+    let out_dir = temp_root("run-all");
+    let out = crucible()
+        .arg("run")
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+
+    assert!(
+        out.status.success(),
+        "run must exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("run --json must emit valid JSON");
+    assert_eq!(v["schema_version"], "crucible.run_report.v1");
+    let evals = v["evals"].as_array().expect("evals is an array");
+    assert_eq!(evals.len(), 3, "three concrete evals run: {v}");
+
+    for eval in evals {
+        let score = &eval["score"];
+        assert_eq!(
+            score["method"], "Wilson",
+            "every built-in eval reports a Wilson interval: {eval}"
+        );
+        assert!(
+            score["n"].as_u64().expect("n is a count") >= 1,
+            "each eval has a denominator: {eval}"
+        );
+        assert!(
+            score["lower"].as_f64().unwrap() <= score["upper"].as_f64().unwrap(),
+            "interval is ordered: {eval}"
+        );
+    }
+
+    assert!(out_dir.join("run-report.json").exists());
+    assert!(out_dir
+        .join("code-review-deterministic-floor")
+        .join("grade.json")
+        .exists());
+    assert!(out_dir
+        .join("recoverable-adjudication-queue")
+        .join("panel")
+        .join("index.html")
+        .exists());
+    assert!(out_dir
+        .join("harbor-export-acceptance")
+        .join("tests")
+        .join("expected.json")
+        .exists());
+    let expected: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            out_dir
+                .join("harbor-export-acceptance")
+                .join("tests")
+                .join("expected.json"),
+        )
+        .expect("read exported scorer key"),
+    )
+    .expect("scorer key is JSON");
+    let oracle: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            out_dir
+                .join("harbor-export-acceptance")
+                .join("solution")
+                .join("findings.json"),
+        )
+        .expect("read exported oracle key"),
+    )
+    .expect("oracle key is JSON");
+    assert_eq!(
+        expected["defects"].as_array().expect("defects array").len(),
+        1,
+        "one accepted finding reaches the scorer key"
+    );
+    assert_eq!(
+        oracle["findings"].as_array().expect("findings array").len(),
+        1,
+        "the same accepted finding reaches the oracle key"
+    );
+}
+
+/// `crucible run <spec>` is the declared-eval path: the command loads an
+/// `EvalSpec`, executes its runner, and writes the same scored run-report shape
+/// as built-in receipts.
+#[test]
+fn run_declared_spec_writes_a_scored_key_recall_report() {
+    let out_dir = temp_root("run-spec");
+    let spec = fixture("specs/key-recall-fixture.json");
+    let out = crucible()
+        .arg("run")
+        .arg(&spec)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+
+    assert!(
+        out.status.success(),
+        "declared spec run must exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("run <spec> --json emits JSON");
+    assert_eq!(v["schema_version"], "crucible.run_report.v1");
+    assert_eq!(v["evals"].as_array().expect("evals array").len(), 1);
+    let eval = &v["evals"][0];
+    assert_eq!(eval["id"], "key-recall-fixture");
+    assert_eq!(eval["score"]["metric"], "pr_review_key_recall");
+    assert_eq!(eval["score"]["successes"], 1);
+    assert_eq!(eval["score"]["n"], 2);
+    assert_eq!(eval["score"]["method"], "Wilson");
+    assert!(
+        eval["score"]["lower"].as_f64().unwrap() < 0.5
+            && 0.5 < eval["score"]["upper"].as_f64().unwrap(),
+        "Wilson interval brackets the 1/2 point estimate: {eval}"
+    );
+
+    let evidence_path = out_dir.join("task-results.json");
+    assert!(out_dir.join("run-report.json").exists());
+    assert!(evidence_path.exists(), "task-level evidence written");
+    let evidence: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence_path).expect("read evidence"))
+            .expect("evidence is JSON");
+    assert_eq!(evidence["schema_version"], "crucible.spec_run_evidence.v1");
+    assert_eq!(evidence["totals"]["matched"], 1);
+    assert_eq!(evidence["totals"]["expected_defects"], 2);
+    assert_eq!(evidence["tasks"].as_array().expect("tasks array").len(), 1);
+}
+
+/// MCP exposes the same declared-spec runner as the CLI: initialize the stdio
+/// server, list tools, call `crucible_run`, and get the scored run report plus
+/// the on-disk evidence packet.
+#[test]
+fn mcp_crucible_run_executes_declared_spec() {
+    let out_dir = temp_root("mcp-run");
+    let spec = fixture("specs/key-recall-fixture.json");
+    let mut child = crucible()
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn crucible mcp");
+    let mut stdin = child.stdin.take().expect("MCP stdin");
+    let stdout = child.stdout.take().expect("MCP stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "protocolVersion": "2025-11-25" }
+        }),
+    );
+    let initialized = read_jsonrpc(&mut stdout);
+    assert!(
+        initialized.get("error").is_none(),
+        "initialize succeeds: {initialized}"
+    );
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "crucible");
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
+    );
+    let tools = read_jsonrpc(&mut stdout);
+    assert!(tools.get("error").is_none(), "tools/list succeeds: {tools}");
+    assert_eq!(
+        tools["result"]["tools"][0]["name"], "crucible_run",
+        "MCP exposes the eval runner as an agent-callable tool"
+    );
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "crucible_run",
+                "arguments": {
+                    "spec": spec,
+                    "out": out_dir
+                }
+            }
+        }),
+    );
+    let call = read_jsonrpc(&mut stdout);
+    assert!(call.get("error").is_none(), "tools/call succeeds: {call}");
+    let report = &call["result"]["structuredContent"]["report"];
+    assert_eq!(report["schema_version"], "crucible.run_report.v1");
+    assert_eq!(report["evals"][0]["id"], "key-recall-fixture");
+    assert_eq!(report["evals"][0]["score"]["successes"], 1);
+    assert_eq!(report["evals"][0]["score"]["n"], 2);
+    assert_eq!(report["evals"][0]["score"]["method"], "Wilson");
+    assert!(call["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text result")
+        .contains("\"schema_version\": \"crucible.run_report.v1\""));
+
+    let run_report_path = call["result"]["structuredContent"]["run_report"]
+        .as_str()
+        .expect("run_report path");
+    assert!(
+        Path::new(run_report_path).exists(),
+        "MCP call writes run-report.json evidence"
+    );
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let shutdown = read_jsonrpc(&mut stdout);
+    assert!(
+        shutdown.get("error").is_none(),
+        "shutdown succeeds: {shutdown}"
+    );
+    drop(stdin);
+    let status = child.wait().expect("MCP process exits");
+    assert!(status.success(), "MCP process exits cleanly");
+}
+
+/// The same declared runner must also consume fresh Cerberus producer handoffs:
+/// a `ReviewArtifact` bound to a `ReviewReceiptBundle.v1`, then scored by
+/// Crucible against the Harbor key.
+#[test]
+fn run_declared_spec_grades_cerberus_receipt_bundle_artifacts() {
+    let out_dir = temp_root("run-cerberus-spec");
+    let spec = fixture("specs/cerberus-receipt-fixture.json");
+    let out = crucible()
+        .arg("run")
+        .arg(&spec)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+
+    assert!(
+        out.status.success(),
+        "declared Cerberus receipt spec run must exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("run <spec> --json emits JSON");
+    let eval = &v["evals"][0];
+    assert_eq!(eval["id"], "cerberus-receipt-fixture");
+    assert_eq!(eval["score"]["metric"], "pr_review_key_recall");
+    assert_eq!(eval["score"]["successes"], 1);
+    assert_eq!(eval["score"]["n"], 2);
+    assert_eq!(eval["score"]["method"], "Wilson");
+
+    let evidence_path = out_dir.join("task-results.json");
+    let evidence: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence_path).expect("read evidence"))
+            .expect("evidence is JSON");
+    assert_eq!(evidence["corpus"]["source"], "cerberus_receipt_bundles");
+    assert_eq!(evidence["corpus"]["candidate_id"], "cerberus-fixture");
+    assert_eq!(evidence["corpus"]["tasks"][0]["harness"], "fixture");
+    assert_eq!(
+        evidence["corpus"]["tasks"][0]["validation_status"],
+        "passed"
+    );
+    assert_eq!(evidence["tasks"][0]["receipt_harness"], "fixture");
+    assert_eq!(evidence["tasks"][0]["matched"], 1);
+    assert_eq!(evidence["tasks"][0]["expected_defects"], 2);
+}
+
+/// The standalone panel command renders an existing judgment queue artifact into
+/// a phone-first static HTML panel plus the copied queue model.
+#[test]
+fn adjudication_panel_renders_existing_queue_artifact() {
+    let out_dir = temp_root("panel");
+    let out = crucible()
+        .arg("adjudication-panel")
+        .arg("--queue")
+        .arg(fixture("export-queue.json"))
+        .arg("--out")
+        .arg(&out_dir)
+        .output()
+        .expect("crucible binary runs");
+
+    assert!(
+        out.status.success(),
+        "panel must exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let html_path = out_dir.join("index.html");
+    let queue_path = out_dir.join("queue.json");
+    assert!(html_path.exists(), "panel HTML written");
+    assert!(queue_path.exists(), "queue model copied");
+
+    let html = std::fs::read_to_string(html_path).expect("read panel HTML");
+    for marker in [
+        "name=\"viewport\"",
+        "Adjudication panel",
+        "F3",
+        "cache.py:23",
+        "Keep",
+        "Nit",
+        "Wrong",
+        "Noise",
+    ] {
+        assert!(html.contains(marker), "missing marker {marker:?}: {html}");
+    }
 }
 
 /// Stable exit codes so Cerberus/Daedalus can branch headlessly: `0` success,

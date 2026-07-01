@@ -1,7 +1,7 @@
 //! Crucible CLI — evaluate a Cerberus review run against a Daedalus answer key,
 //! then queue what the deterministic floor cannot resolve for adjudication.
 //!
-//! Five subcommands over the deterministic core:
+//! Eight subcommands over the deterministic core:
 //!
 //! - `crucible adapt <artifact.json> [--json]` projects every Cerberus finding
 //!   onto a Daedalus answer-key row and prints the rows. This is an inspection
@@ -42,6 +42,16 @@
 //!   the full `data.json` model under `<out>`. The read side made viewable: it
 //!   recomputes no statistic, only renders the measured ranking — every number
 //!   tracing to a run and pinned to its arena version.
+//! - `crucible run [<spec.json>] [--out <DIR>] [--eval <ID>] [--json]` either
+//!   executes a declared [`EvalSpec`](crucible_core::EvalSpec) runner when a spec
+//!   path is supplied, or runs the three built-in committed receipt checks when
+//!   no spec is supplied. Every score carries a Wilson interval.
+//! - `crucible adjudication-panel --queue <queue.json> --out <DIR>` renders an
+//!   existing `crucible.judgment_queue.v1` artifact into a static phone-first
+//!   `index.html` panel plus the copied `queue.json` model.
+//! - `crucible mcp` serves the shared `crucible run` path over stdio MCP as the
+//!   `crucible_run` tool, so agents and Threshold can invoke the same declared
+//!   spec runner and get the same Wilson-scored run report.
 //!
 //! `--json` emits a stable serde object (`adapt`/`grade`/`adjudicate`); the
 //! default is a human-readable table. `dashboard` instead writes files under
@@ -67,7 +77,11 @@ use crucible_core::{
 };
 use serde::Serialize;
 
+mod adjudication_panel;
 mod dashboard_html;
+mod eval_run;
+mod mcp;
+mod spec_run;
 
 /// Standard-normal quantile for a two-sided 95% interval.
 const Z_95: f64 = 1.96;
@@ -193,6 +207,36 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         out: PathBuf,
     },
+    /// Run a declared eval spec, or one/all built-in eval receipts, and write
+    /// evidence under `--out`. Each binary score carries a Wilson interval.
+    Run {
+        /// Path to a declared Crucible EvalSpec JSON. When present, `run`
+        /// executes the spec's runner instead of the built-in receipt selector.
+        #[arg(value_name = "SPEC")]
+        spec: Option<PathBuf>,
+        /// Which built-in eval to run. Defaults to all three concrete receipts.
+        #[arg(long, value_enum, default_value_t = eval_run::RunEval::All)]
+        eval: eval_run::RunEval,
+        /// Output directory for `run-report.json` and per-eval evidence packets.
+        /// Declared specs default to `runs/local/<spec-id>` when omitted.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// Emit the stable run report JSON to stdout in addition to writing it.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render a static phone-first adjudication panel from an existing
+    /// `crucible.judgment_queue.v1` queue artifact.
+    AdjudicationPanel {
+        /// Path to a judgment queue JSON artifact.
+        #[arg(long, value_name = "PATH")]
+        queue: PathBuf,
+        /// Output directory; `index.html` and a copied `queue.json` are written.
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
+    },
+    /// Serve Crucible's run surface as a stdio Model Context Protocol server.
+    Mcp,
 }
 
 fn main() -> ExitCode {
@@ -235,6 +279,14 @@ fn main() -> ExitCode {
             expected: expected.as_deref(),
         }),
         Command::Dashboard { arenas, runs, out } => run_dashboard(&arenas, &runs, &out),
+        Command::Run {
+            spec,
+            eval,
+            out,
+            json,
+        } => run_eval(spec.as_deref(), eval, out.as_deref(), json),
+        Command::AdjudicationPanel { queue, out } => run_adjudication_panel(&queue, &out),
+        Command::Mcp => mcp::run_stdio(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -243,6 +295,60 @@ fn main() -> ExitCode {
             ExitCode::from(EXIT_LOAD_ERROR)
         }
     }
+}
+
+/// `crucible run`: execute a declared spec when supplied, otherwise run built-in
+/// eval receipts.
+fn run_eval(
+    spec: Option<&Path>,
+    eval: eval_run::RunEval,
+    out: Option<&Path>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let report = if let Some(spec_path) = spec {
+        if eval != eval_run::RunEval::All {
+            anyhow::bail!(
+                "--eval selects built-in receipts and cannot be combined with a spec path"
+            );
+        }
+        spec_run::run(spec_path, out)?
+    } else {
+        let out = out.with_context(|| "built-in receipt runs require --out <DIR>")?;
+        eval_run::run(eval, out)?
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("crucible run");
+        println!("  out      {}", report.output_dir);
+        for eval in &report.evals {
+            println!(
+                "  eval     {}  {}",
+                eval.id,
+                eval_run::format_score(&eval.score)
+            );
+        }
+        println!(
+            "  wrote    {}",
+            Path::new(&report.output_dir)
+                .join("run-report.json")
+                .display()
+        );
+    }
+    Ok(())
+}
+
+/// `crucible adjudication-panel`: render a phone-first static HTML panel from an
+/// existing judgment queue.
+fn run_adjudication_panel(queue: &Path, out: &Path) -> anyhow::Result<()> {
+    let receipt = adjudication_panel::write_panel(queue, out)?;
+    println!("crucible adjudication-panel");
+    println!("  queue    {}", queue.display());
+    println!("  items    {}", receipt.items);
+    println!("  labels   {}", receipt.labels);
+    println!("  wrote    {}", receipt.html_path.display());
+    println!("  wrote    {}", receipt.queue_path.display());
+    Ok(())
 }
 
 /// `crucible adapt`: map every finding in the artifact and print the rows.
@@ -664,6 +770,23 @@ impl MatchRate {
             z: Z_95,
             confidence: CONFIDENCE,
         }
+    }
+}
+
+/// Build the same Wilson-shaped score used by `grade` for non-grade binary eval
+/// receipts. Kept in the CLI layer so built-in evals do not fork the interval
+/// math or silently report pass/fail.
+fn wilson_score(metric: &'static str, successes: u64, n: u64) -> eval_run::Score {
+    let (lower, upper) = wilson_interval(successes, n, Z_95);
+    eval_run::Score {
+        metric,
+        successes,
+        n,
+        point: (n != 0).then(|| proportion(successes, n)),
+        lower,
+        upper,
+        confidence: CONFIDENCE,
+        method: "Wilson",
     }
 }
 

@@ -55,7 +55,8 @@
 //!   [`ConfusionMatrix`], the unlock threshold, and whether it unlocked.
 //! - [`spec`] — the declarative [`EvalSpec`]: task, fixtures by [`FixtureRef`],
 //!   a closed-enum [`GraderManifest`] of deterministic / agentic / human graders
-//!   ([`GraderKind`]), baselines, aggregation, uncertainty rule, and the
+//!   ([`GraderKind`]), optional runner/corpus declaration ([`RunnerSpec`],
+//!   [`CorpusSpec`]), baselines, aggregation, uncertainty rule, and the
 //!   [`Aggregate`] result shape (score + CI + optional paired delta).
 //! - [`dashboard`] — the read side of the eval: ingests a tree of real Daedalus
 //!   arenas and runs into a [`Dataset`] of [`Eval`] / [`EvalTask`] / [`Config`] /
@@ -133,6 +134,7 @@ pub use measure::{
 };
 pub use provenance::{EvaluationCard, Provenance, EVALUATION_CARD_SCHEMA};
 pub use spec::{
-    Aggregate, AggregationMethod, EvalSpec, FixtureRef, Grader, GraderKind, GraderManifest,
-    IntervalMethod, PairedDelta, UncertaintyRule, EVAL_SPEC_SCHEMA,
+    Aggregate, AggregationMethod, CerberusReceiptTask, CorpusSpec, EvalSpec, FixtureRef, Grader,
+    GraderKind, GraderManifest, IntervalMethod, PairedDelta, RunnerKind, RunnerSpec,
+    UncertaintyRule, EVAL_SPEC_SCHEMA,
 };
