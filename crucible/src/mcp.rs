@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::eval_run::{self, RunEval};
+use crate::run_store;
 use crate::spec_run;
 
 const PROTOCOL_VERSION: &str = "2025-11-25";
@@ -98,6 +99,10 @@ fn tool_defs() -> Value {
                         "type": "string",
                         "description": "Output directory for run-report.json and evidence artifacts. Optional for declared specs; required for built-in receipt evals."
                     },
+                    "db": {
+                        "type": "string",
+                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                    },
                     "eval": {
                         "type": "string",
                         "enum": [
@@ -108,6 +113,67 @@ fn tool_defs() -> Value {
                         ],
                         "default": "all",
                         "description": "Built-in receipt eval selector when no spec path is supplied."
+                    }
+                }
+            }
+        },
+        {
+            "name": "crucible_runs_list",
+            "description": "List stored Crucible run records from the SQLite ledger, optionally filtered by benchmark id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "db": {
+                        "type": "string",
+                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                    },
+                    "benchmark": {
+                        "type": "string",
+                        "description": "Benchmark id to filter on, such as prompt-smoke-v0."
+                    }
+                }
+            }
+        },
+        {
+            "name": "crucible_runs_show",
+            "description": "Show one stored Crucible run record, including artifact pointers and indexed prompt task rows.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["run_id"],
+                "properties": {
+                    "db": {
+                        "type": "string",
+                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                    },
+                    "run_id": {
+                        "type": "string",
+                        "description": "Run id returned by crucible_runs_list."
+                    }
+                }
+            }
+        },
+        {
+            "name": "crucible_runs_compare",
+            "description": "Compare the latest stored runs for two configs or model slugs under one benchmark. The result is a descriptive latest-run delta, not a significance claim.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["benchmark", "left", "right"],
+                "properties": {
+                    "db": {
+                        "type": "string",
+                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                    },
+                    "benchmark": {
+                        "type": "string",
+                        "description": "Benchmark id to compare under."
+                    },
+                    "left": {
+                        "type": "string",
+                        "description": "Left config id or model slug."
+                    },
+                    "right": {
+                        "type": "string",
+                        "description": "Right config id or model slug."
                     }
                 }
             }
@@ -127,6 +193,9 @@ fn call_tool(params: &Value) -> Result<Value> {
 
     match name {
         "crucible_run" => crucible_run(arguments),
+        "crucible_runs_list" => crucible_runs_list(arguments),
+        "crucible_runs_show" => crucible_runs_show(arguments),
+        "crucible_runs_compare" => crucible_runs_compare(arguments),
         other => Err(anyhow!("unknown tool: {other}")),
     }
 }
@@ -136,6 +205,7 @@ struct CrucibleRunArgs {
     spec: Option<PathBuf>,
     out: Option<PathBuf>,
     eval: Option<String>,
+    db: Option<PathBuf>,
 }
 
 fn crucible_run(arguments: Value) -> Result<Value> {
@@ -154,6 +224,10 @@ fn crucible_run(arguments: Value) -> Result<Value> {
             .ok_or_else(|| anyhow!("built-in receipt runs require out"))?;
         eval_run::run(parse_run_eval(args.eval.as_deref())?, out)?
     };
+    let db_path = args
+        .db
+        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let stored = run_store::persist_report(&db_path, &report)?;
 
     let report_json = serde_json::to_value(&report)?;
     let report_text = serde_json::to_string_pretty(&report)?;
@@ -168,8 +242,68 @@ fn crucible_run(arguments: Value) -> Result<Value> {
             "schema_version": report.schema_version,
             "output_dir": report.output_dir,
             "run_report": run_report_path,
+            "run_store": stored,
             "report": report_json
         }
+    }))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RunsListArgs {
+    db: Option<PathBuf>,
+    benchmark: Option<String>,
+}
+
+fn crucible_runs_list(arguments: Value) -> Result<Value> {
+    let args: RunsListArgs =
+        serde_json::from_value(arguments).context("parse crucible_runs_list arguments")?;
+    let db = args
+        .db
+        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let list = run_store::list_runs(&db, args.benchmark.as_deref())?;
+    Ok(json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&list)? }],
+        "structuredContent": list
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct RunsShowArgs {
+    db: Option<PathBuf>,
+    run_id: String,
+}
+
+fn crucible_runs_show(arguments: Value) -> Result<Value> {
+    let args: RunsShowArgs =
+        serde_json::from_value(arguments).context("parse crucible_runs_show arguments")?;
+    let db = args
+        .db
+        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let detail = run_store::show_run(&db, &args.run_id)?;
+    Ok(json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&detail)? }],
+        "structuredContent": detail
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct RunsCompareArgs {
+    db: Option<PathBuf>,
+    benchmark: String,
+    left: String,
+    right: String,
+}
+
+fn crucible_runs_compare(arguments: Value) -> Result<Value> {
+    let args: RunsCompareArgs =
+        serde_json::from_value(arguments).context("parse crucible_runs_compare arguments")?;
+    let db = args
+        .db
+        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let comparison = run_store::compare_configs(&db, &args.benchmark, &args.left, &args.right)?;
+    Ok(json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&comparison)? }],
+        "structuredContent": comparison
     }))
 }
 
@@ -199,7 +333,15 @@ mod tests {
             .map(|tool| tool["name"].as_str().unwrap())
             .collect::<Vec<_>>();
 
-        assert_eq!(names, vec!["crucible_run"]);
+        assert_eq!(
+            names,
+            vec![
+                "crucible_run",
+                "crucible_runs_list",
+                "crucible_runs_show",
+                "crucible_runs_compare"
+            ]
+        );
     }
 
     #[test]

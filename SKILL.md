@@ -41,7 +41,37 @@ cargo run -p crucible -- run evals/prompt-smoke-v0.json \
 
 This is the first author-and-run engine slice: Crucible owns the authored prompt
 benchmark, makes the live model call, grades the text with a deterministic
-rubric, and writes `prompt-run.json` evidence under `runs/`.
+rubric, writes `prompt-run.json` evidence under `runs/`, and persists the run
+plus prompt task rows into the SQLite ledger at
+`runs/local/crucible-runs.sqlite`.
+
+Use an isolated ledger for tests or one-off proof:
+
+```sh
+cargo run -p crucible -- run evals/prompt-smoke-v0.json \
+  --out runs/local/prompt-smoke \
+  --db runs/local/crucible-runs.sqlite \
+  --json
+```
+
+Query the ledger:
+
+```sh
+cargo run -p crucible -- runs list \
+  --benchmark prompt-smoke-v0 \
+  --json
+
+cargo run -p crucible -- runs show <RUN_ID> --json
+
+cargo run -p crucible -- runs compare \
+  --benchmark prompt-smoke-v0 \
+  --left openrouter/auto \
+  --right openrouter/auto \
+  --json
+```
+
+`runs compare` is intentionally descriptive: latest matching run per
+config/model, Wilson intervals shown, no significance claim.
 
 Run a Cerberus producer handoff through the same declared runner:
 
@@ -123,8 +153,17 @@ or a built-in receipt selector:
 
 The tool returns `content[0].text` as pretty `crucible.run_report.v1` JSON and
 `structuredContent.report` as the same parsed object. It also writes
-`run-report.json` under the reported output directory. Use this surface when a
-human, agent, Threshold loop, or MCP client needs to invoke evals directly.
+`run-report.json` under the reported output directory and stores the run in the
+SQLite ledger. Use this surface when a human, agent, Threshold loop, or MCP
+client needs to invoke evals directly.
+
+Query tools:
+
+- `crucible_runs_list`: list stored run rows, optionally filtered by benchmark.
+- `crucible_runs_show`: fetch one run by run id with artifact pointers and
+  indexed prompt task rows.
+- `crucible_runs_compare`: compare latest stored runs for two config ids or
+  model slugs under one benchmark.
 
 ## Headless Eval Loop
 

@@ -21,6 +21,8 @@ code-review quality. The shipped wedge can:
 - run a Crucible-owned prompt benchmark through an OpenRouter-compatible BYOK
   model boundary and grade it with a deterministic rubric;
 - expose the same run surface as a stdio MCP tool for agents and Threshold;
+- persist each run into a gitignored SQLite ledger and query it by benchmark,
+  run id, or latest config/model comparison through CLI and MCP;
 - adapt Cerberus review artifacts into Threshold/Daedalus answer-key rows;
 - grade findings against either `solution/findings.json` or
   `tests/expected.json`;
@@ -46,6 +48,8 @@ That spec, `pr-review-key-recall-v0`, selects the frozen Threshold
 `pr-review-v0` trials corpus and grades the `probe-oneshot` candidate against
 the Harbor scorer keys under the sibling `daedalus` checkout. The default
 evidence directory is `runs/local/pr-review-key-recall-v0/`.
+Every `crucible run` invocation also writes rows into the SQLite run ledger at
+`runs/local/crucible-runs.sqlite` unless `--db <PATH>` is supplied.
 
 Run a Cerberus producer handoff through the same declared-spec runner:
 
@@ -102,7 +106,29 @@ cargo run -p crucible -- run evals/prompt-smoke-v0.json \
 This spec makes a real model call through the OpenRouter chat-completions API,
 captures token/latency metadata when the provider returns it, grades the response
 with a deterministic contains rubric, and writes
-`runs/local/prompt-smoke/prompt-run.json`. Raw model output stays under `runs/`.
+`runs/local/prompt-smoke/prompt-run.json`. The same prompt task evidence is
+indexed into the SQLite ledger as task rows plus artifact pointers. Raw model
+output stays under `runs/`.
+
+Query the run ledger:
+
+```sh
+cargo run -p crucible -- runs list \
+  --benchmark prompt-smoke-v0 \
+  --json
+
+cargo run -p crucible -- runs show <RUN_ID> --json
+
+cargo run -p crucible -- runs compare \
+  --benchmark prompt-smoke-v0 \
+  --left openrouter/auto \
+  --right openrouter/auto \
+  --json
+```
+
+`runs compare` reports the latest stored run for each config id or model slug
+and labels the result as a descriptive unpaired delta. It includes Wilson
+intervals; it does not claim statistical significance.
 
 ## MCP
 
@@ -112,8 +138,9 @@ Start the stdio MCP server from the repo root:
 cargo run -p crucible -- mcp
 ```
 
-The server exposes one tool, `crucible_run`, backed by the same implementation as
-`crucible run`.
+The server exposes `crucible_run`, backed by the same implementation as
+`crucible run`, plus `crucible_runs_list`, `crucible_runs_show`, and
+`crucible_runs_compare` over the same SQLite ledger.
 
 Declared spec example:
 
@@ -142,7 +169,8 @@ Built-in receipt example:
 ```
 
 The MCP result includes the pretty `crucible.run_report.v1` text, structured
-report content, the output directory, and the written `run-report.json` path.
+report content, the output directory, the written `run-report.json` path, and a
+`run_store` receipt naming the persisted ledger rows.
 
 ## CLI
 

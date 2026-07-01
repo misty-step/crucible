@@ -684,10 +684,13 @@ fn adjudicate_human_mode_renders_the_queue_table() {
 #[test]
 fn run_all_writes_three_runnable_eval_receipts() {
     let out_dir = temp_root("run-all");
+    let db = out_dir.join("runs.sqlite");
     let out = crucible()
         .arg("run")
         .arg("--out")
         .arg(&out_dir)
+        .arg("--db")
+        .arg(&db)
         .arg("--json")
         .output()
         .expect("crucible binary runs");
@@ -772,12 +775,15 @@ fn run_all_writes_three_runnable_eval_receipts() {
 #[test]
 fn run_declared_spec_writes_a_scored_key_recall_report() {
     let out_dir = temp_root("run-spec");
+    let db = out_dir.join("runs.sqlite");
     let spec = fixture("specs/key-recall-fixture.json");
     let out = crucible()
         .arg("run")
         .arg(&spec)
         .arg("--out")
         .arg(&out_dir)
+        .arg("--db")
+        .arg(&db)
         .arg("--json")
         .output()
         .expect("crucible binary runs");
@@ -815,6 +821,113 @@ fn run_declared_spec_writes_a_scored_key_recall_report() {
     assert_eq!(evidence["tasks"].as_array().expect("tasks array").len(), 1);
 }
 
+/// `crucible run` now writes to a SQLite run ledger, and `crucible runs` can
+/// query the run by benchmark, run id, and config/model comparison even if the
+/// loose run-report JSON is no longer present.
+#[test]
+fn run_persists_to_sqlite_and_cli_queries_the_ledger() {
+    let root = temp_root("run-db");
+    let out_dir = root.join("out");
+    let db = root.join("runs.sqlite");
+    let spec = fixture("specs/key-recall-fixture.json");
+
+    let out = crucible()
+        .arg("run")
+        .arg(&spec)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    assert!(
+        out.status.success(),
+        "declared spec run must persist; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let list = crucible()
+        .arg("runs")
+        .arg("list")
+        .arg("--db")
+        .arg(&db)
+        .arg("--benchmark")
+        .arg("key-recall-fixture")
+        .arg("--json")
+        .output()
+        .expect("crucible runs list executes");
+    assert!(
+        list.status.success(),
+        "runs list exits 0; stderr: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let list: serde_json::Value =
+        serde_json::from_slice(&list.stdout).expect("runs list emits JSON");
+    assert_eq!(list["schema_version"], "crucible.run_store.v1");
+    let runs = list["runs"].as_array().expect("runs array");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["benchmark_id"], "key-recall-fixture");
+    assert_eq!(runs[0]["runner_kind"], "key_recall");
+    assert_eq!(runs[0]["config_id"], "probe");
+    assert_eq!(runs[0]["score_metric"], "pr_review_key_recall");
+    let run_id = runs[0]["run_id"].as_str().expect("run id").to_string();
+
+    std::fs::remove_file(out_dir.join("run-report.json")).expect("remove loose run report");
+
+    let show = crucible()
+        .arg("runs")
+        .arg("show")
+        .arg(&run_id)
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .expect("crucible runs show executes");
+    assert!(
+        show.status.success(),
+        "runs show exits 0 after loose report deletion; stderr: {}",
+        String::from_utf8_lossy(&show.stderr)
+    );
+    let show: serde_json::Value =
+        serde_json::from_slice(&show.stdout).expect("runs show emits JSON");
+    assert_eq!(show["run"]["run_id"], run_id);
+    assert_eq!(show["eval_json"]["id"], "key-recall-fixture");
+    assert_eq!(show["artifacts"].as_array().expect("artifacts").len(), 2);
+    assert_eq!(
+        show["prompt_tasks"].as_array().expect("prompt tasks").len(),
+        0,
+        "key-recall runs have no prompt task rows"
+    );
+
+    let compare = crucible()
+        .arg("runs")
+        .arg("compare")
+        .arg("--db")
+        .arg(&db)
+        .arg("--benchmark")
+        .arg("key-recall-fixture")
+        .arg("--left")
+        .arg("probe")
+        .arg("--right")
+        .arg("probe")
+        .arg("--json")
+        .output()
+        .expect("crucible runs compare executes");
+    assert!(
+        compare.status.success(),
+        "runs compare exits 0; stderr: {}",
+        String::from_utf8_lossy(&compare.stderr)
+    );
+    let compare: serde_json::Value =
+        serde_json::from_slice(&compare.stdout).expect("runs compare emits JSON");
+    assert_eq!(
+        compare["comparison_kind"],
+        "latest_unpaired_descriptive_delta"
+    );
+    assert_eq!(compare["delta_point"], 0.0);
+}
+
 #[test]
 fn run_prompt_benchmark_requires_openrouter_key_without_fallback() {
     let out_dir = temp_root("prompt-no-key");
@@ -846,6 +959,8 @@ fn run_prompt_benchmark_requires_openrouter_key_without_fallback() {
 #[test]
 fn mcp_crucible_run_executes_declared_spec() {
     let out_dir = temp_root("mcp-run");
+    let db = out_dir.join("runs.sqlite");
+    let db_arg = db.display().to_string();
     let spec = fixture("specs/key-recall-fixture.json");
     let mut child = crucible()
         .arg("mcp")
@@ -894,7 +1009,8 @@ fn mcp_crucible_run_executes_declared_spec() {
                 "name": "crucible_run",
                 "arguments": {
                     "spec": spec,
-                    "out": out_dir
+                    "out": out_dir,
+                    "db": db_arg.clone()
                 }
             }
         }),
@@ -919,10 +1035,39 @@ fn mcp_crucible_run_executes_declared_spec() {
         Path::new(run_report_path).exists(),
         "MCP call writes run-report.json evidence"
     );
+    assert_eq!(
+        call["result"]["structuredContent"]["run_store"]["run_records"], 1,
+        "MCP run also persists into the run ledger"
+    );
 
     write_jsonrpc(
         &mut stdin,
-        json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "crucible_runs_list",
+                "arguments": {
+                    "db": db_arg,
+                    "benchmark": "key-recall-fixture"
+                }
+            }
+        }),
+    );
+    let listed = read_jsonrpc(&mut stdout);
+    assert!(
+        listed.get("error").is_none(),
+        "MCP runs list succeeds: {listed}"
+    );
+    assert_eq!(
+        listed["result"]["structuredContent"]["runs"][0]["benchmark_id"],
+        "key-recall-fixture"
+    );
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
     );
     let shutdown = read_jsonrpc(&mut stdout);
     assert!(
@@ -940,12 +1085,15 @@ fn mcp_crucible_run_executes_declared_spec() {
 #[test]
 fn run_declared_spec_grades_cerberus_receipt_bundle_artifacts() {
     let out_dir = temp_root("run-cerberus-spec");
+    let db = out_dir.join("runs.sqlite");
     let spec = fixture("specs/cerberus-receipt-fixture.json");
     let out = crucible()
         .arg("run")
         .arg(&spec)
         .arg("--out")
         .arg(&out_dir)
+        .arg("--db")
+        .arg(&db)
         .arg("--json")
         .output()
         .expect("crucible binary runs");

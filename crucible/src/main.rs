@@ -46,7 +46,10 @@
 //!   executes a declared [`EvalSpec`](crucible_core::EvalSpec) runner when a spec
 //!   path is supplied (key-recall or prompt benchmark), or runs the three
 //!   built-in committed receipt checks when no spec is supplied. Every score
-//!   carries a Wilson interval.
+//!   carries a Wilson interval. The run is persisted into Crucible's SQLite run
+//!   ledger unless `--db` points at a different ledger.
+//! - `crucible runs list|show|compare` queries the SQLite run ledger by
+//!   benchmark, run id, or latest config/model pair.
 //! - `crucible adjudication-panel --queue <queue.json> --out <DIR>` renders an
 //!   existing `crucible.judgment_queue.v1` artifact into a static phone-first
 //!   `index.html` panel plus the copied `queue.json` model.
@@ -82,6 +85,7 @@ mod adjudication_panel;
 mod dashboard_html;
 mod eval_run;
 mod mcp;
+mod run_store;
 mod spec_run;
 
 /// Standard-normal quantile for a two-sided 95% interval.
@@ -217,6 +221,14 @@ enum Command {
         /// Emit the stable run report JSON to stdout in addition to writing it.
         #[arg(long)]
         json: bool,
+        /// SQLite run ledger path. Defaults to the local gitignored run store.
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        db: PathBuf,
+    },
+    /// Query Crucible's SQLite run ledger.
+    Runs {
+        #[command(subcommand)]
+        command: RunsCommand,
     },
     /// Render a static phone-first adjudication panel from an existing
     /// `crucible.judgment_queue.v1` queue artifact.
@@ -230,6 +242,52 @@ enum Command {
     },
     /// Serve Crucible's run surface as a stdio Model Context Protocol server.
     Mcp,
+}
+
+#[derive(Debug, Subcommand)]
+enum RunsCommand {
+    /// List stored runs, optionally filtered by benchmark id.
+    List {
+        /// SQLite run ledger path.
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        db: PathBuf,
+        /// Benchmark id to filter on, e.g. prompt-smoke-v0.
+        #[arg(long, value_name = "ID")]
+        benchmark: Option<String>,
+        /// Emit stable JSON instead of a readable table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one stored run by run id, including artifact pointers and task rows.
+    Show {
+        /// Stored run id from `crucible runs list`.
+        #[arg(value_name = "RUN_ID")]
+        run_id: String,
+        /// SQLite run ledger path.
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        db: PathBuf,
+        /// Emit stable JSON instead of a readable table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compare latest stored runs for two configs or model slugs.
+    Compare {
+        /// SQLite run ledger path.
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        db: PathBuf,
+        /// Benchmark id to compare under.
+        #[arg(long, value_name = "ID")]
+        benchmark: String,
+        /// Left config id or model slug.
+        #[arg(long, value_name = "CONFIG_OR_MODEL")]
+        left: String,
+        /// Right config id or model slug.
+        #[arg(long, value_name = "CONFIG_OR_MODEL")]
+        right: String,
+        /// Emit stable JSON instead of a readable table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -277,7 +335,9 @@ fn main() -> ExitCode {
             eval,
             out,
             json,
-        } => run_eval(spec.as_deref(), eval, out.as_deref(), json),
+            db,
+        } => run_eval(spec.as_deref(), eval, out.as_deref(), json, &db),
+        Command::Runs { command } => run_runs(command),
         Command::AdjudicationPanel { queue, out } => run_adjudication_panel(&queue, &out),
         Command::Mcp => mcp::run_stdio(),
     };
@@ -297,6 +357,7 @@ fn run_eval(
     eval: eval_run::RunEval,
     out: Option<&Path>,
     json: bool,
+    db: &Path,
 ) -> anyhow::Result<()> {
     let report = if let Some(spec_path) = spec {
         if eval != eval_run::RunEval::All {
@@ -309,6 +370,7 @@ fn run_eval(
         let out = out.with_context(|| "built-in receipt runs require --out <DIR>")?;
         eval_run::run(eval, out)?
     };
+    let stored = run_store::persist_report(db, &report)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -327,8 +389,151 @@ fn run_eval(
                 .join("run-report.json")
                 .display()
         );
+        println!(
+            "  stored   {}  ({} run row{}, {} prompt task row{})",
+            stored.db,
+            stored.run_records,
+            plural(stored.run_records),
+            stored.prompt_task_results,
+            plural(stored.prompt_task_results)
+        );
     }
     Ok(())
+}
+
+fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
+    match command {
+        RunsCommand::List {
+            db,
+            benchmark,
+            json,
+        } => {
+            let list = run_store::list_runs(&db, benchmark.as_deref())?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else {
+                print_run_list(&list);
+            }
+        }
+        RunsCommand::Show { run_id, db, json } => {
+            let detail = run_store::show_run(&db, &run_id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&detail)?);
+            } else {
+                print_run_detail(&detail);
+            }
+        }
+        RunsCommand::Compare {
+            db,
+            benchmark,
+            left,
+            right,
+            json,
+        } => {
+            let comparison = run_store::compare_configs(&db, &benchmark, &left, &right)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&comparison)?);
+            } else {
+                print_config_comparison(&comparison);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_run_list(list: &run_store::RunList) {
+    println!("crucible runs list");
+    println!("  db        {}", list.db);
+    if let Some(benchmark) = &list.benchmark {
+        println!("  benchmark {benchmark}");
+    }
+    if list.runs.is_empty() {
+        println!("  (no runs)");
+        return;
+    }
+    for run in &list.runs {
+        println!(
+            "  run       {}  {}  config={}  {}",
+            run.run_id,
+            run.benchmark_id,
+            run.config_id,
+            format_stored_score(run)
+        );
+    }
+}
+
+fn print_run_detail(detail: &run_store::RunDetail) {
+    let run = &detail.run;
+    println!("crucible runs show");
+    println!("  db        {}", detail.db);
+    println!("  run       {}", run.run_id);
+    println!("  benchmark {}", run.benchmark_id);
+    println!("  config    {}", run.config_id);
+    if let Some(model) = &run.model {
+        println!("  model     {model}");
+    }
+    println!("  score     {}", format_stored_score(run));
+    println!("  report    {}", run.run_report);
+    for artifact in &detail.artifacts {
+        println!("  artifact  {}  ({})", artifact.path, artifact.kind);
+    }
+    if !detail.prompt_tasks.is_empty() {
+        println!("  prompt task rows {}", detail.prompt_tasks.len());
+    }
+}
+
+fn print_config_comparison(comparison: &run_store::ConfigComparison) {
+    println!("crucible runs compare");
+    println!("  db        {}", comparison.db);
+    println!("  benchmark {}", comparison.benchmark);
+    println!(
+        "  left      {}  {}",
+        comparison.left_query,
+        format_stored_score(&comparison.left)
+    );
+    println!(
+        "  right     {}  {}",
+        comparison.right_query,
+        format_stored_score(&comparison.right)
+    );
+    match comparison.delta_point {
+        Some(delta) => println!("  delta     {delta:+.4}"),
+        None => println!("  delta     n/a"),
+    }
+    println!("  kind      {}", comparison.comparison_kind);
+    println!("  note      {}", comparison.note);
+}
+
+fn format_stored_score(run: &run_store::StoredRun) -> String {
+    match run.point {
+        Some(point) => format!(
+            "{:.1}%   {:.0}% CI [{:.1}%, {:.1}%]   ({}; {}/{})",
+            point * 100.0,
+            run.confidence * 100.0,
+            run.lower * 100.0,
+            run.upper * 100.0,
+            run.method,
+            run.successes,
+            run.n
+        ),
+        None => format!(
+            "n/a   {:.0}% CI [{:.1}%, {:.1}%]   ({}; {}/{})",
+            run.confidence * 100.0,
+            run.lower * 100.0,
+            run.upper * 100.0,
+            run.method,
+            run.successes,
+            run.n
+        ),
+    }
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 /// `crucible adjudication-panel`: render a phone-first static HTML panel from an

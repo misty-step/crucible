@@ -48,9 +48,10 @@ epic makes Crucible produce its own.
 3. **Grade + record** — grade the model output with the task's rubric (deterministic
    first; model-judge/human later, behind 003's calibration gate). Write a per-task
    trial + a `RunRecord`/`EvaluationCard` (reuse 004 + 003 provenance).
-4. **Crucible's own run store** — a Crucible-owned `runs/` tree (gitignored where it
-   embeds real model output/diffs, per 006.3); wire the dashboard to read Crucible's
-   runs (alongside or instead of Threshold's).
+4. **Crucible's own run store** — in progress. A SQLite ledger now stores
+   invocation rows, per-eval run records, artifact pointers, and prompt task
+   rows under `runs/local/crucible-runs.sqlite`; dashboard read path still
+   remains.
 5. **`crucible run` CLI** — stable JSON + exit codes; the Guided dashboard surfaces the
    result.
 
@@ -90,3 +91,10 @@ client, deterministic exact/contains text rubrics, `prompt-run.json` evidence,
 and CLI + MCP live proof. Still open: durable `RunRecord`/`EvaluationCard`
 persistence, runs database integration, dashboard Guided view, and broader
 author/manage config surfaces.
+
+**Update 2026-07-01 (runs DB slice):** the first runs database slice landed:
+`crucible run --db <PATH>` persists every run report into SQLite, prompt
+benchmark evidence is indexed as task rows plus artifact pointers, and CLI/MCP
+can list runs, show a run by id, and compare latest stored config/model rows.
+Still open: dashboard Guided read path and first-class `RunRecord`/
+`EvaluationCard` materialization.
