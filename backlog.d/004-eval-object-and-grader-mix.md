@@ -18,7 +18,7 @@ reinvented one.
   human-judgment-heavy eval (the per-eval spectrum) with no change to core code.
 - [ ] Run records, labels (append-only), and calibration records share one serde
   schema with `schema_version`; export validates against the Harbor
-  task-directory format and round-trips into Daedalus (golden-fixture test).
+  task-directory format and round-trips into Threshold (golden-fixture test).
 
 ## Children (ordered)
 
@@ -36,7 +36,7 @@ reinvented one.
 Architecture lane: the type contract is the narrow waist; artifacts ARE the API
 (no daemon/RPC/auth). Do NOT build a storage-backend abstraction or a grader
 plugin registry (three enumerated kinds). Extract this from what the wedge (002)
-actually needed — do not front-run it. The phone UI (005) and Daedalus both read
+actually needed — do not front-run it. The phone UI (005) and Threshold both read
 these artifacts, so getting the queue + label + export schemas right here means
 the UI adds zero new core design.
 

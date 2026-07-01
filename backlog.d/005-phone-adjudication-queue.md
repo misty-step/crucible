@@ -43,7 +43,7 @@ primary + chips so labeling is one thumb gesture, not a form.
 
 **Update 2026-06-30:** UNBLOCKED — the gating prereq ("one adjudication loop works
 from the CLI", wedge 002) is met: `crucible adjudicate`/`export` close the headless
-loop and the Daedalus round-trip is lead-verified. The schema the UI renders
+loop and the Threshold round-trip is lead-verified. The schema the UI renders
 (`crucible.judgment_queue.v1` reading into `crucible.label.v1`) is shipped and
 stable. This is now the headline next pickup — the first time human judgment flows
 through Crucible, and what produces the labels the κ judge-calibration gate (003/002.6)

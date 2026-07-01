@@ -1,32 +1,37 @@
-# Daedalus eval-authoring map (epic 007.1)
+# Threshold eval-authoring map (epic 007.1)
 
 Read-only survey of the eval/benchmark-**authoring** machinery that lives in
-Daedalus today, classified `MIGRATE → Crucible` vs `STAY` (Daedalus optimization
+Threshold today, classified `MIGRATE → Crucible` vs `STAY` (Threshold optimization
 loop) vs `SHARED` (the contract surface between the two repos). This is the
-input to epic `007` (extract eval-authoring from Daedalus); it is a map, not a
-change. No Daedalus file was modified.
+input to epic `007` (extract eval-authoring from Threshold); it is a map, not a
+change. No Threshold file was modified.
+
+> Naming: the sibling repo is **Threshold** (formerly Daedalus). It has not
+> physically renamed yet, so its on-disk checkout (`…/daedalus`), crates
+> (`daedalus-core`, `daedalus-cli`), and the `daedalus-score` binary keep the
+> `daedalus` name; every path in this map is real and unchanged.
 
 - **Surveyed:** `/Users/phaedrus/Development/daedalus` @ `b48c608`
-  (_docs: clarify Daedalus frontier output_), 2026-06-30.
+  (_docs: clarify Daedalus frontier output_ — commit subject, verbatim), 2026-06-30.
 - **Boundary being realized** (per `AGENTS.md` / `VISION.md`): Crucible owns the
   eval/benchmark as a durable artifact — definition, design, scoring design,
-  calibration, run records, judging, reporting, export. Daedalus runs
+  calibration, run records, judging, reporting, export. Threshold runs
   Karpathy-style config-optimization loops that **consume** Crucible's trusted
   evals through the Harbor contract. "Ultimately extract most of that from
-  Daedalus" (operator, /groom 2026-06-29). Authoring-rights are ratified; the
+  Threshold" (operator, /groom 2026-06-29). Authoring-rights are ratified; the
   cross-repo ownership handshake (007 child 2) is still pending — this map exists
   to make that handshake concrete.
 
-> Governance note: do **not** unilaterally edit Daedalus. Migration order is
+> Governance note: do **not** unilaterally edit Threshold. Migration order is
 > child 2 (agree ownership) → child 3 (migrate code-review family) → child 4
-> (corpus/holdout/contamination governance) → child 5 (narrow Daedalus, delete
+> (corpus/holdout/contamination governance) → child 5 (narrow Threshold, delete
 > migrated machinery). This document only feeds child 1→2.
 
 ---
 
 ## At a glance
 
-| # | Surface | Where (Daedalus) | What it is | Verdict |
+| # | Surface | Where (Threshold) | What it is | Verdict |
 |---|---|---|---|---|
 | 1 | Arena definitions + task dirs | `arenas/<id>/` (`arena.toml`, `template.md`, `tasks/<id>/{task.toml,intent.md,environment/,tests/,solution/}`) | The eval corpus: fixtures, seeded defects, splits, instructions | **MIGRATE** |
 | 2 | Answer keys (2 shapes) | `tasks/<id>/solution/findings.json` (oracle) + `tasks/<id>/tests/expected.json` (scorer key, line-spans) | Ground truth a review is scored against | **MIGRATE** |
@@ -61,7 +66,7 @@ arenas/pr-review-v0/
   tasks/<task-id>/
     task.toml             # id, source_repo, [agent]/[verifier] timeouts
     intent.md             # the PR's stated intent
-    environment/          # post-change files + PR.diff (the candidate's workspace)
+    environment/          # post-change files + PR.diff (the config's workspace)
     tests/                # verifier (test.sh) + hidden scorer key (expected.json)
     solution/             # oracle findings (findings.json)
 ```
@@ -96,7 +101,7 @@ first):
   `description`, and the field `crucible-core/src/key.rs::Defect` already models.
 
 Reconciling these two representations (span-key vs point-oracle) under one
-Crucible-owned schema is a concrete child-3 task. Candidates must never read
+Crucible-owned schema is a concrete child-3 task. Configs under test must never read
 `tests/` or `solution/`; only `environment/` is copied into the agent workspace.
 
 ## 3 · Task specifications — MIGRATE
@@ -127,7 +132,7 @@ of the retired `runner/score.py`):
   unmatched findings are false positives; a missing/malformed `findings.json`
   scores `0`.
 - **`redteam_audit`** (backlog 040): flags answer keys whose line-spans are wide
-  enough that a candidate could score by guessing `file+category` without
+  enough that a config could score by guessing `file+category` without
   localizing — a key-quality (calibration) tool.
 
 This **scoring design** is squarely what the recharter assigns to Crucible
@@ -147,7 +152,7 @@ daedalus-score`) before each run.
 ## 5 · Adjudication / answer-key extension — MIGRATE (already mirrored)
 
 `arenas/<id>/adjudications.md` is an append-only ACCEPT / OUT-OF-SCOPE log: when
-a human (or the queue) rules that a candidate finding the key missed is a real
+a human (or the queue) rules that a config's finding the key missed is a real
 defect, it is ACCEPTed, **added to the answer key, and the arena version is
 bumped** (e.g. `pr-review-v0` `0.3.0`: "py-file-cache key extended with
 tmp-write-race (concurrency) via adjudication ADJ-1"). CLI `ArenaAdjudicate`
@@ -159,7 +164,7 @@ This is the single strongest MIGRATE signal: Crucible's `export.rs`
 `crucible.judgment_queue.v1` → `adjudications.md` round-trip) is **explicitly
 built to emit this exact artifact**. The adjudication → key-extension loop is the
 heart of the code-review wedge (002) and the calibration/trust layer — it belongs
-in Crucible, with Daedalus reading the resulting versioned key via Harbor.
+in Crucible, with Threshold reading the resulting versioned key via Harbor.
 
 ## 6–7 · Holdout & contamination governance — MIGRATE (corpus governance, child 4)
 
@@ -168,7 +173,7 @@ in Crucible, with Daedalus reading the resulting versioned key via Harbor.
   **5 exposure entries** and must be rotated into train/validation and replaced
   (version bump). The *ledger and the burn discipline* are corpus governance
   (MIGRATE); the *append at scoring time* is a write the optimization run
-  performs (**SHARED** write-protocol — Daedalus must report exposures back to
+  performs (**SHARED** write-protocol — Threshold must report exposures back to
   the Crucible-owned ledger after migration).
 - `contamination.toml` — machine-readable record of whether an arena's defects
   are publicly indexable (train/eval contamination), with per-`source`
@@ -211,7 +216,7 @@ the boundary actually lives:
   authoring-side (MIGRATE — Crucible exports to Harbor), the *format* is SHARED,
   and `bin/harbor-run` (build musl scorer → port → `harbor run --agent
   pi|oracle`) is loop execution (STAY). Crucible's export contract already
-  targets "the Daedalus Harbor task-directory format" per `AGENTS.md`.
+  targets "the Threshold Harbor task-directory format" per `AGENTS.md`.
 - `cerberus.rs` / `prompt_packet.rs` + `ExportCerberus` / `ExportSuite` emit the
   `ReviewerConfigPacket.v1` / suite contracts that hand a tuned reviewer config
   between the repos — a SHARED interface, not eval-authoring logic.
@@ -233,11 +238,11 @@ delete-eligible post-migration).
 - `stats.rs` (**SHARED / converge**) — cluster-robust SE and reward-delta CIs.
   Crucible's `measure` module (Wilson intervals, Cohen's κ, paired
   `DeltaVerdict`, bootstrap, power) is the same measurement-rigor surface for the
-  *eval*; Daedalus needs delta stats for *loop certification*. Decide whether one
+  *eval*; Threshold needs delta stats for *loop certification*. Decide whether one
   Crucible-owned rigor crate serves both, or each keeps a copy at its own
   altitude.
 - `validate.rs` (**SHARED / split**) — schema/receipt/contract validation spans
-  eval-artifact schemas (Crucible) and run-record schemas (Daedalus). Split along
+  eval-artifact schemas (Crucible) and run-record schemas (Threshold). Split along
   the artifact owner.
 - `taskspec.toml` budget/trigger fields and the `approvals/` G1/G3 gates lean to
   the loop; G2 (eval-quality) is Crucible's calibration gate.
@@ -255,7 +260,7 @@ delete-eligible post-migration).
   format + the musl scorer binary (4/10), Cerberus handoff packets (11), the
   holdout-ledger write-protocol (6), `stats`/`validate` at the eval/loop seam
   (13–14).
-- **STAY (Daedalus optimization loop):** search/mutate/seed/swarm/lineage and the
+- **STAY (Threshold optimization loop):** search/mutate/seed/swarm/lineage and the
   run/compare/report/deliver CLI surface (12), plus the Harbor *runner* and
   port-compat shims.
 
@@ -269,12 +274,12 @@ Harbor + the scorer binary.
 **Open questions for the ownership handshake (007 child 2):**
 
 1. Who holds the canonical `arenas/` corpus after migration — Crucible repo,
-   with Daedalus consuming via a pinned Harbor export? (Recommended.)
+   with Threshold consuming via a pinned Harbor export? (Recommended.)
 2. One shared scorer crate published to Harbor, or Crucible owns
-   `score`/`expected.json` design and Daedalus keeps the musl build target?
+   `score`/`expected.json` design and Threshold keeps the musl build target?
 3. Reconcile the two answer-key shapes (`solution/findings.json` point-oracle vs
    `tests/expected.json` span-key) into one Crucible schema, or keep both with a
    generator?
-4. Holdout/contamination ledgers: Crucible-owned files that the Daedalus run
+4. Holdout/contamination ledgers: Crucible-owned files that the Threshold run
    appends exposure entries to — agree the write-back protocol so the burn
    discipline survives the split.

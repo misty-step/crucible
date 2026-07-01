@@ -1,18 +1,18 @@
-# Live eval dashboard — evals, runs, defensible leaderboard
+# Live eval dashboard — evals, runs, per-config results
 
 Priority: P1 · Status: in-progress · Estimate: L (epic)
 
 ## Goal
 
 A live, phone-viewable dashboard that surfaces Crucible's evals, the runs driven
-against them, and a defensible leaderboard (ranked configs with seed-invariant,
-directional, power-honest verdicts) — the first end-to-end view of the eval system,
+against them, and a defensible per-config results view — configs sorted by score,
+with seed-invariant, directional, power-honest verdicts — the first end-to-end view of the eval system,
 and the surface we tighten/expand/iterate on.
 
 ## Oracle
 
-- [x] `crucible dashboard` ingests the real Daedalus arenas + runs and renders a
-  self-contained phone-first HTML (evals / eval-detail+leaderboard / run drill-down),
+- [x] `crucible dashboard` ingests the real Threshold arenas + runs and renders a
+  self-contained phone-first HTML (evals / eval-detail+results / run drill-down),
   served on the tailnet; every number reconciles with the raw trials (129/129).
 - [x] The rank-gap verdict is seed-invariant, directional, and refuses below a power
   floor — "refuse a delta you cannot defend" made visible (0/117 verdicts flip across
@@ -25,7 +25,7 @@ and the surface we tighten/expand/iterate on.
 
 A four-workflow fleet (deliver → thermonuclear review+QA → fix → lead-verify) shipped
 v0: ingest (arena id from trials.jsonl not the dir name; config id = composition_hash;
-skipped inputs counted/classified — no silent loss), the leaderboard (task-clustered
+skipped inputs counted/classified — no silent loss), the per-config results (task-clustered
 bootstrap reward CI, task-level Wilson solve-rate, a 64-seed-envelope + McNemar
 Bonferroni-split directional 3-state verdict, strict (arena,version) grouping), and a
 self-contained HTML. The thermonuclear review caught + fixed a seed-noise verdict
@@ -37,7 +37,7 @@ benchmark needs more tasks/trials to rank real configs. That is the product work
 
 ## Next (fatten the tracer bullet)
 
-1. Drive new runs (Cerberus configs) from Crucible, not just surface Daedalus's.
+1. Drive new runs (Cerberus configs) from Crucible, not just surface Threshold's.
 2. Adjudication-queue panel (005) — accept/reject disputed findings on the phone.
 3. Trend view across arena versions; config diffing; cost/latency columns.
 4. Power planner: "how many more tasks to make rank-gap X defensible?" (ties to 008).
@@ -48,4 +48,10 @@ benchmark needs more tasks/trials to rank real configs. That is the product work
 
 Consumes the measure core (003) — `bootstrap_envelope` is a new reusable primitive.
 The read-side reward-parity work (008) makes Crucible's own grade a faithful predictor
-of Daedalus reward; this dashboard surfaces the runs Daedalus already scored.
+of Threshold reward; this dashboard surfaces the runs Threshold already scored.
+
+Naming: **Threshold** (formerly Daedalus) is the sibling optimization project;
+the runs this dashboard surfaces are Threshold's, scored by the `daedalus-score`
+binary — which keeps the `daedalus` name on disk until the sibling repo
+physically renames. This is a sorted per-config results view, not a leaderboard
+that crowns a winner; the verdicts stay about defensible measurement.

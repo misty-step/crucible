@@ -16,7 +16,7 @@ secret/content-leak gate, stable CLI JSON, and Harbor-schema-validated exports.
 - [ ] The repo gate (replacing `test -f VISION.md`) fails the diff on
   build/test/lint breakage, a schema-invalid Harbor export, AND a planted
   secret / proprietary-code leak in a run record or report.
-- [ ] The Crucible CLI emits stable JSON + exit codes so Cerberus/Daedalus branch
+- [ ] The Crucible CLI emits stable JSON + exit codes so Cerberus/Threshold branch
   on verdicts headlessly; run artifacts that embed real diffs are
   gitignored/redacted, not committed raw.
 
