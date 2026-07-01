@@ -31,6 +31,24 @@ where
     }
 }
 
+/// `serialize_finite` for an optional point estimate. `None` is honest no-data;
+/// `Some(NaN)`/`Some(±∞)` is a corrupt artifact and must fail loudly.
+pub(crate) fn serialize_finite_option<S>(
+    value: &Option<f64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        Some(value) if value.is_finite() => serializer.serialize_some(value),
+        Some(value) => Err(serde::ser::Error::custom(format!(
+            "non-finite f64 ({value}) cannot be written to a versioned artifact"
+        ))),
+        None => serializer.serialize_none(),
+    }
+}
+
 /// `serialize_finite` for a `(f64, f64)` pair — e.g. a confidence interval —
 /// erroring if either component is non-finite. Emits the same JSON array shape
 /// as the derived tuple serialization.

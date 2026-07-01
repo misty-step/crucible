@@ -899,6 +899,26 @@ fn run_persists_to_sqlite_and_cli_queries_the_ledger() {
         0,
         "key-recall runs have no prompt task rows"
     );
+    assert_eq!(
+        show["run_record"]["schema_version"],
+        "crucible.run_record.v1"
+    );
+    assert_eq!(
+        show["run_record"]["score"]["metric"],
+        "pr_review_key_recall"
+    );
+    assert_eq!(
+        show["evaluation_card"]["schema_version"],
+        "crucible.evaluation_card.v1"
+    );
+    assert_eq!(
+        show["evaluation_card"]["provenance"]["model"],
+        "deterministic"
+    );
+    assert_eq!(
+        show["evaluation_card"],
+        show["run_record"]["evaluation_card"]
+    );
 
     let compare = crucible()
         .arg("runs")

@@ -11,9 +11,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use crucible_core::{
+    EvalSpec, EvaluationCard, FixtureRef, Provenance, RunRecord, RunScore, EVALUATION_CARD_SCHEMA,
+    RUN_RECORD_SCHEMA,
+};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 use serde_json::Value;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::eval_run::{EvalReport, RunReport};
 
@@ -75,6 +80,8 @@ pub struct RunDetail {
     pub run: StoredRun,
     pub artifacts: Vec<StoredArtifact>,
     pub prompt_tasks: Vec<StoredPromptTask>,
+    pub run_record: Option<Value>,
+    pub evaluation_card: Option<Value>,
     pub eval_json: Value,
 }
 
@@ -127,10 +134,11 @@ struct EvidenceMetadata {
     model: Option<String>,
     evidence_path: Option<String>,
     spec_path: Option<String>,
+    temperature: Option<f64>,
     prompt_tasks: Vec<PromptTaskInsert>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PromptTaskInsert {
     task_id: String,
     passed: bool,
@@ -186,8 +194,26 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
         let eval_json = serde_json::to_string(eval).context("serializing eval report")?;
         let runner_kind = metadata
             .runner_kind
+            .clone()
             .unwrap_or_else(|| "built_in".to_string());
-        let config_id = metadata.config_id.unwrap_or_else(|| "built-in".to_string());
+        let config_id = metadata
+            .config_id
+            .clone()
+            .unwrap_or_else(|| "built-in".to_string());
+        let (run_record, evaluation_card) = materialize_run_record(&MaterializeInput {
+            eval,
+            metadata: &metadata,
+            run_id: &run_id,
+            runner_kind: &runner_kind,
+            config_id: &config_id,
+            now_ms,
+            output_dir: &report.output_dir,
+            run_report_path: &run_report_path,
+        })?;
+        let run_record_json =
+            serde_json::to_string(&run_record).context("serializing run record")?;
+        let evaluation_card_json =
+            serde_json::to_string(&evaluation_card).context("serializing evaluation card")?;
 
         tx.execute(
             "INSERT INTO run_records (
@@ -235,6 +261,21 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
             )
             .with_context(|| format!("inserting artifact pointer {artifact}"))?;
         }
+
+        tx.execute(
+            "INSERT INTO run_record_materializations (
+                run_id, run_record_schema_version, run_record_json,
+                evaluation_card_schema_version, evaluation_card_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                run_id,
+                run_record.schema_version,
+                run_record_json,
+                evaluation_card.schema_version,
+                evaluation_card_json
+            ],
+        )
+        .with_context(|| format!("inserting durable run record for {}", eval.id))?;
 
         for task in metadata.prompt_tasks {
             tx.execute(
@@ -369,6 +410,7 @@ pub fn show_run(db_path: &Path, run_id: &str) -> Result<RunDetail> {
 
     let artifacts = query_artifacts(&conn, run_id)?;
     let prompt_tasks = query_prompt_tasks(&conn, run_id)?;
+    let materialization = query_materialization(&conn, run_id)?;
 
     Ok(RunDetail {
         schema_version: RUN_STORE_SCHEMA,
@@ -376,6 +418,10 @@ pub fn show_run(db_path: &Path, run_id: &str) -> Result<RunDetail> {
         run,
         artifacts,
         prompt_tasks,
+        run_record: materialization
+            .as_ref()
+            .map(|materialization| materialization.run_record.clone()),
+        evaluation_card: materialization.map(|materialization| materialization.evaluation_card),
         eval_json,
     })
 }
@@ -501,9 +547,95 @@ fn init_schema(conn: &Connection) -> Result<()> {
             evidence_json TEXT NOT NULL,
             PRIMARY KEY (run_id, task_id)
         );
+
+        CREATE TABLE IF NOT EXISTS run_record_materializations (
+            run_id TEXT PRIMARY KEY REFERENCES run_records(run_id) ON DELETE CASCADE,
+            run_record_schema_version TEXT NOT NULL,
+            run_record_json TEXT NOT NULL,
+            evaluation_card_schema_version TEXT NOT NULL,
+            evaluation_card_json TEXT NOT NULL
+        );
         ",
     )
     .context("initializing run-store schema")
+}
+
+struct MaterializedRecord {
+    run_record: Value,
+    evaluation_card: Value,
+}
+
+struct MaterializeInput<'a> {
+    eval: &'a EvalReport,
+    metadata: &'a EvidenceMetadata,
+    run_id: &'a str,
+    runner_kind: &'a str,
+    config_id: &'a str,
+    now_ms: i64,
+    output_dir: &'a str,
+    run_report_path: &'a str,
+}
+
+fn materialize_run_record(input: &MaterializeInput<'_>) -> Result<(RunRecord, EvaluationCard)> {
+    let timestamp = format_rfc3339_ms(input.now_ms)?;
+    let evaluation_card = EvaluationCard {
+        schema_version: EVALUATION_CARD_SCHEMA.to_string(),
+        provenance: Provenance {
+            model: provenance_model(input.metadata),
+            model_version: provenance_model_version(input.metadata),
+            temperature: provenance_temperature(input.metadata),
+            seed_count: 1,
+            prompt_hash: combined_hash(
+                input
+                    .metadata
+                    .prompt_tasks
+                    .iter()
+                    .filter_map(|task| task.prompt_hash.as_deref())
+                    .collect(),
+            ),
+            rubric_hash: combined_hash(
+                input
+                    .metadata
+                    .prompt_tasks
+                    .iter()
+                    .filter_map(|task| task.rubric_hash.as_deref())
+                    .collect(),
+            ),
+            fixture_refs: declared_fixture_refs(input.metadata.spec_path.as_deref())?,
+        },
+        cost_usd: input
+            .metadata
+            .prompt_tasks
+            .iter()
+            .filter_map(|task| task.cost_usd)
+            .sum(),
+        timestamp,
+    };
+
+    let run_record = RunRecord {
+        schema_version: RUN_RECORD_SCHEMA.to_string(),
+        run_id: input.run_id.to_string(),
+        benchmark_id: input.eval.id.clone(),
+        config_id: input.config_id.to_string(),
+        runner_kind: input.runner_kind.to_string(),
+        output_dir: input.output_dir.to_string(),
+        run_report: input.run_report_path.to_string(),
+        evidence_path: input.metadata.evidence_path.clone(),
+        spec_path: input.metadata.spec_path.clone(),
+        artifacts: input.eval.artifacts.clone(),
+        score: RunScore {
+            metric: input.eval.score.metric.to_string(),
+            successes: input.eval.score.successes,
+            n: input.eval.score.n,
+            point: input.eval.score.point,
+            lower: input.eval.score.lower,
+            upper: input.eval.score.upper,
+            confidence: input.eval.score.confidence,
+            method: input.eval.score.method.to_string(),
+        },
+        evaluation_card: evaluation_card.clone(),
+    };
+    Ok((run_record, evaluation_card))
 }
 
 fn extract_metadata(eval: &EvalReport) -> Result<EvidenceMetadata> {
@@ -547,6 +679,10 @@ fn merge_prompt_metadata(
         .and_then(Value::as_str)
         .map(str::to_string)
         .or(metadata.spec_path.take());
+    metadata.temperature = value
+        .get("temperature")
+        .and_then(Value::as_f64)
+        .or(metadata.temperature.take());
     metadata.evidence_path = Some(artifact.to_string());
 
     let provider = metadata.provider.as_deref().unwrap_or("provider");
@@ -702,6 +838,33 @@ fn query_prompt_tasks(conn: &Connection, run_id: &str) -> Result<Vec<StoredPromp
     Ok(tasks)
 }
 
+fn query_materialization(conn: &Connection, run_id: &str) -> Result<Option<MaterializedRecord>> {
+    let materialization = conn
+        .query_row(
+            "SELECT run_record_json, evaluation_card_json
+             FROM run_record_materializations
+             WHERE run_id = ?1",
+            params![run_id],
+            |row| {
+                let run_record_json: String = row.get(0)?;
+                let evaluation_card_json: String = row.get(1)?;
+                Ok((run_record_json, evaluation_card_json))
+            },
+        )
+        .optional()
+        .context("querying durable run record")?;
+    materialization
+        .map(|(run_record_json, evaluation_card_json)| {
+            Ok(MaterializedRecord {
+                run_record: serde_json::from_str(&run_record_json)
+                    .context("parsing stored run record JSON")?,
+                evaluation_card: serde_json::from_str(&evaluation_card_json)
+                    .context("parsing stored evaluation card JSON")?,
+            })
+        })
+        .transpose()
+}
+
 fn latest_for_config(conn: &Connection, benchmark: &str, config: &str) -> Result<StoredRun> {
     conn.query_row(
         "SELECT run_id, invocation_id, benchmark_id, title, runner_kind,
@@ -778,6 +941,89 @@ fn opt_u64(value: Option<&Value>) -> Option<u64> {
     value.and_then(Value::as_u64)
 }
 
+fn provenance_model(metadata: &EvidenceMetadata) -> String {
+    metadata
+        .model
+        .clone()
+        .or_else(|| {
+            metadata
+                .prompt_tasks
+                .first()
+                .and_then(|task| task.requested_model.clone())
+        })
+        .unwrap_or_else(|| "deterministic".to_string())
+}
+
+fn provenance_model_version(metadata: &EvidenceMetadata) -> String {
+    let mut versions = metadata
+        .prompt_tasks
+        .iter()
+        .filter_map(|task| task.response_model.as_deref());
+    let Some(first) = versions.next() else {
+        return String::new();
+    };
+    if versions.all(|version| version == first) {
+        first.to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn provenance_temperature(metadata: &EvidenceMetadata) -> Option<f64> {
+    if metadata.temperature.is_some() {
+        return metadata.temperature;
+    }
+    if metadata.model.is_none() && metadata.prompt_tasks.is_empty() {
+        return Some(0.0);
+    }
+    None
+}
+
+fn combined_hash(values: Vec<&str>) -> String {
+    match values.as_slice() {
+        [] => String::new(),
+        [single] => (*single).to_string(),
+        many => stable_hash_bytes(many.iter().map(|value| value.as_bytes())),
+    }
+}
+
+fn declared_fixture_refs(spec_path: Option<&str>) -> Result<Vec<FixtureRef>> {
+    let Some(spec_path) = spec_path else {
+        return Ok(Vec::new());
+    };
+    let Ok(text) = std::fs::read_to_string(spec_path) else {
+        eprintln!("warning: could not read eval spec for fixture refs {spec_path}; omitting");
+        return Ok(Vec::new());
+    };
+    let Ok(spec) = serde_json::from_str::<EvalSpec>(&text) else {
+        eprintln!("warning: could not parse {spec_path} as EvalSpec for fixture refs; omitting");
+        return Ok(Vec::new());
+    };
+    Ok(spec.fixtures)
+}
+
+fn stable_hash_bytes<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for part in parts {
+        for byte in part {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
+fn format_rfc3339_ms(unix_ms: i64) -> Result<String> {
+    let nanos = i128::from(unix_ms) * 1_000_000;
+    let timestamp =
+        OffsetDateTime::from_unix_timestamp_nanos(nanos).context("building run timestamp")?;
+    timestamp
+        .format(&Rfc3339)
+        .context("formatting run timestamp")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -792,10 +1038,23 @@ mod tests {
     }
 
     fn prompt_report(root: &Path, model: &str, success: bool) -> RunReport {
+        prompt_report_with_temperature(root, model, success, Some(0))
+    }
+
+    fn prompt_report_with_temperature(
+        root: &Path,
+        model: &str,
+        success: bool,
+        temperature: Option<u32>,
+    ) -> RunReport {
         let out = root.join(model.replace('/', "-"));
         std::fs::create_dir_all(&out).expect("create output dir");
-        std::fs::write(root.join("prompt-smoke-v0.json"), "{}\n").expect("write spec artifact");
-        let prompt_evidence = serde_json::json!({
+        std::fs::write(
+            root.join("prompt-smoke-v0.json"),
+            r#"{"schema_version":"crucible.eval_spec.v1","task":"prompt-smoke"}"#,
+        )
+        .expect("write spec artifact");
+        let mut prompt_evidence = serde_json::json!({
             "schema_version": "crucible.prompt_run_evidence.v1",
             "spec_id": "prompt-smoke-v0",
             "spec": root.join("prompt-smoke-v0.json").display().to_string(),
@@ -834,6 +1093,9 @@ mod tests {
                 "cost_usd": 0.0
             }]
         });
+        if let Some(temperature) = temperature {
+            prompt_evidence["temperature"] = serde_json::json!(temperature);
+        }
         let evidence_path = out.join("prompt-run.json");
         std::fs::write(
             &evidence_path,
@@ -893,6 +1155,84 @@ mod tests {
         assert_eq!(
             detail.prompt_tasks[0].output_text.as_deref(),
             Some("crucible-smoke")
+        );
+        let card = detail
+            .evaluation_card
+            .as_ref()
+            .expect("evaluation card is persisted");
+        assert_eq!(card["schema_version"], "crucible.evaluation_card.v1");
+        assert_eq!(card["provenance"]["model"], "test/model-a");
+        assert_eq!(card["provenance"]["model_version"], "test/model-a");
+        assert_eq!(card["provenance"]["temperature"], 0.0);
+        assert_eq!(card["provenance"]["prompt_hash"], "fnv1a64:prompt");
+        assert_eq!(card["provenance"]["rubric_hash"], "fnv1a64:rubric");
+        assert!(
+            card["provenance"].get("fixture_refs").is_none(),
+            "fixtures are omitted when the spec declares none: {card}"
+        );
+        assert_eq!(card["cost_usd"], 0.0);
+        assert!(
+            card["timestamp"]
+                .as_str()
+                .expect("timestamp string")
+                .ends_with('Z'),
+            "timestamp is RFC3339 UTC: {card}"
+        );
+
+        let record = detail.run_record.as_ref().expect("run record is persisted");
+        assert_eq!(record["schema_version"], "crucible.run_record.v1");
+        assert_eq!(record["benchmark_id"], "prompt-smoke-v0");
+        assert_eq!(record["score"]["metric"], "prompt_rubric_pass_rate");
+        assert_eq!(record["evaluation_card"], *card);
+    }
+
+    #[test]
+    fn omitted_prompt_temperature_stays_absent_in_the_card() {
+        let root = temp_dir("no-temperature");
+        let db = root.join("runs.sqlite");
+        let report = prompt_report_with_temperature(&root, "test/model-a", true, None);
+        persist_report(&db, &report).expect("persist report");
+
+        let list = list_runs(&db, Some("prompt-smoke-v0")).expect("list runs");
+        let detail = show_run(&db, &list.runs[0].run_id).expect("show run");
+        let card = detail
+            .evaluation_card
+            .as_ref()
+            .expect("evaluation card is persisted");
+        assert_eq!(card["provenance"]["model"], "test/model-a");
+        assert!(
+            card["provenance"].get("temperature").is_none(),
+            "provider-default temperature must not be rewritten to 0.0: {card}"
+        );
+    }
+
+    #[test]
+    fn missing_fixture_spec_path_does_not_abort_persistence() {
+        let root = temp_dir("missing-fixture-spec");
+        let db = root.join("runs.sqlite");
+        let report = prompt_report(&root, "test/model-a", true);
+        let prompt_path = Path::new(&report.evals[0].artifacts[1]);
+        let mut evidence: Value = serde_json::from_str(
+            &std::fs::read_to_string(prompt_path).expect("read prompt evidence"),
+        )
+        .expect("prompt evidence is JSON");
+        evidence["spec"] = serde_json::json!(root.join("missing-spec.json").display().to_string());
+        std::fs::write(
+            prompt_path,
+            format!("{}\n", serde_json::to_string_pretty(&evidence).unwrap()),
+        )
+        .expect("rewrite prompt evidence");
+
+        persist_report(&db, &report).expect("missing fixture refs do not abort persistence");
+        let list = list_runs(&db, Some("prompt-smoke-v0")).expect("list runs");
+        let detail = show_run(&db, &list.runs[0].run_id).expect("show run");
+        let card = detail
+            .evaluation_card
+            .as_ref()
+            .expect("evaluation card is persisted");
+        assert!(
+            card["provenance"].get("fixture_refs").is_none(),
+            "unreadable fixture refs are omitted: {card}"
         );
     }
 

@@ -43,7 +43,7 @@ the UI adds zero new core design.
 
 **Update 2026-06-30:** child 1 (type contract) DELIVERED — `EvalSpec` +
 `GraderManifest{deterministic|agentic|human}` + `FixtureRef(hash)`, `Label`,
-`CalibrationRecord`, `Provenance`/`EvaluationCard`, `Aggregate` — all serde
+`CalibrationRecord`, `Provenance`/`EvaluationCard`, `RunRecord`, `Aggregate` — all serde
 `schema_version`-stamped with round-trip tests and a light version-validation guard
 that rejects an unknown version rather than silently treating it as v1. Child 3
 (SQLite index + content-addressed blob store) deliberately NOT built — premature;
@@ -54,3 +54,7 @@ artifacts-on-disk suffice for the wedge (per this epic's own non-goal note). Chi
 must stop lying. Specs must either wire declared graders, baselines, fixtures,
 and confidence into execution or validation must refuse them until they are real
 (`014`).
+
+**Update 2026-07-01:** the `RunRecord` type is no longer only named in backlog
+prose: `crucible.run_record.v1` wraps score, artifacts, and an
+`EvaluationCard`, and new run-store writes persist both durable artifacts.

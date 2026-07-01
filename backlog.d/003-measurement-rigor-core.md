@@ -19,14 +19,15 @@ eval family.
   "inside noise floor") when p > α or the effect sits inside the CI.
 - [ ] A pre-run power check warns when the fixture set is underpowered for the
   target effect.
-- [ ] Every run persists an Evaluation Card (model+version, temperature, seed
-  count, prompt/rubric hash, fixture refs, raw per-item judgments, cost,
-  timestamp) that reproduces the verdict with zero chat context.
+- [ ] Every run persists an Evaluation Card (model+version, configured
+  temperature when explicit, seed count, prompt/rubric hash, fixture refs, raw
+  per-item judgments, cost, timestamp) that reproduces the verdict with zero
+  chat context.
 
 ## Children (ordered)
 
-1. ✅ Provenance / Evaluation-Card types — delivered 2026-06-30; still need
-   persistence through real runs (010/011).
+1. ✅ Provenance / Evaluation-Card types — delivered 2026-06-30; persistence
+   through real runs landed 2026-07-01.
 2. ✅ Uncertainty primitives — Wilson + seeded bootstrap landed; keep wiring them
    into every reported aggregate.
 3. Baseline + known-good/known-bad anchors + judge sanity check (judge must fail
@@ -62,11 +63,17 @@ judge cannot silently cross a threshold); McNemar paired comparison + noise-floo
 refusal (the "refuse a delta you cannot defend" gate — p∈[0,1] after fixing an
 erfc tail-overshoot that produced p>1); power/sample-size check; a seeded,
 reproducible bootstrap; and the `Provenance`/`EvaluationCard` + `CalibrationRecord`
-types (with finiteness + schema-version guards). Remaining: wire the Evaluation Card
-into persisted runs; the κ judge-calibration *unlock* needs real human labels
-(002.6 / 005). Children 2 + 6 of this epic now have shipped primitives.
+types (with finiteness + schema-version guards). Remaining then: wire the
+Evaluation Card into persisted runs; the κ judge-calibration *unlock* needs real
+human labels (002.6 / 005). Children 2 + 6 of this epic now have shipped
+primitives.
 
 **Factory groom 2026-07-01:** keep this epic as the measurement-kernel spine, not
 the top pickup. The active engine work (`010`) must persist Evaluation Cards,
 honor or refuse declared confidence, and call the power-warning primitive before
 claiming a comparison.
+
+**Update 2026-07-01 (run-store writer):** new `crucible.run_record.v1` and
+stored `crucible.evaluation_card.v1` materializations now persist for every new
+run-store row and are visible through `crucible runs show` and MCP show.
+Remaining: judge-tier calibration and richer per-judge cards once 012 lands.
