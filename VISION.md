@@ -40,15 +40,16 @@ miserable chore.
 ## The Role In The Constellation
 
 Crucible owns the eval and benchmark as a durable artifact — defining,
-designing, implementing, calibrating, and iterating it. **Threshold** (formerly
-Daedalus) consumes Crucible's trusted evals to optimize harness and agent
-configurations. The rename is narrative only: Threshold's on-disk checkout and
-its `daedalus-score` binary keep the `daedalus` name until the sibling repo
-physically renames.
+designing, implementing, running, judging, calibrating, storing, reporting, and
+iterating it. **Threshold** (formerly Daedalus) consumes Crucible's trusted evals
+and run records to optimize harness and agent configurations. The rename is
+narrative only: Threshold's on-disk checkout and its `daedalus-score` binary keep
+the `daedalus` name until the sibling repo physically renames.
 
 - Crucible is where evals and benchmarks are brainstormed, defined, designed,
-  implemented, calibrated, and iterated: task definitions, corpora and fixtures,
-  grader mix, scoring rules, and trust/calibration.
+  implemented, run against selected configs, calibrated, and iterated: task
+  definitions, corpora and fixtures, grader mix, scoring rules, run records, and
+  trust/calibration.
 - Threshold runs Karpathy-style auto-research and optimization loops that use
   Crucible's evals to find the harness and agent configuration that masters a
   given measurement surface.
@@ -62,11 +63,11 @@ it?", that is Crucible. If the question is "which harness/agent configuration
 scores highest against this trusted measurement surface?", that is Threshold.
 
 Direction of travel: the eval-authoring machinery that currently lives in
-Threshold — arena and task definitions, fixture corpora, scoring design, and
-adjudication — should migrate into Crucible over time, leaving Threshold focused
-on the optimization search loop. Until that migration lands, Crucible reads and
-writes the existing Threshold arena and Harbor artifacts in place rather than
-duplicating them.
+Threshold — arena and task definitions, fixture corpora, scoring design,
+adjudication, and run records where appropriate — should migrate into Crucible
+over time, leaving Threshold focused on the optimization search loop. Until that
+migration lands, Crucible reads and writes the existing Threshold arena and
+Harbor artifacts in place rather than duplicating them.
 
 ## What Crucible Should Do
 
@@ -80,13 +81,15 @@ Crucible should support the full eval lifecycle:
   against human labels before their scores are trusted;
 - run evaluations to measure and validate the eval itself across models,
   prompts, products, agents, or configurations;
+- record every run in a durable, queryable database attached to the benchmark
+  and config that produced it;
 - show variance, baselines, confidence, disagreement, and cost;
 - surface judgment queues to the operator in a delightful, low-friction UI,
   especially on a phone, for the evals that need human judgment;
 - collect human labels, preferences, ratings, comments, and adjudications;
 - compare runs without hiding uncertainty;
-- export eval and benchmark packages to consumers like Threshold, Harness Kit, or
-  product repos;
+- export eval and benchmark packages, plus defensible run records, to consumers
+  like Threshold, Harness Kit, Cerberus, or product repos;
 - generate reports that can be used internally, attached to PRs, or published
   when the eval is credible enough.
 
@@ -130,8 +133,9 @@ serious enough for real decisions, approachable enough to use repeatedly.
 - Not a place to hide judgment-heavy decisions behind one uncalibrated judge.
 - Not a dumping ground for every product metric. Crucible is for evals that help
   decide whether behavior improved.
-- Not a reinvention of commodity eval infrastructure. Crucible borrows execution
-  and ordinary grading where they already plug in; it owns the eval artifact, the
+- Not a reinvention of commodity eval infrastructure. Crucible borrows commodity
+  execution and ordinary grading where they already plug in, but it must still
+  own the benchmark artifact, selected run execution, run records, the
   calibration and trust layer, the human-judgment surface, and the export
   contract.
 
@@ -152,8 +156,8 @@ Start by making the eval object clear. A minimal useful eval should name:
 - decision the eval is meant to inform.
 
 The first implementation does not need to solve every eval category. It should
-make one real Misty Step eval family easier to design, run, judge, and iterate,
-then expand from evidence.
+make one real Misty Step eval family easier to design, run, judge, store, and
+iterate, then expand from evidence.
 
 The first family is agentic code-review quality: Cerberus-style review and
 critic lanes over real diffs, with deterministic checks where possible (a
@@ -163,16 +167,17 @@ human queue for adjudicating whether findings are correct, important,
 duplicated, actionable, or noise.
 
 That family is the right wedge because the surrounding pieces already exist and
-are waiting. Verified on 2026-06-29: Threshold has six `pr-review-*` arenas, a
-~48-task ground-truth corpus, and three arenas explicitly blocked on labeled
-fixtures and a calibrated judge (`pr-review-{verification,product,
-simplification}`: "not runnable until fixtures are authored", "judge scoring
-remains diagnostic until calibrated"); Cerberus produces structured findings via
-`review-diff`; and the adjudication workflow exists only as hand-edited markdown
-(`arenas/pr-review-v0/adjudications.md`). Crucible's first job is to
-industrialize that adjudication, calibrate the judge, bootstrap labels for real
-diffs (the gap no synthetic corpus fills), and emit Harbor-importable benchmark
-tasks Threshold can re-score and optimize against.
+are waiting. Verified on 2026-07-01: Threshold's `daedalus` checkout has six live
+`pr-review-*` arenas with 35 `tests/expected.json` scorer-key tasks
+(`pr-review-v0`, `pr-review-v1`, `pr-review-v2`, `pr-review-security-v0`,
+`pr-review-correctness-v0`, and `pr-review-master-v0`); no live arenas currently
+exist under the old `pr-review-{verification,product,simplification}` names.
+Cerberus produces structured findings via review artifacts, and Crucible already
+has a deterministic grade/adjudicate/export loop plus a static panel. Crucible's
+next job is to own the engine: author benchmarks, make real model calls, record
+runs, collect human labels through a working writeback surface, calibrate
+agentic judges against those labels, and emit Harbor-importable benchmark tasks
+and run records Threshold can consume.
 
 Next families after that:
 
@@ -184,31 +189,33 @@ Next families after that:
 
 ## Decisions For Now
 
-- Crucible owns eval/benchmark definition, design, implementation, calibration,
-  run records, judging, reporting, and export. Threshold consumes trusted evals to
-  optimize configs. Eval-authoring migrates from Threshold into Crucible over
-  time.
+- Crucible owns eval/benchmark definition, design, implementation, selected run
+  execution, calibration, run records, judging, reporting, and export. Threshold
+  consumes trusted evals and run records to optimize configs. Eval-authoring
+  migrates from Threshold into Crucible over time.
 - How much judgment an eval needs is a per-eval decision across deterministic,
   agentic, and human layers; most real evals are hybrid and a good portion need
   some human judgment.
 - Do not reinvent eval infrastructure. Leverage what already plugs in — the
   existing Threshold arenas/corpus/Harbor format and Cerberus for the code-review
-  wedge; existing frameworks (e.g. Promptfoo, Inspect AI) for execution and
-  ordinary grading of future families where they fit. Crucible owns the eval
-  artifact, the calibration/trust layer, the human-judgment surface, and the
-  export contract; it borrows execution and commodity grading behind adapters.
+  wedge; existing frameworks (e.g. Promptfoo, Inspect AI) for commodity execution
+  and ordinary grading of future families where they fit. Crucible owns the eval
+  artifact, selected run execution, the run database, the calibration/trust
+  layer, the human-judgment surface, and the export contract; borrowed engines
+  sit behind adapters.
 - The first concrete eval family is agentic code review and critic quality.
 - The first UI should be responsive web, with the human judgment queue designed
-  phone-first rather than desktop-shrunken; build it after one adjudication loop
-  works from the CLI.
+  phone-first rather than desktop-shrunken; the next UI milestone is writeback,
+  not another static projection.
 - The durable, Crucible-owned core (eval object, calibration, uncertainty,
-  export) biases Rust. A thin TypeScript/React layer is justified for the
-  judgment UI. Execution and commodity grading are borrowed, not rebuilt.
+  run storage, export) biases Rust. A thin TypeScript/React layer is justified
+  for the judgment UI. Commodity execution and grading can be borrowed, but the
+  Crucible-owned run engine and model boundary stay explicit.
 - Exports should be boring structured packages aligned to the consumer's
   contract — the Threshold Harbor task-directory format for the code-review
   family: task definition, fixture references, grader manifest, runner hints,
-  rubric, baselines, run records, labels, aggregate scores, uncertainty, and
-  provenance.
+  rubric, baselines, run records, labels, aggregate scores, uncertainty,
+  provenance, and the queryable run ids that produced them.
 
 ## Sources
 
@@ -227,8 +234,8 @@ Next families after that:
   a non-zero human-judgment component.
 - Operator clarification on 2026-06-29 (/groom): keep Crucible as a separate,
   rechartered repo.
-- Live-repo evidence (2026-06-29): `daedalus/arenas/pr-review-*` (six arenas, 48
-  ground-truth `solution/findings.json`), blocked specs
-  `pr-review-{verification,product,simplification}`, hand-authored
-  `arenas/pr-review-v0/adjudications.md`, and the Harbor task-directory format;
-  `cerberus review-diff` structured findings.
+- Live-repo evidence (2026-07-01): `daedalus/arenas/pr-review-*` has six live
+  arenas and 35 `tests/expected.json` scorer-key tasks; the old
+  `pr-review-{verification,product,simplification}` names are not live arenas;
+  Crucible has Rust core/CLI/MCP grade/adjudicate/export/run receipts, but no
+  live model-call engine yet.

@@ -11,7 +11,7 @@ change. No Threshold file was modified.
 > (`daedalus-core`, `daedalus-cli`), and the `daedalus-score` binary keep the
 > `daedalus` name; every path in this map is real and unchanged.
 
-- **Surveyed:** `/Users/phaedrus/Development/daedalus` @ `b48c608`
+- **Surveyed:** sibling checkout `../daedalus` @ `b48c608`
   (_docs: clarify Daedalus frontier output_ — commit subject, verbatim), 2026-06-30.
 - **Boundary being realized** (per `AGENTS.md` / `VISION.md`): Crucible owns the
   eval/benchmark as a durable artifact — definition, design, scoring design,

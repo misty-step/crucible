@@ -33,7 +33,7 @@ renamed.
 Run a Cerberus producer handoff through the same declared runner:
 
 ```sh
-# from /Users/phaedrus/Development/cerberus
+# from ../cerberus (sibling checkout)
 target/debug/cerberus review \
   --request fixtures/requests/diff-only.json \
   --harness fixture \
@@ -168,8 +168,8 @@ Open `runs/local/adjudication-panel/index.html` to inspect the queue.
 
 ```sh
 cargo run -p crucible -- dashboard \
-  --arenas /Users/phaedrus/Development/daedalus/arenas \
-  --runs /Users/phaedrus/Development/daedalus/runs \
+  --arenas ../daedalus/arenas \
+  --runs ../daedalus/runs \
   --out runs/local/dashboard
 ```
 

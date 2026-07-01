@@ -3,19 +3,23 @@
 - North star: read `VISION.md` before changing product scope, eval semantics,
   grader/judgment boundaries, runner boundaries, UI direction, or the
   Daedalus/Harness Kit relationship.
-- Current state: docs-first seed repo; no application code yet. The first
-  implementation is the code-review eval wedge (`backlog.d/002-*`). Do not invent
-  a broad platform stack ahead of it.
-- Boundary (rechartered 2026-06-29): Crucible owns the eval/benchmark as a
-  durable artifact — definition, design, implementation, calibration, run
-  records, judging, reporting, and export. Daedalus runs Karpathy-style
-  optimization loops that consume Crucible's trusted evals. Eval-authoring
-  machinery migrates from Daedalus into Crucible over time (`backlog.d/007-*`).
-- Do not reinvent eval infrastructure. Borrow execution and ordinary grading
-  where they plug in — the existing Daedalus arenas/corpus/Harbor format and
-  Cerberus for the code-review wedge; frameworks like Promptfoo or Inspect AI for
-  future families where they fit. Crucible owns the eval artifact, the
-  calibration/trust layer, the human-judgment surface, and the export contract.
+- Current state: Rust core + CLI + MCP for the first code-review eval wedge are
+  live. The next implementation priority is the author-and-run engine
+  (`backlog.d/010-*`): a Crucible-owned benchmark authored through CLI/MCP and
+  run end to end with a real model call. Do not invent a broad platform stack
+  ahead of it.
+- Boundary (rechartered 2026-06-29, refreshed 2026-07-01): Crucible owns the
+  eval/benchmark as a durable artifact — definition, design, implementation,
+  selected execution, calibration, run records, judging, reporting, and export.
+  Threshold/Daedalus runs Karpathy-style optimization loops that consume
+  Crucible's trusted evals and run records. Eval-authoring machinery migrates
+  from Daedalus into Crucible over time (`backlog.d/007-*`).
+- Do not reinvent eval infrastructure. Borrow commodity execution and ordinary
+  grading where they plug in — the existing Daedalus arenas/corpus/Harbor format
+  and Cerberus for the code-review wedge; frameworks like Promptfoo or Inspect AI
+  for future families where they fit. Crucible owns the eval artifact, selected
+  run execution, the calibration/trust layer, the human-judgment surface, run
+  records, and the export contract.
 - Judgment is a per-eval decision across deterministic, agentic, and human
   layers; most real evals are hybrid and a good portion need some human judgment.
   Calibrate agentic/model judges against human labels before trusting them.

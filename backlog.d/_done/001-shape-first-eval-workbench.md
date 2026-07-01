@@ -1,8 +1,6 @@
 # Shape the first Crucible eval workbench slice
 
-Priority: P1
-Status: done
-Estimate: M
+Priority: P1 · Status: done · Estimate: M
 
 ## Goal
 
@@ -29,5 +27,6 @@ emitted:
 
 ## Disposition
 
-Superseded by epics 002–007. Proposed for archive to `backlog.d/_done/`
-(awaiting operator ratification — groom does not auto-archive).
+Archived by the 2026-07-01 factory groom. Superseded by the active epics in
+`backlog.d/`, especially `010-author-and-run-engine.md`, `011-runs-database.md`,
+and `012-three-judge-tiers-real.md`.

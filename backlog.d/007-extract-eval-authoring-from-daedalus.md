@@ -5,9 +5,9 @@ Priority: P2 · Status: pending · Estimate: XL (epic)
 ## Goal
 
 Realize the rechartered boundary: migrate eval/benchmark authoring — arena and
-task definitions, fixture corpora, scoring design, adjudication — from Threshold
-into Crucible, leaving Threshold focused on Karpathy-style config-optimization
-loops that consume Crucible evals.
+task definitions, fixture corpora, scoring design, adjudication, and run records
+where appropriate — from Threshold into Crucible, leaving Threshold focused on
+Karpathy-style config-optimization loops that consume Crucible evals.
 
 ## Oracle
 
