@@ -793,6 +793,52 @@ fn run_declared_spec_writes_a_scored_key_recall_report() {
     assert_eq!(evidence["tasks"].as_array().expect("tasks array").len(), 1);
 }
 
+/// The same declared runner must also consume fresh Cerberus producer handoffs:
+/// a `ReviewArtifact` bound to a `ReviewReceiptBundle.v1`, then scored by
+/// Crucible against the Harbor key.
+#[test]
+fn run_declared_spec_grades_cerberus_receipt_bundle_artifacts() {
+    let out_dir = temp_root("run-cerberus-spec");
+    let spec = fixture("specs/cerberus-receipt-fixture.json");
+    let out = crucible()
+        .arg("run")
+        .arg(&spec)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+
+    assert!(
+        out.status.success(),
+        "declared Cerberus receipt spec run must exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("run <spec> --json emits JSON");
+    let eval = &v["evals"][0];
+    assert_eq!(eval["id"], "cerberus-receipt-fixture");
+    assert_eq!(eval["score"]["metric"], "pr_review_key_recall");
+    assert_eq!(eval["score"]["successes"], 1);
+    assert_eq!(eval["score"]["n"], 2);
+    assert_eq!(eval["score"]["method"], "Wilson");
+
+    let evidence_path = out_dir.join("task-results.json");
+    let evidence: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence_path).expect("read evidence"))
+            .expect("evidence is JSON");
+    assert_eq!(evidence["corpus"]["source"], "cerberus_receipt_bundles");
+    assert_eq!(evidence["corpus"]["candidate_id"], "cerberus-fixture");
+    assert_eq!(evidence["corpus"]["tasks"][0]["harness"], "fixture");
+    assert_eq!(
+        evidence["corpus"]["tasks"][0]["validation_status"],
+        "passed"
+    );
+    assert_eq!(evidence["tasks"][0]["receipt_harness"], "fixture");
+    assert_eq!(evidence["tasks"][0]["matched"], 1);
+    assert_eq!(evidence["tasks"][0]["expected_defects"], 2);
+}
+
 /// The standalone panel command renders an existing judgment queue artifact into
 /// a phone-first static HTML panel plus the copied queue model.
 #[test]

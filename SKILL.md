@@ -28,6 +28,26 @@ The spec writes `runs/local/pr-review-key-recall-v0/run-report.json` by default.
 It measures Daedalus `pr-review-v0` key recall for the selected
 `probe-oneshot` candidate over the frozen six-task corpus.
 
+Run a Cerberus producer handoff through the same declared runner:
+
+```sh
+# from /Users/phaedrus/Development/cerberus
+target/debug/cerberus review \
+  --request fixtures/requests/diff-only.json \
+  --harness fixture \
+  --fixture-output fixtures/harness/valid-review.txt \
+  --out target/cerberus/crucible-live/artifact.json \
+  --markdown target/cerberus/crucible-live/review.md \
+  --execution-plan target/cerberus/crucible-live/execution_plan.json \
+  --receipt-bundle target/cerberus/crucible-live/receipt-bundle.json
+```
+
+Then run a Crucible spec with `runner.corpus.source =
+"cerberus_receipt_bundles"`. Each task must name `artifact`, `receipt_bundle`,
+and the Harbor `tests/expected.json` scorer key. See
+`crucible/tests/fixtures/specs/cerberus-receipt-fixture.json` for the committed
+shape; keep real producer artifacts and specs under `runs/local/`.
+
 ```sh
 cargo run -p crucible -- run --out runs/local/factory-lane --json
 ```

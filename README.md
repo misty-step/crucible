@@ -44,6 +44,27 @@ That spec, `pr-review-key-recall-v0`, selects the frozen Daedalus
 the Harbor scorer keys under the sibling Daedalus checkout. The default evidence
 directory is `runs/local/pr-review-key-recall-v0/`.
 
+Run a Cerberus producer handoff through the same declared-spec runner:
+
+```sh
+# from the sibling Cerberus checkout
+target/debug/cerberus review \
+  --request fixtures/requests/diff-only.json \
+  --harness fixture \
+  --fixture-output fixtures/harness/valid-review.txt \
+  --out target/cerberus/crucible-live/artifact.json \
+  --markdown target/cerberus/crucible-live/review.md \
+  --execution-plan target/cerberus/crucible-live/execution_plan.json \
+  --receipt-bundle target/cerberus/crucible-live/receipt-bundle.json
+```
+
+Then run a Crucible spec whose runner corpus uses
+`"source": "cerberus_receipt_bundles"` and names the Cerberus `artifact`, the
+`receipt_bundle`, and the Harbor `tests/expected.json` scorer key. The hermetic
+fixture spec is
+`crucible/tests/fixtures/specs/cerberus-receipt-fixture.json`; real run records
+belong under `runs/local/`.
+
 Run all built-in eval receipts:
 
 ```sh

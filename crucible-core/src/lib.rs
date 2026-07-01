@@ -134,7 +134,7 @@ pub use measure::{
 };
 pub use provenance::{EvaluationCard, Provenance, EVALUATION_CARD_SCHEMA};
 pub use spec::{
-    Aggregate, AggregationMethod, CorpusSpec, EvalSpec, FixtureRef, Grader, GraderKind,
-    GraderManifest, IntervalMethod, PairedDelta, RunnerKind, RunnerSpec, UncertaintyRule,
-    EVAL_SPEC_SCHEMA,
+    Aggregate, AggregationMethod, CerberusReceiptTask, CorpusSpec, EvalSpec, FixtureRef, Grader,
+    GraderKind, GraderManifest, IntervalMethod, PairedDelta, RunnerKind, RunnerSpec,
+    UncertaintyRule, EVAL_SPEC_SCHEMA,
 };

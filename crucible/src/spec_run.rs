@@ -1,9 +1,10 @@
 //! Declared `EvalSpec` execution for the first real benchmark surface.
 //!
 //! This is intentionally narrower than a general runner framework. It executes
-//! the first load-bearing spec shape Crucible needs now: key recall over a
-//! Daedalus PR-review `trials.jsonl` corpus. New runner families should earn
-//! their own explicit branch in the spec schema and here.
+//! the first load-bearing spec shape Crucible needs now: key recall over
+//! Daedalus PR-review `trials.jsonl` corpora and fresh Cerberus review artifacts
+//! handed off with receipt bundles. New runner families should earn their own
+//! explicit branch in the spec schema and here.
 
 use std::collections::HashSet;
 use std::io::BufRead;
@@ -11,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use crucible_core::{
-    AggregationMethod, CorpusSpec, Defect, EvalSpec, ExpectedKey, IntervalMethod, KeyFinding,
-    RunnerKind, RunnerSpec,
+    findings_from_artifact, schema_valid, to_key_findings, AggregationMethod, CerberusReceiptTask,
+    CorpusSpec, Defect, EvalSpec, ExpectedKey, IntervalMethod, KeyFinding, RunnerKind, RunnerSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -82,12 +83,40 @@ fn run_key_recall(
         );
     }
 
-    let CorpusSpec::DaedalusTrials {
-        arena_dir,
-        trials_jsonl,
-        candidate_id,
-        tasks,
-    } = &runner.corpus;
+    match &runner.corpus {
+        CorpusSpec::DaedalusTrials {
+            arena_dir,
+            trials_jsonl,
+            candidate_id,
+            tasks,
+        } => run_key_recall_daedalus(
+            spec,
+            runner,
+            spec_path,
+            out,
+            arena_dir,
+            trials_jsonl,
+            candidate_id,
+            tasks,
+        ),
+        CorpusSpec::CerberusReceiptBundles {
+            candidate_id,
+            tasks,
+        } => run_key_recall_cerberus_receipts(spec, runner, spec_path, out, candidate_id, tasks),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_key_recall_daedalus(
+    spec: &EvalSpec,
+    runner: &RunnerSpec,
+    spec_path: &Path,
+    out: &Path,
+    arena_dir: &str,
+    trials_jsonl: &str,
+    candidate_id: &str,
+    tasks: &[String],
+) -> anyhow::Result<EvalReport> {
     let arena_dir = resolve_spec_path(spec_path, arena_dir);
     let trials_jsonl = resolve_spec_path(spec_path, trials_jsonl);
     let selected_tasks: HashSet<&str> = tasks.iter().map(String::as_str).collect();
@@ -139,14 +168,11 @@ fn run_key_recall(
         let expected = ExpectedKey::from_path(&key_path)
             .with_context(|| format!("loading scorer key {}", key_path.display()))?;
         let candidate_rows = trial.findings.clone().unwrap_or_default();
-        let grade = score_against_expected_key(&candidate_rows, &expected);
-        let matched = grade.matched_ids.len() as u64;
-        let missed = grade.missed_ids.len() as u64;
-        let false_positives = grade.false_positives;
+        let task_score = grade_key_recall_task(&candidate_rows, &expected);
 
-        total_matched += matched;
-        total_expected += matched + missed;
-        total_disputed += false_positives;
+        total_matched += task_score.matched;
+        total_expected += task_score.expected_defects;
+        total_disputed += task_score.false_positives;
 
         task_results.push(TaskResult {
             task_id: trial.task_id,
@@ -158,20 +184,27 @@ fn run_key_recall(
             arena_version: trial.arena_version,
             key: key_path.display().to_string(),
             findings: candidate_rows.len(),
-            matched,
-            matched_ids: grade.matched_ids,
-            missed,
-            missed_ids: grade.missed_ids,
-            disputed: false_positives,
-            false_positives,
+            dropped_invalid: 0,
+            matched: task_score.matched,
+            matched_ids: task_score.grade.matched_ids,
+            missed: task_score.missed,
+            missed_ids: task_score.grade.missed_ids,
+            disputed: task_score.false_positives,
+            false_positives: task_score.false_positives,
             recoverable_misses: 0,
-            expected_defects: matched + missed,
+            expected_defects: task_score.expected_defects,
             daedalus_reward: trial.reward,
             daedalus_recall: trial.recall,
             daedalus_false_positives: trial.false_positives,
             error: trial.error,
             scorer_error: trial.scorer_error,
             artifacts: trial.artifacts,
+            artifact: None,
+            receipt_bundle: None,
+            receipt_harness: None,
+            receipt_model: None,
+            receipt_validation: None,
+            receipt_trusted_for_posting: None,
         });
     }
 
@@ -206,12 +239,11 @@ fn run_key_recall(
             spec_id: spec_id(spec, spec_path),
             spec: spec_path.display().to_string(),
             runner: runner.kind,
-            corpus: CorpusEvidence {
-                source: "daedalus_trials",
+            corpus: CorpusEvidence::DaedalusTrials {
                 arena_dir: arena_dir.display().to_string(),
                 trials_jsonl: trials_jsonl.display().to_string(),
-                candidate_id: candidate_id.clone(),
-                selected_tasks: tasks.clone(),
+                candidate_id: candidate_id.to_string(),
+                selected_tasks: tasks.to_vec(),
             },
             score: &score,
             totals: Totals {
@@ -242,6 +274,153 @@ fn run_key_recall(
             ),
         ],
     })
+}
+
+fn run_key_recall_cerberus_receipts(
+    spec: &EvalSpec,
+    runner: &RunnerSpec,
+    spec_path: &Path,
+    out: &Path,
+    candidate_id: &str,
+    tasks: &[CerberusReceiptTask],
+) -> anyhow::Result<EvalReport> {
+    if tasks.is_empty() {
+        anyhow::bail!("cerberus_receipt_bundles corpus must declare at least one task");
+    }
+
+    let mut task_results = Vec::new();
+    let mut receipt_evidence = Vec::new();
+    let mut total_matched = 0u64;
+    let mut total_expected = 0u64;
+    let mut total_disputed = 0u64;
+    let total_recoverable = 0u64;
+
+    for task in tasks {
+        let artifact_path = resolve_spec_path(spec_path, &task.artifact);
+        let receipt_path = resolve_spec_path(spec_path, &task.receipt_bundle);
+        let expected_path = resolve_spec_path(spec_path, &task.expected);
+
+        let receipt = load_cerberus_receipt_bundle(&receipt_path)?;
+        validate_cerberus_receipt(&receipt, &receipt_path)?;
+        let artifact_uri_matches =
+            receipt_artifact_uri_matches(&receipt.artifact_uri, &task.artifact, &artifact_path);
+
+        let findings = findings_from_artifact(&artifact_path)
+            .with_context(|| format!("loading artifact {}", artifact_path.display()))?;
+        let total_findings = findings.len();
+        let valid: Vec<_> = findings.into_iter().filter(schema_valid).collect();
+        let dropped_invalid = total_findings - valid.len();
+        let candidate_rows = to_key_findings(&valid);
+        let expected = ExpectedKey::from_path(&expected_path)
+            .with_context(|| format!("loading scorer key {}", expected_path.display()))?;
+        let task_score = grade_key_recall_task(&candidate_rows, &expected);
+
+        total_matched += task_score.matched;
+        total_expected += task_score.expected_defects;
+        total_disputed += task_score.false_positives;
+
+        receipt_evidence.push(CerberusReceiptEvidence {
+            task_id: task.task_id.clone(),
+            artifact: artifact_path.display().to_string(),
+            receipt_bundle: receipt_path.display().to_string(),
+            receipt_artifact_uri: receipt.artifact_uri.clone(),
+            artifact_uri_matches,
+            harness: receipt.harness.clone(),
+            model: receipt.model.clone(),
+            validation_status: receipt.validation.status.clone(),
+            trusted_for_posting: receipt.validation.trusted_for_posting,
+        });
+
+        task_results.push(TaskResult {
+            task_id: task.task_id.clone(),
+            run_id: format!("cerberus:{}", receipt.artifact_id),
+            trial: None,
+            candidate_id: candidate_id.to_string(),
+            candidate_kind: Some("cerberus".to_string()),
+            arena_id: None,
+            arena_version: None,
+            key: expected_path.display().to_string(),
+            findings: candidate_rows.len(),
+            dropped_invalid,
+            matched: task_score.matched,
+            matched_ids: task_score.grade.matched_ids,
+            missed: task_score.missed,
+            missed_ids: task_score.grade.missed_ids,
+            disputed: task_score.false_positives,
+            false_positives: task_score.false_positives,
+            recoverable_misses: 0,
+            expected_defects: task_score.expected_defects,
+            daedalus_reward: None,
+            daedalus_recall: None,
+            daedalus_false_positives: None,
+            error: None,
+            scorer_error: None,
+            artifacts: None,
+            artifact: Some(artifact_path.display().to_string()),
+            receipt_bundle: Some(receipt_path.display().to_string()),
+            receipt_harness: Some(receipt.harness),
+            receipt_model: receipt.model,
+            receipt_validation: Some(receipt.validation.status),
+            receipt_trusted_for_posting: Some(receipt.validation.trusted_for_posting),
+        });
+    }
+
+    let score = wilson_score("pr_review_key_recall", total_matched, total_expected);
+    let evidence_path = out.join("task-results.json");
+    write_json(
+        &evidence_path,
+        &SpecRunEvidence {
+            schema_version: "crucible.spec_run_evidence.v1",
+            spec_id: spec_id(spec, spec_path),
+            spec: spec_path.display().to_string(),
+            runner: runner.kind,
+            corpus: CorpusEvidence::CerberusReceiptBundles {
+                candidate_id: candidate_id.to_string(),
+                tasks: receipt_evidence,
+            },
+            score: &score,
+            totals: Totals {
+                trials: tasks.len() as u64,
+                matched: total_matched,
+                expected_defects: total_expected,
+                disputed: total_disputed,
+                recoverable_misses: total_recoverable,
+            },
+            tasks: &task_results,
+        },
+    )?;
+
+    Ok(EvalReport {
+        id: spec_id(spec, spec_path),
+        title: if spec.task.is_empty() {
+            "Declared eval spec".to_string()
+        } else {
+            spec.task.clone()
+        },
+        score,
+        artifacts: vec![spec_path.display().to_string(), evidence_path.display().to_string()],
+        notes: vec![
+            "Executed from a declared Crucible EvalSpec runner, not a built-in receipt.".to_string(),
+            format!(
+                "Selected {} fresh Cerberus receipt bundle task(s) for candidate {:?} and graded them against Harbor scorer keys.",
+                tasks.len(), candidate_id
+            ),
+        ],
+    })
+}
+
+fn grade_key_recall_task(findings: &[KeyFinding], expected: &ExpectedKey) -> KeyRecallTaskScore {
+    let grade = score_against_expected_key(findings, expected);
+    let matched = grade.matched_ids.len() as u64;
+    let missed = grade.missed_ids.len() as u64;
+    let false_positives = grade.false_positives;
+    KeyRecallTaskScore {
+        matched,
+        missed,
+        false_positives,
+        expected_defects: matched + missed,
+        grade,
+    }
 }
 
 fn score_against_expected_key(findings: &[KeyFinding], expected: &ExpectedKey) -> SpanGrade {
@@ -339,6 +518,54 @@ fn write_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
     std::fs::write(path, format!("{json}\n")).with_context(|| format!("writing {}", path.display()))
 }
 
+fn load_cerberus_receipt_bundle(path: &Path) -> anyhow::Result<CerberusReviewReceiptBundle> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("reading Cerberus receipt bundle {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "parsing {} as a Cerberus ReviewReceiptBundle",
+            path.display()
+        )
+    })
+}
+
+fn validate_cerberus_receipt(
+    receipt: &CerberusReviewReceiptBundle,
+    path: &Path,
+) -> anyhow::Result<()> {
+    if receipt.schema_version != "cerberus.review_receipt_bundle.v1" {
+        anyhow::bail!(
+            "{} has unsupported schema_version {:?}",
+            path.display(),
+            receipt.schema_version
+        );
+    }
+    if receipt.validation.status != "passed" {
+        anyhow::bail!(
+            "{} is not trusted for grading: validation.status={:?}",
+            path.display(),
+            receipt.validation.status
+        );
+    }
+    Ok(())
+}
+
+fn receipt_artifact_uri_matches(
+    receipt_uri: &str,
+    declared_artifact: &str,
+    resolved: &Path,
+) -> bool {
+    if receipt_uri == declared_artifact || receipt_uri == resolved.display().to_string() {
+        return true;
+    }
+    let receipt_path = Path::new(receipt_uri);
+    if receipt_path.is_absolute() {
+        receipt_path == resolved
+    } else {
+        resolved.ends_with(receipt_path)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct DaedalusTrial {
     run_id: String,
@@ -368,6 +595,33 @@ struct DaedalusTrial {
     artifacts: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CerberusReviewReceiptBundle {
+    schema_version: String,
+    artifact_id: String,
+    harness: String,
+    #[serde(default)]
+    model: Option<String>,
+    artifact_uri: String,
+    validation: CerberusReceiptValidation,
+}
+
+#[derive(Debug, Deserialize)]
+struct CerberusReceiptValidation {
+    status: String,
+    #[serde(default)]
+    trusted_for_posting: bool,
+}
+
+#[derive(Debug)]
+struct KeyRecallTaskScore {
+    matched: u64,
+    missed: u64,
+    false_positives: u64,
+    expected_defects: u64,
+    grade: SpanGrade,
+}
+
 #[derive(Debug, Serialize)]
 struct SpecRunEvidence<'a> {
     schema_version: &'static str,
@@ -381,12 +635,32 @@ struct SpecRunEvidence<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct CorpusEvidence {
-    source: &'static str,
-    arena_dir: String,
-    trials_jsonl: String,
-    candidate_id: String,
-    selected_tasks: Vec<String>,
+#[serde(tag = "source", rename_all = "snake_case")]
+enum CorpusEvidence {
+    DaedalusTrials {
+        arena_dir: String,
+        trials_jsonl: String,
+        candidate_id: String,
+        selected_tasks: Vec<String>,
+    },
+    CerberusReceiptBundles {
+        candidate_id: String,
+        tasks: Vec<CerberusReceiptEvidence>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct CerberusReceiptEvidence {
+    task_id: String,
+    artifact: String,
+    receipt_bundle: String,
+    receipt_artifact_uri: String,
+    artifact_uri_matches: bool,
+    harness: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    validation_status: String,
+    trusted_for_posting: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -409,6 +683,8 @@ struct TaskResult {
     arena_version: Option<String>,
     key: String,
     findings: usize,
+    #[serde(skip_serializing_if = "is_zero_usize")]
+    dropped_invalid: usize,
     matched: u64,
     matched_ids: Vec<String>,
     missed: u64,
@@ -423,6 +699,22 @@ struct TaskResult {
     error: Option<String>,
     scorer_error: Option<String>,
     artifacts: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artifact: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receipt_bundle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receipt_harness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receipt_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receipt_validation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receipt_trusted_for_posting: Option<bool>,
+}
+
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, PartialEq, Eq)]
