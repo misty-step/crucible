@@ -246,7 +246,8 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum RunsCommand {
-    /// List stored runs, optionally filtered by benchmark id.
+    /// List stored runs, optionally filtered by benchmark, config, model, or
+    /// creation date.
     List {
         /// SQLite run ledger path.
         #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
@@ -254,6 +255,18 @@ enum RunsCommand {
         /// Benchmark id to filter on, e.g. prompt-smoke-v0.
         #[arg(long, value_name = "ID")]
         benchmark: Option<String>,
+        /// Config id to filter on.
+        #[arg(long, value_name = "ID")]
+        config: Option<String>,
+        /// Model slug to filter on.
+        #[arg(long, value_name = "SLUG")]
+        model: Option<String>,
+        /// Only runs created at or after this RFC3339 timestamp or YYYY-MM-DD date.
+        #[arg(long, value_name = "TIMESTAMP")]
+        since: Option<String>,
+        /// Only runs created at or before this RFC3339 timestamp or YYYY-MM-DD date.
+        #[arg(long, value_name = "TIMESTAMP")]
+        until: Option<String>,
         /// Emit stable JSON instead of a readable table.
         #[arg(long)]
         json: bool,
@@ -284,6 +297,10 @@ enum RunsCommand {
         /// Right config id or model slug.
         #[arg(long, value_name = "CONFIG_OR_MODEL")]
         right: String,
+        /// Significance threshold for the paired McNemar verdict when the two
+        /// runs share prompt task fixtures.
+        #[arg(long, value_name = "ALPHA", default_value_t = run_store::DEFAULT_ALPHA)]
+        alpha: f64,
         /// Emit stable JSON instead of a readable table.
         #[arg(long)]
         json: bool,
@@ -406,9 +423,28 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
         RunsCommand::List {
             db,
             benchmark,
+            config,
+            model,
+            since,
+            until,
             json,
         } => {
-            let list = run_store::list_runs(&db, benchmark.as_deref())?;
+            let since_unix_ms = since
+                .as_deref()
+                .map(run_store::parse_timestamp_bound)
+                .transpose()?;
+            let until_unix_ms = until
+                .as_deref()
+                .map(run_store::parse_timestamp_bound)
+                .transpose()?;
+            let filter = run_store::RunListFilter {
+                benchmark: benchmark.as_deref(),
+                config: config.as_deref(),
+                model: model.as_deref(),
+                since_unix_ms,
+                until_unix_ms,
+            };
+            let list = run_store::list_runs(&db, filter)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&list)?);
             } else {
@@ -428,9 +464,10 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             benchmark,
             left,
             right,
+            alpha,
             json,
         } => {
-            let comparison = run_store::compare_configs(&db, &benchmark, &left, &right)?;
+            let comparison = run_store::compare_configs(&db, &benchmark, &left, &right, alpha)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&comparison)?);
             } else {
@@ -446,6 +483,18 @@ fn print_run_list(list: &run_store::RunList) {
     println!("  db        {}", list.db);
     if let Some(benchmark) = &list.benchmark {
         println!("  benchmark {benchmark}");
+    }
+    if let Some(config) = &list.config {
+        println!("  config    {config}");
+    }
+    if let Some(model) = &list.model {
+        println!("  model     {model}");
+    }
+    if let Some(since) = list.since_unix_ms {
+        println!("  since     {since}");
+    }
+    if let Some(until) = list.until_unix_ms {
+        println!("  until     {until}");
     }
     if list.runs.is_empty() {
         println!("  (no runs)");
@@ -501,6 +550,17 @@ fn print_config_comparison(comparison: &run_store::ConfigComparison) {
         None => println!("  delta     n/a"),
     }
     println!("  kind      {}", comparison.comparison_kind);
+    if let Some(paired) = &comparison.paired {
+        println!(
+            "  paired    n={}  b={}  c={}  chi2={:.4}  p={:.4}  {}",
+            comparison.common_tasks,
+            paired.b,
+            paired.c,
+            paired.statistic,
+            paired.p_value,
+            paired.verdict.label()
+        );
+    }
     println!("  note      {}", comparison.note);
 }
 

@@ -948,6 +948,186 @@ fn run_persists_to_sqlite_and_cli_queries_the_ledger() {
     assert_eq!(compare["delta_point"], 0.0);
 }
 
+/// `crucible runs list` filters by config/model/date, and `runs compare
+/// --alpha` threads the significance threshold through to the CLI, over the
+/// real binary (not just the `run_store` unit tests).
+#[test]
+fn runs_list_filters_by_config_model_and_date() {
+    let root = temp_root("run-db-filters");
+    let db = root.join("runs.sqlite");
+    let spec = fixture("specs/key-recall-fixture.json");
+
+    // A second declared spec with its own corpus copy (an added "probe-2"
+    // trial and matching key), so it persists under a distinct `config_id`
+    // without touching the shared fixture tree.
+    let corpus_2 = root.join("spec-corpus-2");
+    let arena_2 = corpus_2.join("arena");
+    std::fs::create_dir_all(&corpus_2).expect("create probe-2 corpus dir");
+    let source_arena = fixture("spec-corpus/arena");
+    let copy_status = Command::new("cp")
+        .arg("-R")
+        .arg(&source_arena)
+        .arg(&arena_2)
+        .status()
+        .expect("cp arena dir for probe-2 corpus");
+    assert!(copy_status.success(), "copying the arena dir must succeed");
+    let trials_text = std::fs::read_to_string(fixture("spec-corpus/trials.jsonl"))
+        .expect("read source trials.jsonl");
+    let mut probe_2_trial: serde_json::Value =
+        serde_json::from_str(trials_text.lines().next().expect("one trial line"))
+            .expect("trial line is JSON");
+    probe_2_trial["candidate_id"] = json!("probe-2");
+    probe_2_trial["run_id"] = json!("fixture-run-probe-2-t1");
+    std::fs::write(
+        corpus_2.join("trials.jsonl"),
+        format!("{trials_text}{probe_2_trial}\n"),
+    )
+    .expect("write probe-2 trials.jsonl");
+
+    let spec_text = std::fs::read_to_string(&spec).expect("read fixture spec");
+    let mut spec_json: serde_json::Value =
+        serde_json::from_str(&spec_text).expect("fixture spec is JSON");
+    spec_json["runner"]["corpus"]["candidate_id"] = json!("probe-2");
+    spec_json["runner"]["corpus"]["arena_dir"] = json!(arena_2.display().to_string());
+    spec_json["runner"]["corpus"]["trials_jsonl"] =
+        json!(corpus_2.join("trials.jsonl").display().to_string());
+    let spec_2 = root.join("key-recall-fixture-probe-2.json");
+    std::fs::write(
+        &spec_2,
+        serde_json::to_string_pretty(&spec_json).expect("serialize probe-2 spec"),
+    )
+    .expect("write probe-2 spec fixture");
+
+    let run = |spec: &Path, out_name: &str| {
+        let out_dir = root.join(out_name);
+        let out = crucible()
+            .arg("run")
+            .arg(spec)
+            .arg("--out")
+            .arg(&out_dir)
+            .arg("--db")
+            .arg(&db)
+            .arg("--json")
+            .output()
+            .expect("crucible binary runs");
+        assert!(
+            out.status.success(),
+            "run must persist; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run(&spec, "out-probe");
+    run(&spec_2, "out-probe-2");
+
+    let list_all = crucible()
+        .arg("runs")
+        .arg("list")
+        .arg("--db")
+        .arg(&db)
+        .arg("--benchmark")
+        .arg("key-recall-fixture")
+        .arg("--json")
+        .output()
+        .expect("crucible runs list executes");
+    let list_all: serde_json::Value =
+        serde_json::from_slice(&list_all.stdout).expect("runs list emits JSON");
+    assert_eq!(
+        list_all["runs"].as_array().expect("runs array").len(),
+        2,
+        "both configs are stored under the shared benchmark"
+    );
+
+    let list_by_config = crucible()
+        .arg("runs")
+        .arg("list")
+        .arg("--db")
+        .arg(&db)
+        .arg("--config")
+        .arg("probe-2")
+        .arg("--json")
+        .output()
+        .expect("crucible runs list --config executes");
+    let list_by_config: serde_json::Value =
+        serde_json::from_slice(&list_by_config.stdout).expect("runs list --config emits JSON");
+    let filtered = list_by_config["runs"].as_array().expect("runs array");
+    assert_eq!(filtered.len(), 1, "config filter narrows to one run");
+    assert_eq!(filtered[0]["config_id"], "probe-2");
+
+    let list_future_since = crucible()
+        .arg("runs")
+        .arg("list")
+        .arg("--db")
+        .arg(&db)
+        .arg("--since")
+        .arg("2999-01-01")
+        .arg("--json")
+        .output()
+        .expect("crucible runs list --since executes");
+    let list_future_since: serde_json::Value =
+        serde_json::from_slice(&list_future_since.stdout).expect("runs list --since emits JSON");
+    assert_eq!(
+        list_future_since["runs"]
+            .as_array()
+            .expect("runs array")
+            .len(),
+        0,
+        "a since bound in the far future excludes every run"
+    );
+
+    let list_past_until = crucible()
+        .arg("runs")
+        .arg("list")
+        .arg("--db")
+        .arg(&db)
+        .arg("--until")
+        .arg("2000-01-01")
+        .arg("--json")
+        .output()
+        .expect("crucible runs list --until executes");
+    let list_past_until: serde_json::Value =
+        serde_json::from_slice(&list_past_until.stdout).expect("runs list --until emits JSON");
+    assert_eq!(
+        list_past_until["runs"]
+            .as_array()
+            .expect("runs array")
+            .len(),
+        0,
+        "an until bound in the past excludes every run"
+    );
+
+    let compare = crucible()
+        .arg("runs")
+        .arg("compare")
+        .arg("--db")
+        .arg(&db)
+        .arg("--benchmark")
+        .arg("key-recall-fixture")
+        .arg("--left")
+        .arg("probe")
+        .arg("--right")
+        .arg("probe-2")
+        .arg("--alpha")
+        .arg("0.2")
+        .arg("--json")
+        .output()
+        .expect("crucible runs compare --alpha executes");
+    assert!(
+        compare.status.success(),
+        "runs compare --alpha exits 0; stderr: {}",
+        String::from_utf8_lossy(&compare.stderr)
+    );
+    let compare: serde_json::Value =
+        serde_json::from_slice(&compare.stdout).expect("runs compare emits JSON");
+    // key-recall has no indexed prompt task rows, so this stays the unpaired
+    // fallback; --alpha is exercised (accepted, parsed, threaded through) even
+    // though it has no paired outcome to gate here.
+    assert_eq!(
+        compare["comparison_kind"],
+        "latest_unpaired_descriptive_delta"
+    );
+    assert!(compare["paired"].is_null());
+}
+
 #[test]
 fn run_prompt_benchmark_requires_openrouter_key_without_fallback() {
     let out_dir = temp_root("prompt-no-key");

@@ -39,8 +39,11 @@ agents can query trusted run history instead of scraping loose artifacts.
    and full JSON persistence.
 2. ✅ Write path from existing built-in receipts and declared specs via
    `crucible run --db <PATH>` and MCP `crucible_run`.
-3. In progress — query path. CLI and MCP now support list/show/compare; export
-   remains.
+3. ✅ Query path. CLI and MCP `runs list` filter by benchmark, config id,
+   model slug, and creation-date bounds (`--since`/`--until`); `runs compare`
+   pairs on shared prompt task fixtures (McNemar via the existing
+   `crucible-core` stats kernel) when both runs carry indexed task rows, and
+   falls back to the unpaired descriptive delta otherwise. Export remains.
 4. Dashboard read path for Crucible-owned runs.
 5. Backup/restore note and migration tests.
 
@@ -64,3 +67,15 @@ Every new persisted run row gets a `run_record_materializations` row containing
 `crucible.run_record.v1` plus the nested `crucible.evaluation_card.v1`; `runs
 show` and MCP show expose both. Remaining: dashboard read path, export, and
 backup/restore/migration notes.
+
+Progress 2026-07-01: `runs list` gained `--config`, `--model`, `--since`, and
+`--until` filters (CLI + MCP), backed by a `RunListFilter` over the same SQL
+query. `runs compare` gained a paired path: when both sides' latest run carry
+`prompt_task_results` rows and share at least one `task_id`, the comparison
+runs `PairedComparison::mcnemar` (crucible-core's noise-floor kernel, already
+used by the leaderboard) over the shared tasks and reports a `McnemarOutcome`
+(`b`/`c`/statistic/p-value/verdict) plus `common_tasks`, gated by a
+`--alpha`/`alpha` significance threshold (default `0.05`). Deterministic
+runners with no indexed prompt tasks (e.g. `key_recall`) keep the prior
+`latest_unpaired_descriptive_delta` behavior. Remaining: dashboard read path,
+export, and backup/restore/migration notes.

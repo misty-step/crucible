@@ -119,7 +119,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "crucible_runs_list",
-            "description": "List stored Crucible run records from the SQLite ledger, optionally filtered by benchmark id.",
+            "description": "List stored Crucible run records from the SQLite ledger, optionally filtered by benchmark id, config id, model slug, or creation date.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -130,6 +130,22 @@ fn tool_defs() -> Value {
                     "benchmark": {
                         "type": "string",
                         "description": "Benchmark id to filter on, such as prompt-smoke-v0."
+                    },
+                    "config": {
+                        "type": "string",
+                        "description": "Config id to filter on."
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Model slug to filter on."
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": "Only runs created at or after this RFC3339 timestamp or YYYY-MM-DD date."
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "Only runs created at or before this RFC3339 timestamp or YYYY-MM-DD date."
                     }
                 }
             }
@@ -154,7 +170,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "crucible_runs_compare",
-            "description": "Compare the latest stored runs for two configs or model slugs under one benchmark. The result is a descriptive latest-run delta, not a significance claim.",
+            "description": "Compare the latest stored runs for two configs or model slugs under one benchmark. When both runs share prompt task fixtures the result is a paired McNemar outcome; otherwise it is a descriptive latest-run delta that makes no significance claim.",
             "inputSchema": {
                 "type": "object",
                 "required": ["benchmark", "left", "right"],
@@ -174,6 +190,11 @@ fn tool_defs() -> Value {
                     "right": {
                         "type": "string",
                         "description": "Right config id or model slug."
+                    },
+                    "alpha": {
+                        "type": "number",
+                        "description": "Significance threshold for the paired McNemar verdict. Defaults to 0.05.",
+                        "default": 0.05
                     }
                 }
             }
@@ -252,6 +273,10 @@ fn crucible_run(arguments: Value) -> Result<Value> {
 struct RunsListArgs {
     db: Option<PathBuf>,
     benchmark: Option<String>,
+    config: Option<String>,
+    model: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
 }
 
 fn crucible_runs_list(arguments: Value) -> Result<Value> {
@@ -260,7 +285,24 @@ fn crucible_runs_list(arguments: Value) -> Result<Value> {
     let db = args
         .db
         .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
-    let list = run_store::list_runs(&db, args.benchmark.as_deref())?;
+    let since_unix_ms = args
+        .since
+        .as_deref()
+        .map(run_store::parse_timestamp_bound)
+        .transpose()?;
+    let until_unix_ms = args
+        .until
+        .as_deref()
+        .map(run_store::parse_timestamp_bound)
+        .transpose()?;
+    let filter = run_store::RunListFilter {
+        benchmark: args.benchmark.as_deref(),
+        config: args.config.as_deref(),
+        model: args.model.as_deref(),
+        since_unix_ms,
+        until_unix_ms,
+    };
+    let list = run_store::list_runs(&db, filter)?;
     Ok(json!({
         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&list)? }],
         "structuredContent": list
@@ -292,6 +334,12 @@ struct RunsCompareArgs {
     benchmark: String,
     left: String,
     right: String,
+    #[serde(default = "default_alpha")]
+    alpha: f64,
+}
+
+fn default_alpha() -> f64 {
+    run_store::DEFAULT_ALPHA
 }
 
 fn crucible_runs_compare(arguments: Value) -> Result<Value> {
@@ -300,7 +348,8 @@ fn crucible_runs_compare(arguments: Value) -> Result<Value> {
     let db = args
         .db
         .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
-    let comparison = run_store::compare_configs(&db, &args.benchmark, &args.left, &args.right)?;
+    let comparison =
+        run_store::compare_configs(&db, &args.benchmark, &args.left, &args.right, args.alpha)?;
     Ok(json!({
         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&comparison)? }],
         "structuredContent": comparison
