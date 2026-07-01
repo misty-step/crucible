@@ -744,6 +744,55 @@ fn run_all_writes_three_runnable_eval_receipts() {
     );
 }
 
+/// `crucible run <spec>` is the declared-eval path: the command loads an
+/// `EvalSpec`, executes its runner, and writes the same scored run-report shape
+/// as built-in receipts.
+#[test]
+fn run_declared_spec_writes_a_scored_key_recall_report() {
+    let out_dir = temp_root("run-spec");
+    let spec = fixture("specs/key-recall-fixture.json");
+    let out = crucible()
+        .arg("run")
+        .arg(&spec)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+
+    assert!(
+        out.status.success(),
+        "declared spec run must exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("run <spec> --json emits JSON");
+    assert_eq!(v["schema_version"], "crucible.run_report.v1");
+    assert_eq!(v["evals"].as_array().expect("evals array").len(), 1);
+    let eval = &v["evals"][0];
+    assert_eq!(eval["id"], "key-recall-fixture");
+    assert_eq!(eval["score"]["metric"], "pr_review_key_recall");
+    assert_eq!(eval["score"]["successes"], 1);
+    assert_eq!(eval["score"]["n"], 2);
+    assert_eq!(eval["score"]["method"], "Wilson");
+    assert!(
+        eval["score"]["lower"].as_f64().unwrap() < 0.5
+            && 0.5 < eval["score"]["upper"].as_f64().unwrap(),
+        "Wilson interval brackets the 1/2 point estimate: {eval}"
+    );
+
+    let evidence_path = out_dir.join("task-results.json");
+    assert!(out_dir.join("run-report.json").exists());
+    assert!(evidence_path.exists(), "task-level evidence written");
+    let evidence: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(evidence_path).expect("read evidence"))
+            .expect("evidence is JSON");
+    assert_eq!(evidence["schema_version"], "crucible.spec_run_evidence.v1");
+    assert_eq!(evidence["totals"]["matched"], 1);
+    assert_eq!(evidence["totals"]["expected_defects"], 2);
+    assert_eq!(evidence["tasks"].as_array().expect("tasks array").len(), 1);
+}
+
 /// The standalone panel command renders an existing judgment queue artifact into
 /// a phone-first static HTML panel plus the copied queue model.
 #[test]

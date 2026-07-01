@@ -1,0 +1,20 @@
+{
+  "defects": [
+    {
+      "id": "matched-defect",
+      "file": "src/lib.rs",
+      "line_start": 10,
+      "line_end": 12,
+      "category": "correctness",
+      "note": "The candidate should find this defect."
+    },
+    {
+      "id": "missed-defect",
+      "file": "src/other.rs",
+      "line_start": 20,
+      "line_end": 22,
+      "category": "security",
+      "note": "The candidate intentionally misses this defect."
+    }
+  ]
+}

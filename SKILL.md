@@ -18,6 +18,16 @@ must stay under `runs/` unless deliberately committed as sanitized fixtures unde
 
 ## Run The Three Built-In Evals
 
+Run the first declared benchmark spec:
+
+```sh
+cargo run -p crucible -- run evals/pr-review-key-recall-v0.json --json
+```
+
+The spec writes `runs/local/pr-review-key-recall-v0/run-report.json` by default.
+It measures Daedalus `pr-review-v0` key recall for the selected
+`probe-oneshot` candidate over the frozen six-task corpus.
+
 ```sh
 cargo run -p crucible -- run --out runs/local/factory-lane --json
 ```

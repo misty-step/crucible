@@ -17,6 +17,7 @@ For the project north star and the boundary with Daedalus and Harness Kit, read
 Crucible now has a Rust core and CLI for the first eval family: agentic
 code-review quality. The shipped wedge can:
 
+- execute a declared `EvalSpec` with `crucible run <spec>`;
 - adapt Cerberus review artifacts into Daedalus answer-key rows;
 - grade findings against either `solution/findings.json` or
   `tests/expected.json`;
@@ -31,6 +32,17 @@ can embed proprietary diffs, raw model outputs, and API-keyed transcripts.
 Committed fixture inputs live only under `crucible*/tests/fixtures/`.
 
 ## Runnable Evals
+
+Run the first declared benchmark spec:
+
+```sh
+cargo run -p crucible -- run evals/pr-review-key-recall-v0.json --json
+```
+
+That spec, `pr-review-key-recall-v0`, selects the frozen Daedalus
+`pr-review-v0` trials corpus and grades the `probe-oneshot` candidate against
+the Harbor scorer keys under the sibling Daedalus checkout. The default evidence
+directory is `runs/local/pr-review-key-recall-v0/`.
 
 Run all built-in eval receipts:
 

@@ -42,11 +42,10 @@
 //!   the full `data.json` model under `<out>`. The read side made viewable: it
 //!   recomputes no statistic, only renders the measured ranking — every number
 //!   tracing to a run and pinned to its arena version.
-//! - `crucible run --out <DIR> [--eval <ID>] [--json]` runs the three built-in,
-//!   committed code-review eval receipts — deterministic floor, recoverable
-//!   adjudication routing, and Harbor export acceptance — and writes one evidence
-//!   packet per eval plus `<DIR>/run-report.json`. Every score carries a Wilson
-//!   interval.
+//! - `crucible run [<spec.json>] [--out <DIR>] [--eval <ID>] [--json]` either
+//!   executes a declared [`EvalSpec`](crucible_core::EvalSpec) runner when a spec
+//!   path is supplied, or runs the three built-in committed receipt checks when
+//!   no spec is supplied. Every score carries a Wilson interval.
 //! - `crucible adjudication-panel --queue <queue.json> --out <DIR>` renders an
 //!   existing `crucible.judgment_queue.v1` artifact into a static phone-first
 //!   `index.html` panel plus the copied `queue.json` model.
@@ -78,6 +77,7 @@ use serde::Serialize;
 mod adjudication_panel;
 mod dashboard_html;
 mod eval_run;
+mod spec_run;
 
 /// Standard-normal quantile for a two-sided 95% interval.
 const Z_95: f64 = 1.96;
@@ -203,15 +203,20 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         out: PathBuf,
     },
-    /// Run one or all committed, built-in eval receipts and write evidence under
-    /// `--out`. Each binary score carries a Wilson interval.
+    /// Run a declared eval spec, or one/all built-in eval receipts, and write
+    /// evidence under `--out`. Each binary score carries a Wilson interval.
     Run {
+        /// Path to a declared Crucible EvalSpec JSON. When present, `run`
+        /// executes the spec's runner instead of the built-in receipt selector.
+        #[arg(value_name = "SPEC")]
+        spec: Option<PathBuf>,
         /// Which built-in eval to run. Defaults to all three concrete receipts.
         #[arg(long, value_enum, default_value_t = eval_run::RunEval::All)]
         eval: eval_run::RunEval,
         /// Output directory for `run-report.json` and per-eval evidence packets.
+        /// Declared specs default to `runs/local/<spec-id>` when omitted.
         #[arg(long, value_name = "DIR")]
-        out: PathBuf,
+        out: Option<PathBuf>,
         /// Emit the stable run report JSON to stdout in addition to writing it.
         #[arg(long)]
         json: bool,
@@ -268,7 +273,12 @@ fn main() -> ExitCode {
             expected: expected.as_deref(),
         }),
         Command::Dashboard { arenas, runs, out } => run_dashboard(&arenas, &runs, &out),
-        Command::Run { eval, out, json } => run_builtin_evals(eval, &out, json),
+        Command::Run {
+            spec,
+            eval,
+            out,
+            json,
+        } => run_eval(spec.as_deref(), eval, out.as_deref(), json),
         Command::AdjudicationPanel { queue, out } => run_adjudication_panel(&queue, &out),
     };
     match result {
@@ -280,14 +290,30 @@ fn main() -> ExitCode {
     }
 }
 
-/// `crucible run`: execute built-in eval receipts and write evidence packets.
-fn run_builtin_evals(eval: eval_run::RunEval, out: &Path, json: bool) -> anyhow::Result<()> {
-    let report = eval_run::run(eval, out)?;
+/// `crucible run`: execute a declared spec when supplied, otherwise run built-in
+/// eval receipts.
+fn run_eval(
+    spec: Option<&Path>,
+    eval: eval_run::RunEval,
+    out: Option<&Path>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let report = if let Some(spec_path) = spec {
+        if eval != eval_run::RunEval::All {
+            anyhow::bail!(
+                "--eval selects built-in receipts and cannot be combined with a spec path"
+            );
+        }
+        spec_run::run(spec_path, out)?
+    } else {
+        let out = out.with_context(|| "built-in receipt runs require --out <DIR>")?;
+        eval_run::run(eval, out)?
+    };
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("crucible run");
-        println!("  out      {}", out.display());
+        println!("  out      {}", report.output_dir);
         for eval in &report.evals {
             println!(
                 "  eval     {}  {}",
@@ -295,7 +321,12 @@ fn run_builtin_evals(eval: eval_run::RunEval, out: &Path, json: bool) -> anyhow:
                 eval_run::format_score(&eval.score)
             );
         }
-        println!("  wrote    {}", out.join("run-report.json").display());
+        println!(
+            "  wrote    {}",
+            Path::new(&report.output_dir)
+                .join("run-report.json")
+                .display()
+        );
     }
     Ok(())
 }

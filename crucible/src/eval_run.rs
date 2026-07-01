@@ -114,8 +114,8 @@ fn run_code_review_floor(out: &Path) -> anyhow::Result<EvalReport> {
     write_json(&evidence_path, &evidence)?;
 
     Ok(EvalReport {
-        id: RunEval::CodeReviewDeterministicFloor.id(),
-        title: "Code-review deterministic floor",
+        id: RunEval::CodeReviewDeterministicFloor.id().to_string(),
+        title: "Code-review deterministic floor".to_string(),
         score,
         artifacts: vec![evidence_path.display().to_string()],
         notes: vec![
@@ -151,8 +151,8 @@ fn run_recoverable_queue(out: &Path) -> anyhow::Result<EvalReport> {
     let panel = adjudication_panel::write_panel(&queue_path, &panel_dir)?;
 
     Ok(EvalReport {
-        id: RunEval::RecoverableAdjudicationQueue.id(),
-        title: "Recoverable adjudication queue",
+        id: RunEval::RecoverableAdjudicationQueue.id().to_string(),
+        title: "Recoverable adjudication queue".to_string(),
         score,
         artifacts: vec![
             queue_path.display().to_string(),
@@ -235,8 +235,8 @@ fn run_harbor_export(out: &Path) -> anyhow::Result<EvalReport> {
     )?;
 
     Ok(EvalReport {
-        id: RunEval::HarborExportAcceptance.id(),
-        title: "Harbor export acceptance",
+        id: RunEval::HarborExportAcceptance.id().to_string(),
+        title: "Harbor export acceptance".to_string(),
         score,
         artifacts: vec![
             adjudications_path.display().to_string(),
@@ -281,8 +281,8 @@ pub struct RunReport {
 /// One concrete eval result.
 #[derive(Debug, Serialize)]
 pub struct EvalReport {
-    pub id: &'static str,
-    pub title: &'static str,
+    pub id: String,
+    pub title: String,
     pub score: Score,
     pub artifacts: Vec<String>,
     pub notes: Vec<String>,
@@ -402,7 +402,7 @@ mod tests {
             .join("expected.json")
             .exists());
 
-        let ids: Vec<_> = report.evals.iter().map(|eval| eval.id).collect();
+        let ids: Vec<_> = report.evals.iter().map(|eval| eval.id.as_str()).collect();
         assert!(ids.contains(&"code-review-deterministic-floor"));
         assert!(ids.contains(&"recoverable-adjudication-queue"));
         assert!(ids.contains(&"harbor-export-acceptance"));
