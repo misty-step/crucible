@@ -47,8 +47,9 @@ benchmark needs more tasks/trials to rank real configs. That is the product work
 ## Notes
 
 Consumes the measure core (003) — `bootstrap_envelope` is a new reusable primitive.
-The read-side reward-parity work (008) makes Crucible's own grade a faithful predictor
-of Threshold reward; this dashboard surfaces the runs Threshold already scored.
+The one-scorer work (`013`) makes Crucible's own grade the scoring source
+Threshold links instead of a tolerance-matched predictor; this dashboard surfaces
+both Threshold-scored history and Crucible-owned runs as `010`/`011` land.
 
 Naming: **Threshold** (formerly Daedalus) is the sibling optimization project;
 the runs this dashboard surfaces are Threshold's, scored by the `daedalus-score`

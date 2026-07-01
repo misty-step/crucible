@@ -189,18 +189,10 @@ enum Command {
     Dashboard {
         /// Arenas tree (the answer keys) to read; defaults to the local Daedalus
         /// checkout.
-        #[arg(
-            long,
-            value_name = "DIR",
-            default_value = "/Users/phaedrus/Development/daedalus/arenas"
-        )]
+        #[arg(long, value_name = "DIR", default_value = "../daedalus/arenas")]
         arenas: PathBuf,
         /// Runs tree (the trials) to read; defaults to the local Daedalus checkout.
-        #[arg(
-            long,
-            value_name = "DIR",
-            default_value = "/Users/phaedrus/Development/daedalus/runs"
-        )]
+        #[arg(long, value_name = "DIR", default_value = "../daedalus/runs")]
         runs: PathBuf,
         /// Output directory; `index.html` and `data.json` are written under it
         /// (created if absent). Point it at a scratch/gitignored path.

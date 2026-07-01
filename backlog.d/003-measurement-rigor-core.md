@@ -1,6 +1,6 @@
 # Measurement rigor core: refuse to report a delta you cannot defend
 
-Priority: P1 · Status: pending · Estimate: L (epic)
+Priority: P1 · Status: in-progress · Estimate: L (epic)
 
 ## Goal
 
@@ -25,15 +25,18 @@ eval family.
 
 ## Children (ordered)
 
-1. Provenance / Evaluation-Card record — everything hangs off it.
-2. Uncertainty primitives — Wilson + bootstrap on every aggregate.
+1. ✅ Provenance / Evaluation-Card types — delivered 2026-06-30; still need
+   persistence through real runs (010/011).
+2. ✅ Uncertainty primitives — Wilson + seeded bootstrap landed; keep wiring them
+   into every reported aggregate.
 3. Baseline + known-good/known-bad anchors + judge sanity check (judge must fail
    known-bad and pass known-good or the measurement surface is broken).
 4. Inter-annotator κ on a double-labeled subset — gates the *rubric*, not just
    the judge.
 5. Judge calibration gate — agreement + confusion matrix + bias panel (position,
    verbosity, self-preference; forbid judge == generator family).
-6. Paired comparison + noise-floor decision gate + pre-run power sizing.
+6. ✅ Paired comparison + noise-floor decision gate + pre-run power sizing
+   primitives — delivered 2026-06-30; still need pre-run invocation in the runner.
 
 ## Notes
 
@@ -62,3 +65,8 @@ reproducible bootstrap; and the `Provenance`/`EvaluationCard` + `CalibrationReco
 types (with finiteness + schema-version guards). Remaining: wire the Evaluation Card
 into persisted runs; the κ judge-calibration *unlock* needs real human labels
 (002.6 / 005). Children 2 + 6 of this epic now have shipped primitives.
+
+**Factory groom 2026-07-01:** keep this epic as the measurement-kernel spine, not
+the top pickup. The active engine work (`010`) must persist Evaluation Cards,
+honor or refuse declared confidence, and call the power-warning primitive before
+claiming a comparison.

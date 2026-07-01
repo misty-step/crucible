@@ -4,9 +4,9 @@ members = ["crucible-core", "crucible"]
 
 [workspace.package]
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 rust-version = "1.96"
-repository = "https://github.com/phrazzld/crucible"
+repository = "https://github.com/misty-step/crucible"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

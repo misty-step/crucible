@@ -146,8 +146,8 @@ exit codes: `0` success, `1` load/parse failure, `2` usage error.
 
 ```sh
 cargo run -p crucible -- dashboard \
-  --arenas /Users/phaedrus/Development/daedalus/arenas \
-  --runs /Users/phaedrus/Development/daedalus/runs \
+  --arenas ../daedalus/arenas \
+  --runs ../daedalus/runs \
   --out runs/local/dashboard
 ```
 
@@ -165,8 +165,14 @@ the browser.
 - `005` — phone-first adjudication queue
 - `006` — agent-readiness and machine surface
 - `007` — extract eval-authoring from Threshold
-- `008` — make `crucible grade` predict Threshold reward
 - `009` — live eval dashboard
+- `010` — author-and-run engine
+- `011` — runs database
+- `012` — three judge tiers real
+- `013` — one scorer, one crate
+- `014` — agent-first surfaces and honest specs
+- `015` — first real Cerberus review-quality benchmark
+- `016` — publicable hygiene and fleet integration
 
 ## Gate
 

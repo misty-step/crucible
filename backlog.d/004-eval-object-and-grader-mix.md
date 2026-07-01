@@ -1,6 +1,6 @@
 # The eval object and per-eval grader-mix model
 
-Priority: P1 · Status: pending · Estimate: L (epic)
+Priority: P1 · Status: in-progress · Estimate: L (epic)
 
 ## Goal
 
@@ -26,10 +26,11 @@ reinvented one.
    `GraderManifest{deterministic|agentic|human}`, `RunRecord`, `Label`,
    `CalibrationRecord`, `Aggregate{score, CI, paired-delta}`, `Provenance`,
    `schema_version`.
-2. Spec validate + grader classification + deterministic-vs-human cost report.
-3. Store — SQLite index + content-addressed blob dir for diffs/transcripts;
-   append-only labels; queue is a *view*, not a third store.
-4. Harbor export/import + golden-fixture round-trip test.
+2. Spec validate + grader classification + deterministic-vs-human cost report
+   (expanded in `014-agent-first-surfaces-and-honest-specs.md`).
+3. Store — moved to `011-runs-database.md`; queue remains a view over persisted
+   run/label records, not a third store.
+4. ✅ Harbor export/import + golden-fixture round-trip test — delivered via 002.5.
 
 ## Notes
 
@@ -48,3 +49,8 @@ that rejects an unknown version rather than silently treating it as v1. Child 3
 (SQLite index + content-addressed blob store) deliberately NOT built — premature;
 artifacts-on-disk suffice for the wedge (per this epic's own non-goal note). Child 4
 (Harbor export + golden round-trip) landed via 002.5.
+
+**Factory groom 2026-07-01:** the type contract survives, but decorative fields
+must stop lying. Specs must either wire declared graders, baselines, fixtures,
+and confidence into execution or validation must refuse them until they are real
+(`014`).

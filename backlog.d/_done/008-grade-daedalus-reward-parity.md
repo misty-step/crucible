@@ -1,6 +1,6 @@
 # Make crucible grade a faithful predictor of Threshold's reward
 
-Priority: P1 · Status: pending · Estimate: M
+Priority: P1 · Status: abandoned · Estimate: M
 
 ## Goal
 
@@ -20,6 +20,11 @@ through adjudication so an accepted defect is not a single-line approximation.
   reported rate is comparable to the optimization loop's objective.
 
 ## Notes
+
+Disposition: abandoned by the 2026-07-01 factory groom. The problem is real, but
+the "parity by tolerance" shape was the wrong repair. Active replacement:
+`013-one-scorer-one-crate.md`, which makes parity hold by construction by moving
+the private matcher semantics into one Crucible-owned scorer that Threshold links.
 
 Surfaced by the 2026-06-30 thermonuclear review. Today `crucible export --expected`
 correctly extends `tests/expected.json` and the round-trip CLOSES (verified: an

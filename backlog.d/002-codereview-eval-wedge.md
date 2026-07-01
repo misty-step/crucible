@@ -1,11 +1,11 @@
-# Code-review eval: the first benchmark Crucible owns end to end
+# Own the first code-review benchmark family end to end
 
 Priority: P1 · Status: in-progress · Estimate: XL (epic)
 
 ## Goal
 
-Prove Crucible's model on one real family: define, calibrate, and iterate the
-agentic code-review eval; industrialize its adjudication; bootstrap labels for
+Prove Crucible's model on one real family: define, calibrate, run, and iterate
+the agentic code-review eval; industrialize adjudication; bootstrap labels for
 real diffs; and emit a Harbor benchmark Threshold can re-score and optimize
 against.
 
@@ -16,9 +16,11 @@ against.
   key-extension + `tests/expected.json` defect that Threshold re-scores against —
   **round-trip lead-verified 2026-06-30: an accepted finding flips FP→TP, reward
   0.8→1.0 via `daedalus-score`** (see Delivered 2026-06-30).
-- [ ] At least one currently-blocked Threshold arena
-  (`pr-review-{simplification,product,verification}`) gains ≥5 labeled,
-  calibrated Harbor tasks.
+- [ ] At least one current Threshold `pr-review-*` arena, or a Crucible-authored
+  successor version, gains ≥5 labeled, calibrated Harbor tasks. Live inventory
+  verified 2026-07-01: six `pr-review-*` arenas with 35 scorer-key tasks; the
+  old `pr-review-{simplification,product,verification}` names are not live
+  arenas.
 - [ ] Any model/agentic judge ships with a measured judge-vs-human agreement
   (Cohen's κ) and is gated, not assumed.
 - [x] Per-config code-review rates are reported with a Wilson interval; paired
@@ -111,9 +113,10 @@ arena versions / write `adjudications.md`** (unblocks 002.5 export + epic 007).
 
 ## Notes
 
-Scope guard: Crucible designs and calibrates the measurement; it does NOT run the
-optimization search loop — that is Threshold. Draws uncertainty/calibration
-primitives from epic 003 and types from epic 004.
+Scope guard: Crucible designs, calibrates, and runs selected benchmark configs;
+it does NOT run the optimization search loop — that is Threshold. Draws
+uncertainty/calibration primitives from epic 003, types from epic 004, the run
+engine from epic 010, and durable run history from epic 011.
 
 Naming: **Threshold** (formerly Daedalus) is the sibling optimization project.
 Its on-disk checkout and the `daedalus-score` binary keep the `daedalus` name

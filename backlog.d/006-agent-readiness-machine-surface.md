@@ -1,6 +1,6 @@
 # Agent-readiness and machine surface
 
-Priority: P2 · Status: pending · Estimate: M (epic)
+Priority: P1 · Status: in-progress · Estimate: M (epic)
 
 ## Goal
 
@@ -10,9 +10,11 @@ secret/content-leak gate, stable CLI JSON, and Harbor-schema-validated exports.
 
 ## Oracle
 
-- [ ] A cold agent, given only the repo, authors → runs → grades → adjudicates →
-  exports one code-review eval via documented commands (the verification
-  `SKILL.md` is the acceptance oracle).
+- [x] A cold agent, given only the repo, runs → grades → adjudicates → exports
+  one code-review eval via documented commands (the verification `SKILL.md` is
+  the acceptance oracle for the current wedge).
+- [ ] A cold agent authors and runs a new benchmark through CLI and MCP without
+  Threshold-only knowledge (covered by 010/014).
 - [ ] The repo gate (replacing `test -f VISION.md`) fails the diff on
   build/test/lint breakage, a schema-invalid Harbor export, AND a planted
   secret / proprietary-code leak in a run record or report.
@@ -29,8 +31,8 @@ secret/content-leak gate, stable CLI JSON, and Harbor-schema-validated exports.
    (raw model outputs / diffs redacted or allowlisted) on the diff AND before any
    report/export is published. Close the `runs/*` gitignore gap for wherever
    Crucible writes artifacts (today `.gitignore` ignores only `runs/*/artifacts/`).
-4. Verification `SKILL.md` — author → run → grade → adjudicate → export with the
-   real commands; serves as the agent-usability acceptance oracle for child 1.
+4. ✅ Verification `SKILL.md` — author → run → grade → adjudicate → export with
+   the real commands; serves as the agent-usability acceptance oracle for child 1.
 5. `AGENTS.md` refresh — name the borrowed surfaces + the Rust/TS boundary, link
    the skill, document the CLI/export/security contracts.
 
@@ -68,3 +70,7 @@ declared spec, and verifies the Wilson-scored `crucible.run_report.v1` plus
 written `run-report.json`. Still pending: child 5 (`AGENTS.md` refresh) and
 Harbor export-schema validation ratcheting when the schema check becomes a
 repo-owned gate.
+
+**Factory groom 2026-07-01:** agent-first means CLI + MCP for define/manage/run,
+not just one `crucible_run` tool. The broader surface is tracked in `014`; keep
+this epic as the gate/contract/operability spine.

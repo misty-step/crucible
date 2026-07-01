@@ -24,9 +24,11 @@ epic makes Crucible produce its own.
 - [ ] A Crucible-owned benchmark (≥1 task + a declared rubric) is defined on disk in
   Crucible's own format (`EvalSpec`), independent of Threshold's arenas.
 - [ ] `crucible run --benchmark <b> --config <model+prompt>` executes the config
-  against each task via a REAL model call, captures output + tokens + cost + latency,
-  grades it with the rubric, and writes a `RunRecord`/`EvaluationCard` with per-task
-  results.
+  against each task via a REAL model call, captures output + tokens + cost +
+  latency, grades it with the rubric, and writes a `RunRecord`/`EvaluationCard`
+  with per-task results.
+- [ ] The same authored benchmark can be launched from CLI and MCP; the MCP
+  surface is first-class, not a later wrapper.
 - [ ] The run + its results appear in the dashboard (the Guided view), sourced from
   Crucible's OWN run store — not Threshold's.
 - [ ] End-to-end proof: author a tiny benchmark, run it against a real model, get a
@@ -38,9 +40,11 @@ epic makes Crucible produce its own.
    context + input + rubric ref) + a starter benchmark with 1–2 tasks and a
    deterministic rubric. Reuse the 004 types; do not reinvent.
 2. **The runner / harness** — a `run` module that executes a config (v0 = model id +
-   system prompt; NO agent tools/loop yet) against a task = a live model call
-   (Anthropic first; key from env/secret, never logged or leaked — the leak gate must
-   still pass). Capture output, tokens, cost, latency, errors; retry + timeout.
+   system prompt; NO agent tools/loop yet) against a task = a live model call.
+   BYOK/OpenRouter-compatible first unless a concrete model boundary requires a
+   direct provider client; keys come from env/secret and are never logged or leaked
+   (the leak gate must still pass). Capture output, tokens, cost, latency,
+   errors; retry + timeout.
 3. **Grade + record** — grade the model output with the task's rubric (deterministic
    first; model-judge/human later, behind 003's calibration gate). Write a per-task
    trial + a `RunRecord`/`EvaluationCard` (reuse 004 + 003 provenance).
@@ -56,7 +60,8 @@ epic makes Crucible produce its own.
   an honest, recorded, viewable result with no Threshold dependency.
 - Falsifier: the run can't make a real model call; or the score isn't recorded/
   reproducible; or it silently depends on Threshold to run.
-- Driver: `crucible run` over a Crucible-owned tiny benchmark + a real model (Anthropic).
+- Driver: `crucible run` and `crucible_run` MCP over a Crucible-owned tiny
+  benchmark + a real BYOK model config.
 - Grader: deterministic rubric v0; the `measure` core for uncertainty.
 - Evidence packet: a real `RunRecord`/`EvaluationCard` (model + tokens + cost + latency
   + score + prompt/rubric hash) visible in the dashboard.
@@ -64,11 +69,12 @@ epic makes Crucible produce its own.
 
 ## Notes
 
-This introduces Crucible's FIRST live model call — a new capability and a new dependency
-(an HTTP client, e.g. `reqwest`, or the Anthropic SDK). Name the boundary before coding
-(model-native product primitive): the model seam is explicit; deterministic code owns
-policy, persistence, and grading. API keys via env/secret only; the leak gate must not
-catch or leak them; run artifacts embedding real outputs are gitignored/redacted (006.3).
+This introduces Crucible's FIRST live model call — a new capability and a new
+dependency (an HTTP client, e.g. `reqwest`, plus a tiny provider adapter). Name
+the boundary before coding (model-native product primitive): the model seam is
+explicit; deterministic code owns policy, persistence, and grading. API keys via
+env/secret only; the leak gate must not catch or leak them; run artifacts
+embedding real outputs are gitignored/redacted (006.3).
 
 v0 harness = model + system prompt only. Tools/agentic harness and multi-config runs
 come later. The SEARCH over many configs is Threshold's job, not Crucible's — Crucible
