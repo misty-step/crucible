@@ -24,6 +24,13 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+fn repo_fixture(path: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crucible crate has a workspace parent")
+        .join(path)
+}
+
 fn crucible() -> Command {
     Command::new(env!("CARGO_BIN_EXE_crucible"))
 }
@@ -806,6 +813,31 @@ fn run_declared_spec_writes_a_scored_key_recall_report() {
     assert_eq!(evidence["totals"]["matched"], 1);
     assert_eq!(evidence["totals"]["expected_defects"], 2);
     assert_eq!(evidence["tasks"].as_array().expect("tasks array").len(), 1);
+}
+
+#[test]
+fn run_prompt_benchmark_requires_openrouter_key_without_fallback() {
+    let out_dir = temp_root("prompt-no-key");
+    let out = crucible()
+        .arg("run")
+        .arg(repo_fixture("evals/prompt-smoke-v0.json"))
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--json")
+        .env_remove("OPENROUTER_API_KEY")
+        .output()
+        .expect("crucible binary runs");
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "missing model key is a load/runtime error, not usage"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("OPENROUTER_API_KEY") && stderr.contains("BYOK OpenRouter key"),
+        "error names the missing key without a fallback: {stderr}"
+    );
 }
 
 /// MCP exposes the same declared-spec runner as the CLI: initialize the stdio

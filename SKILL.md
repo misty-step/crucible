@@ -16,7 +16,7 @@ boundaries, runner boundaries, exports, or UI. Raw model outputs and raw diffs
 must stay under `runs/` unless deliberately committed as sanitized fixtures under
 `crucible*/tests/fixtures/`.
 
-## Run The Three Built-In Evals
+## Run Declared And Built-In Evals
 
 Run the first declared benchmark spec:
 
@@ -29,6 +29,19 @@ It measures Threshold `pr-review-v0` key recall for the selected
 `probe-oneshot` candidate over the frozen six-task corpus. The sibling checkout
 and scorer binary still use the `daedalus` name until that repo is physically
 renamed.
+
+Run the first Crucible-owned prompt benchmark through OpenRouter:
+
+```sh
+OPENROUTER_API_KEY=... \
+cargo run -p crucible -- run evals/prompt-smoke-v0.json \
+  --out runs/local/prompt-smoke \
+  --json
+```
+
+This is the first author-and-run engine slice: Crucible owns the authored prompt
+benchmark, makes the live model call, grades the text with a deterministic
+rubric, and writes `prompt-run.json` evidence under `runs/`.
 
 Run a Cerberus producer handoff through the same declared runner:
 
@@ -87,6 +100,15 @@ Call the `crucible_run` tool with either a declared spec:
 ```json
 {
   "spec": "evals/pr-review-key-recall-v0.json"
+}
+```
+
+Prompt benchmark example:
+
+```json
+{
+  "spec": "evals/prompt-smoke-v0.json",
+  "out": "runs/local/prompt-smoke-mcp"
 }
 ```
 

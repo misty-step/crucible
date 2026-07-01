@@ -1,6 +1,6 @@
 # Author-and-run — Crucible defines and RUNS a benchmark end to end (the functional tracer bullet)
 
-Priority: P0 · Status: ready · Estimate: L (epic)
+Priority: P0 · Status: in-progress · Estimate: L (epic)
 
 ## Goal
 
@@ -36,10 +36,10 @@ epic makes Crucible produce its own.
 
 ## Children (ordered)
 
-1. **Crucible-owned benchmark format on disk** — a concrete `EvalSpec` (task = prompt/
+1. ✅ **Crucible-owned benchmark format on disk** — a concrete `EvalSpec` (task = prompt/
    context + input + rubric ref) + a starter benchmark with 1–2 tasks and a
    deterministic rubric. Reuse the 004 types; do not reinvent.
-2. **The runner / harness** — a `run` module that executes a config (v0 = model id +
+2. ✅ **The runner / harness** — a `run` module that executes a config (v0 = model id +
    system prompt; NO agent tools/loop yet) against a task = a live model call.
    BYOK/OpenRouter-compatible first unless a concrete model boundary requires a
    direct provider client; keys come from env/secret and are never logged or leaked
@@ -83,3 +83,10 @@ runs the configs we choose and reports honest results.
 **Supersedes 009's "wire the design in" as the priority:** the dashboard (009) + the
 converged Guided design (served at `/crucible-redesign/guided/`) are the SHELL/VIEW;
 this epic is the ENGINE. The Guided design becomes the view for these real runs.
+
+**Update 2026-07-01:** first author-and-run slice landed: `prompt_benchmark`
+runner kind, `evals/prompt-smoke-v0.json`, OpenRouter-compatible BYOK model
+client, deterministic exact/contains text rubrics, `prompt-run.json` evidence,
+and CLI + MCP live proof. Still open: durable `RunRecord`/`EvaluationCard`
+persistence, runs database integration, dashboard Guided view, and broader
+author/manage config surfaces.
