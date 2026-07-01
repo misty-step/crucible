@@ -1,6 +1,6 @@
 # Persist every benchmark run in a queryable database
 
-Priority: P0 · Status: ready · Estimate: L (epic)
+Priority: P0 · Status: in-progress · Estimate: L (epic)
 
 ## Goal
 
@@ -35,9 +35,12 @@ agents can query trusted run history instead of scraping loose artifacts.
 
 ## Children
 
-1. Schema v1 — benchmark, run, config, task_result, artifact, score, provenance.
-2. Write path from existing built-in receipts and declared specs.
-3. Query path — CLI list/show/export plus MCP tools.
+1. ✅ Schema v1 — invocation, run, config, prompt task result, artifact, score,
+   and full JSON persistence.
+2. ✅ Write path from existing built-in receipts and declared specs via
+   `crucible run --db <PATH>` and MCP `crucible_run`.
+3. In progress — query path. CLI and MCP now support list/show/compare; export
+   remains.
 4. Dashboard read path for Crucible-owned runs.
 5. Backup/restore note and migration tests.
 
@@ -48,3 +51,10 @@ run ever, any config, attached to its benchmark; queryable; this is what
 Threshold consumes." Keep raw model outputs and real diffs under ignored
 artifact paths; the database stores pointers and metadata unless content has
 been explicitly redacted for publication.
+
+Progress 2026-07-01: schema/write/query slice landed. Default ledger path is
+`runs/local/crucible-runs.sqlite` with `--db <PATH>` overrides for isolated
+proof. `prompt-run.json` remains an artifact, but prompt task results are also
+stored as rows with model, pass/fail, latency, usage, cost, output text, and
+the original task JSON. `runs compare` is a latest-run descriptive delta with
+intervals, not a significance claim.
