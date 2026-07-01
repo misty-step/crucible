@@ -11,6 +11,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -20,6 +23,14 @@ fn fixture(name: &str) -> PathBuf {
 
 fn crucible() -> Command {
     Command::new(env!("CARGO_BIN_EXE_crucible"))
+}
+
+fn temp_root(tag: &str) -> PathBuf {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("crucible-cli-{}-{tag}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp root");
+    dir
 }
 
 /// The headline test: `grade --json` over the real artifact emits a stable,
@@ -643,6 +654,133 @@ fn adjudicate_human_mode_renders_the_queue_table() {
         text.contains("src/harness.rs:349"),
         "shows the mapped location: {text}"
     );
+}
+
+/// `crucible run` is the runnable-evals contract for cold agents: one command
+/// writes three concrete eval receipts, each with a defensible score shape and
+/// inspectable artifacts.
+#[test]
+fn run_all_writes_three_runnable_eval_receipts() {
+    let out_dir = temp_root("run-all");
+    let out = crucible()
+        .arg("run")
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+
+    assert!(
+        out.status.success(),
+        "run must exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("run --json must emit valid JSON");
+    assert_eq!(v["schema_version"], "crucible.run_report.v1");
+    let evals = v["evals"].as_array().expect("evals is an array");
+    assert_eq!(evals.len(), 3, "three concrete evals run: {v}");
+
+    for eval in evals {
+        let score = &eval["score"];
+        assert_eq!(
+            score["method"], "Wilson",
+            "every built-in eval reports a Wilson interval: {eval}"
+        );
+        assert!(
+            score["n"].as_u64().expect("n is a count") >= 1,
+            "each eval has a denominator: {eval}"
+        );
+        assert!(
+            score["lower"].as_f64().unwrap() <= score["upper"].as_f64().unwrap(),
+            "interval is ordered: {eval}"
+        );
+    }
+
+    assert!(out_dir.join("run-report.json").exists());
+    assert!(out_dir
+        .join("code-review-deterministic-floor")
+        .join("grade.json")
+        .exists());
+    assert!(out_dir
+        .join("recoverable-adjudication-queue")
+        .join("panel")
+        .join("index.html")
+        .exists());
+    assert!(out_dir
+        .join("harbor-export-acceptance")
+        .join("tests")
+        .join("expected.json")
+        .exists());
+    let expected: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            out_dir
+                .join("harbor-export-acceptance")
+                .join("tests")
+                .join("expected.json"),
+        )
+        .expect("read exported scorer key"),
+    )
+    .expect("scorer key is JSON");
+    let oracle: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            out_dir
+                .join("harbor-export-acceptance")
+                .join("solution")
+                .join("findings.json"),
+        )
+        .expect("read exported oracle key"),
+    )
+    .expect("oracle key is JSON");
+    assert_eq!(
+        expected["defects"].as_array().expect("defects array").len(),
+        1,
+        "one accepted finding reaches the scorer key"
+    );
+    assert_eq!(
+        oracle["findings"].as_array().expect("findings array").len(),
+        1,
+        "the same accepted finding reaches the oracle key"
+    );
+}
+
+/// The standalone panel command renders an existing judgment queue artifact into
+/// a phone-first static HTML panel plus the copied queue model.
+#[test]
+fn adjudication_panel_renders_existing_queue_artifact() {
+    let out_dir = temp_root("panel");
+    let out = crucible()
+        .arg("adjudication-panel")
+        .arg("--queue")
+        .arg(fixture("export-queue.json"))
+        .arg("--out")
+        .arg(&out_dir)
+        .output()
+        .expect("crucible binary runs");
+
+    assert!(
+        out.status.success(),
+        "panel must exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let html_path = out_dir.join("index.html");
+    let queue_path = out_dir.join("queue.json");
+    assert!(html_path.exists(), "panel HTML written");
+    assert!(queue_path.exists(), "queue model copied");
+
+    let html = std::fs::read_to_string(html_path).expect("read panel HTML");
+    for marker in [
+        "name=\"viewport\"",
+        "Adjudication panel",
+        "F3",
+        "cache.py:23",
+        "Keep",
+        "Nit",
+        "Wrong",
+        "Noise",
+    ] {
+        assert!(html.contains(marker), "missing marker {marker:?}: {html}");
+    }
 }
 
 /// Stable exit codes so Cerberus/Daedalus can branch headlessly: `0` success,

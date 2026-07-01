@@ -30,6 +30,9 @@
   format for code-review), not a Crucible-invented schema.
 - Backlog: active work lives in `backlog.d/NNN-*.md`; closed work moves to
   `backlog.d/_done/`.
+- Verification skill: `SKILL.md` is the cold-agent command contract for running
+  the three built-in eval receipts, the headless grade/adjudicate/export loop,
+  the adjudication panel, and the dashboard.
 
 ## Gate
 
@@ -47,6 +50,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all
 cargo build --all
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 ```
 
 Run it before pushing and wire it into CI unchanged. Do not weaken it to get
