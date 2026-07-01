@@ -47,7 +47,8 @@ epic makes Crucible produce its own.
    errors; retry + timeout.
 3. **Grade + record** — grade the model output with the task's rubric (deterministic
    first; model-judge/human later, behind 003's calibration gate). Write a per-task
-   trial + a `RunRecord`/`EvaluationCard` (reuse 004 + 003 provenance).
+   trial + a `RunRecord`/`EvaluationCard` (reuse 004 + 003 provenance). In
+   progress: run-level records/cards are persisted; per-task trial records remain.
 4. **Crucible's own run store** — in progress. A SQLite ledger now stores
    invocation rows, per-eval run records, artifact pointers, and prompt task
    rows under `runs/local/crucible-runs.sqlite`; dashboard read path still
@@ -96,5 +97,8 @@ author/manage config surfaces.
 `crucible run --db <PATH>` persists every run report into SQLite, prompt
 benchmark evidence is indexed as task rows plus artifact pointers, and CLI/MCP
 can list runs, show a run by id, and compare latest stored config/model rows.
-Still open: dashboard Guided read path and first-class `RunRecord`/
-`EvaluationCard` materialization.
+
+**Update 2026-07-01 (durable record slice):** new runs also materialize
+`crucible.run_record.v1` and nested `crucible.evaluation_card.v1` JSON in the
+SQLite ledger, visible via `runs show` and MCP show. Still open: per-task trial
+records, dashboard Guided read path, and broader author/manage config surfaces.

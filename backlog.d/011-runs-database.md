@@ -58,3 +58,9 @@ proof. `prompt-run.json` remains an artifact, but prompt task results are also
 stored as rows with model, pass/fail, latency, usage, cost, output text, and
 the original task JSON. `runs compare` is a latest-run descriptive delta with
 intervals, not a significance claim.
+
+Progress 2026-07-01: durable record materialization landed on top of the ledger.
+Every new persisted run row gets a `run_record_materializations` row containing
+`crucible.run_record.v1` plus the nested `crucible.evaluation_card.v1`; `runs
+show` and MCP show expose both. Remaining: dashboard read path, export, and
+backup/restore/migration notes.

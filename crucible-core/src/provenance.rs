@@ -26,6 +26,8 @@ use crate::FixtureRef;
 
 /// Schema identifier for a persisted [`EvaluationCard`].
 pub const EVALUATION_CARD_SCHEMA: &str = "crucible.evaluation_card.v1";
+/// Schema identifier for a persisted [`RunRecord`].
+pub const RUN_RECORD_SCHEMA: &str = "crucible.run_record.v1";
 
 /// The reproducibility kernel: everything needed to re-run a judgment and get
 /// the same verdict.
@@ -87,8 +89,79 @@ pub struct EvaluationCard {
     pub timestamp: String,
 }
 
+/// The score shape persisted with a [`RunRecord`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunScore {
+    /// Metric id, e.g. `prompt_rubric_pass_rate`.
+    pub metric: String,
+    /// Successful items in the aggregate.
+    pub successes: u64,
+    /// Denominator for the aggregate.
+    pub n: u64,
+    /// Point estimate. `None` means no denominator/no data.
+    #[serde(serialize_with = "crate::serde_util::serialize_finite_option")]
+    pub point: Option<f64>,
+    /// Lower confidence bound.
+    #[serde(serialize_with = "crate::serde_util::serialize_finite")]
+    pub lower: f64,
+    /// Upper confidence bound.
+    #[serde(serialize_with = "crate::serde_util::serialize_finite")]
+    pub upper: f64,
+    /// Confidence level for the interval.
+    #[serde(serialize_with = "crate::serde_util::serialize_finite")]
+    pub confidence: f64,
+    /// Interval method, e.g. `Wilson`.
+    pub method: String,
+}
+
+/// A durable run record: the benchmark/config identity, score, artifact
+/// pointers, and the reproducibility card needed to re-run or audit the verdict.
+///
+/// This is the stable JSON artifact that the SQLite ledger materializes from its
+/// normalized rows. It intentionally stores artifact pointers rather than raw
+/// diffs or model transcripts; raw content stays under the ignored run tree.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunRecord {
+    /// Schema identifier; defaults to [`RUN_RECORD_SCHEMA`]. Unknown versions
+    /// are rejected on load.
+    #[serde(
+        default = "run_record_schema",
+        deserialize_with = "deserialize_run_record_schema"
+    )]
+    pub schema_version: String,
+    /// Stable run id inside the run ledger.
+    pub run_id: String,
+    /// Benchmark/eval id.
+    pub benchmark_id: String,
+    /// Config id selected by the runner/store.
+    pub config_id: String,
+    /// Runner family, e.g. `prompt_benchmark` or `key_recall`.
+    pub runner_kind: String,
+    /// Output directory that holds the raw evidence packet.
+    pub output_dir: String,
+    /// `run-report.json` path for the invocation.
+    pub run_report: String,
+    /// Primary runner evidence path, when one exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_path: Option<String>,
+    /// Eval spec path, when this came from a declared spec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_path: Option<String>,
+    /// Artifact pointers associated with this run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<String>,
+    /// Aggregate score with uncertainty.
+    pub score: RunScore,
+    /// Reproducibility card for the verdict.
+    pub evaluation_card: EvaluationCard,
+}
+
 fn evaluation_card_schema() -> String {
     EVALUATION_CARD_SCHEMA.to_string()
+}
+
+fn run_record_schema() -> String {
+    RUN_RECORD_SCHEMA.to_string()
 }
 
 fn deserialize_evaluation_card_schema<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -96,6 +169,13 @@ where
     D: serde::Deserializer<'de>,
 {
     crate::serde_util::expect_schema(deserializer, EVALUATION_CARD_SCHEMA)
+}
+
+fn deserialize_run_record_schema<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    crate::serde_util::expect_schema(deserializer, RUN_RECORD_SCHEMA)
 }
 
 #[cfg(test)]
@@ -217,6 +297,39 @@ mod tests {
             serde_json::to_string(&card).is_err(),
             "a non-finite temperature must not serialize"
         );
+
+        let record = RunRecord {
+            schema_version: RUN_RECORD_SCHEMA.to_string(),
+            run_id: "run-1".to_string(),
+            benchmark_id: "bench".to_string(),
+            config_id: "cfg".to_string(),
+            runner_kind: "deterministic".to_string(),
+            output_dir: "runs/local/bench".to_string(),
+            run_report: "runs/local/bench/run-report.json".to_string(),
+            evidence_path: None,
+            spec_path: None,
+            artifacts: Vec::new(),
+            score: RunScore {
+                metric: "m".to_string(),
+                successes: 0,
+                n: 0,
+                point: Some(f64::NAN),
+                lower: 0.0,
+                upper: 0.0,
+                confidence: 0.95,
+                method: "Wilson".to_string(),
+            },
+            evaluation_card: EvaluationCard {
+                schema_version: EVALUATION_CARD_SCHEMA.to_string(),
+                provenance: sample_provenance(),
+                cost_usd: 0.0,
+                timestamp: String::new(),
+            },
+        };
+        assert!(
+            serde_json::to_string(&record).is_err(),
+            "a non-finite score point must not serialize"
+        );
     }
 
     #[test]
@@ -230,6 +343,82 @@ mod tests {
             }
         }"#;
         let err = serde_json::from_str::<EvaluationCard>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("schema_version"),
+            "error should name the bad schema_version: {err}"
+        );
+    }
+
+    #[test]
+    fn run_record_wraps_score_artifacts_and_card() {
+        let record = RunRecord {
+            schema_version: RUN_RECORD_SCHEMA.to_string(),
+            run_id: "run-1:prompt-smoke-v0".to_string(),
+            benchmark_id: "prompt-smoke-v0".to_string(),
+            config_id: "prompt:open_router:openrouter/auto:fnv1a64:prompt".to_string(),
+            runner_kind: "prompt_benchmark".to_string(),
+            output_dir: "runs/local/prompt-smoke".to_string(),
+            run_report: "runs/local/prompt-smoke/run-report.json".to_string(),
+            evidence_path: Some("runs/local/prompt-smoke/prompt-run.json".to_string()),
+            spec_path: Some("evals/prompt-smoke-v0.json".to_string()),
+            artifacts: vec![
+                "evals/prompt-smoke-v0.json".to_string(),
+                "runs/local/prompt-smoke/prompt-run.json".to_string(),
+            ],
+            score: RunScore {
+                metric: "prompt_rubric_pass_rate".to_string(),
+                successes: 1,
+                n: 1,
+                point: Some(1.0),
+                lower: 0.2,
+                upper: 1.0,
+                confidence: 0.95,
+                method: "Wilson".to_string(),
+            },
+            evaluation_card: EvaluationCard {
+                schema_version: EVALUATION_CARD_SCHEMA.to_string(),
+                provenance: sample_provenance(),
+                cost_usd: 0.42,
+                timestamp: "2026-07-01T12:00:00Z".to_string(),
+            },
+        };
+
+        let json = serde_json::to_string(&record).unwrap();
+        let back: RunRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(record, back);
+        assert!(json.contains("crucible.run_record.v1"));
+        assert!(json.contains("crucible.evaluation_card.v1"));
+    }
+
+    #[test]
+    fn unknown_run_record_schema_version_is_rejected() {
+        let json = r#"{
+            "schema_version": "crucible.run_record.v999",
+            "run_id": "run-1",
+            "benchmark_id": "bench",
+            "config_id": "cfg",
+            "runner_kind": "deterministic",
+            "output_dir": "runs/local/bench",
+            "run_report": "runs/local/bench/run-report.json",
+            "score": {
+                "metric": "m",
+                "successes": 0,
+                "n": 0,
+                "point": null,
+                "lower": 0.0,
+                "upper": 0.0,
+                "confidence": 0.95,
+                "method": "Wilson"
+            },
+            "evaluation_card": {
+                "provenance": {
+                    "model": "deterministic",
+                    "temperature": 0.0,
+                    "seed_count": 1
+                }
+            }
+        }"#;
+        let err = serde_json::from_str::<RunRecord>(json).unwrap_err();
         assert!(
             err.to_string().contains("schema_version"),
             "error should name the bad schema_version: {err}"

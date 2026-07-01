@@ -23,6 +23,8 @@ code-review quality. The shipped wedge can:
 - expose the same run surface as a stdio MCP tool for agents and Threshold;
 - persist each run into a gitignored SQLite ledger and query it by benchmark,
   run id, or latest config/model comparison through CLI and MCP;
+- materialize durable `crucible.run_record.v1` and
+  `crucible.evaluation_card.v1` JSON for stored runs;
 - adapt Cerberus review artifacts into Threshold/Daedalus answer-key rows;
 - grade findings against either `solution/findings.json` or
   `tests/expected.json`;
@@ -129,6 +131,12 @@ cargo run -p crucible -- runs compare \
 `runs compare` reports the latest stored run for each config id or model slug
 and labels the result as a descriptive unpaired delta. It includes Wilson
 intervals; it does not claim statistical significance.
+
+`runs show --json` includes the normalized row, artifact pointers, indexed
+prompt task rows when present, the stored `run_record`, and the nested
+`evaluation_card` provenance. Prompt benchmark cards carry model/version,
+temperature, prompt/rubric hashes, fixture refs, cost, and timestamp;
+deterministic key-recall runs use explicit `deterministic` provenance.
 
 ## MCP
 

@@ -29,9 +29,9 @@
 //!   the category-strict matcher dropped, so a reported recall is not read as
 //!   final.
 //! - [`provenance`] — the [`Provenance`] reproducibility kernel and the
-//!   top-level [`EvaluationCard`] that persists it, so a verdict can be re-run
-//!   with zero chat context (model, sampling, prompt/rubric hashes, fixtures,
-//!   cost, caller-supplied timestamp).
+//!   top-level [`EvaluationCard`] and [`RunRecord`] that persist it, so a verdict
+//!   can be re-run with zero chat context (model, sampling, prompt/rubric hashes,
+//!   fixtures, cost, caller-supplied timestamp).
 //! - [`label`] — an append-only [`Label`]: one human/judge judgment of a single
 //!   finding ([`Verdict`] + [`Disposition`]) plus the calibration-validity
 //!   conditions it was made under (`latency_ms`, `saw_grader_before_commit`).
@@ -78,7 +78,7 @@
 //! confidence interval). They model only the surface the eval consumes;
 //! unrecognized fields in real inputs are ignored, not rejected.
 //!
-//! The persisted-artifact contract — [`EvaluationCard`], [`Label`],
+//! The persisted-artifact contract — [`RunRecord`], [`EvaluationCard`], [`Label`],
 //! [`CalibrationRecord`], and the declarative [`EvalSpec`] — is the durable waist
 //! of backlog 004: each such top-level artifact carries a `schema_version`,
 //! defaults its optional fields, and round-trips through serde, so the CLI, the
@@ -132,7 +132,9 @@ pub use measure::{
     required_sample_size, wilson_interval, BootstrapInterval, DeltaVerdict, EnsembleInterval,
     PairedComparison, PowerWarning,
 };
-pub use provenance::{EvaluationCard, Provenance, EVALUATION_CARD_SCHEMA};
+pub use provenance::{
+    EvaluationCard, Provenance, RunRecord, RunScore, EVALUATION_CARD_SCHEMA, RUN_RECORD_SCHEMA,
+};
 pub use spec::{
     Aggregate, AggregationMethod, CerberusReceiptTask, CorpusSpec, EvalSpec, FixtureRef, Grader,
     GraderKind, GraderManifest, IntervalMethod, ModelProvider, PairedDelta, PromptBenchmarkTask,

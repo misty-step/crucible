@@ -73,6 +73,11 @@ cargo run -p crucible -- runs compare \
 `runs compare` is intentionally descriptive: latest matching run per
 config/model, Wilson intervals shown, no significance claim.
 
+`runs show --json` returns both normalized rows and durable artifacts:
+`run_record` (`crucible.run_record.v1`) plus `evaluation_card`
+(`crucible.evaluation_card.v1`). Use this to inspect the persisted
+reproducibility card for a run without scraping `prompt-run.json`.
+
 Run a Cerberus producer handoff through the same declared runner:
 
 ```sh

@@ -510,6 +510,7 @@ fn run_prompt_benchmark_with_client(
             runner: runner.kind,
             provider: config.provider,
             model: config.model.clone(),
+            temperature: config.temperature,
             system_prompt_hash: stable_hash(&[&config.system_prompt]),
             score: &score,
             totals: PromptTotals {
@@ -1009,6 +1010,8 @@ struct PromptRunEvidence<'a> {
     runner: RunnerKind,
     provider: ModelProvider,
     model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<u32>,
     system_prompt_hash: String,
     score: &'a Score,
     totals: PromptTotals,
