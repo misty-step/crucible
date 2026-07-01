@@ -1,8 +1,8 @@
 product:
   name: Crucible
-  description: Crucible is the eval and benchmark workbench for Misty Step's AI and agent work.
+  description: Eval and benchmark workbench for trustworthy agent and product measurement.
 audience: developer
-voice: clear, specific, user-facing
+voice: Evidence-first, statistically careful, and concrete.
 changelog:
   source: auto
 artifacts:

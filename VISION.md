@@ -20,7 +20,7 @@ judgment, how confident are we, and what should change next?
 ## The One Principle
 
 Crucible refuses to report a delta it cannot defend. A rate without an interval,
-a judge without calibration, a winner inside the noise floor — these are the
+a judge without calibration, a delta reported inside the noise floor — these are the
 failures Crucible exists to prevent. The workbench's job is to make the
 measurement trustworthy, then state plainly what it does and does not prove.
 
@@ -40,13 +40,16 @@ miserable chore.
 ## The Role In The Constellation
 
 Crucible owns the eval and benchmark as a durable artifact — defining,
-designing, implementing, calibrating, and iterating it. Daedalus consumes
-Crucible's trusted evals to optimize harness and agent configurations.
+designing, implementing, calibrating, and iterating it. **Threshold** (formerly
+Daedalus) consumes Crucible's trusted evals to optimize harness and agent
+configurations. The rename is narrative only: Threshold's on-disk checkout and
+its `daedalus-score` binary keep the `daedalus` name until the sibling repo
+physically renames.
 
 - Crucible is where evals and benchmarks are brainstormed, defined, designed,
   implemented, calibrated, and iterated: task definitions, corpora and fixtures,
   grader mix, scoring rules, and trust/calibration.
-- Daedalus runs Karpathy-style auto-research and optimization loops that use
+- Threshold runs Karpathy-style auto-research and optimization loops that use
   Crucible's evals to find the harness and agent configuration that masters a
   given measurement surface.
 - Harness Kit carries reusable agent primitives and portable eval contracts for
@@ -56,13 +59,13 @@ Crucible's trusted evals to optimize harness and agent configurations.
 
 If the question is "what should the measurement surface be, and do we trust
 it?", that is Crucible. If the question is "which harness/agent configuration
-wins against this trusted measurement surface?", that is Daedalus.
+scores highest against this trusted measurement surface?", that is Threshold.
 
 Direction of travel: the eval-authoring machinery that currently lives in
-Daedalus — arena and task definitions, fixture corpora, scoring design, and
-adjudication — should migrate into Crucible over time, leaving Daedalus focused
+Threshold — arena and task definitions, fixture corpora, scoring design, and
+adjudication — should migrate into Crucible over time, leaving Threshold focused
 on the optimization search loop. Until that migration lands, Crucible reads and
-writes the existing Daedalus arena and Harbor artifacts in place rather than
+writes the existing Threshold arena and Harbor artifacts in place rather than
 duplicating them.
 
 ## What Crucible Should Do
@@ -82,7 +85,7 @@ Crucible should support the full eval lifecycle:
   especially on a phone, for the evals that need human judgment;
 - collect human labels, preferences, ratings, comments, and adjudications;
 - compare runs without hiding uncertainty;
-- export eval and benchmark packages to consumers like Daedalus, Harness Kit, or
+- export eval and benchmark packages to consumers like Threshold, Harness Kit, or
   product repos;
 - generate reports that can be used internally, attached to PRs, or published
   when the eval is credible enough.
@@ -119,8 +122,8 @@ serious enough for real decisions, approachable enough to use repeatedly.
 
 ## What This Is Not
 
-- Not an optimizer over agent configurations. Daedalus owns that; Crucible
-  designs the measurement Daedalus optimizes against.
+- Not an optimizer over agent configurations. Threshold owns that; Crucible
+  designs the measurement Threshold optimizes against.
 - Not a leaderboard factory that publishes scores before the eval design passes
   the smell test.
 - Not a generic survey tool with AI branding.
@@ -160,7 +163,7 @@ human queue for adjudicating whether findings are correct, important,
 duplicated, actionable, or noise.
 
 That family is the right wedge because the surrounding pieces already exist and
-are waiting. Verified on 2026-06-29: Daedalus has six `pr-review-*` arenas, a
+are waiting. Verified on 2026-06-29: Threshold has six `pr-review-*` arenas, a
 ~48-task ground-truth corpus, and three arenas explicitly blocked on labeled
 fixtures and a calibrated judge (`pr-review-{verification,product,
 simplification}`: "not runnable until fixtures are authored", "judge scoring
@@ -169,9 +172,9 @@ remains diagnostic until calibrated"); Cerberus produces structured findings via
 (`arenas/pr-review-v0/adjudications.md`). Crucible's first job is to
 industrialize that adjudication, calibrate the judge, bootstrap labels for real
 diffs (the gap no synthetic corpus fills), and emit Harbor-importable benchmark
-tasks Daedalus can re-score and optimize against.
+tasks Threshold can re-score and optimize against.
 
-Next candidates after that:
+Next families after that:
 
 - Harness Kit primitive evals: raw agent vs Harness Kit vs alternative
   primitive.
@@ -182,14 +185,14 @@ Next candidates after that:
 ## Decisions For Now
 
 - Crucible owns eval/benchmark definition, design, implementation, calibration,
-  run records, judging, reporting, and export. Daedalus consumes trusted evals to
-  optimize configs. Eval-authoring migrates from Daedalus into Crucible over
+  run records, judging, reporting, and export. Threshold consumes trusted evals to
+  optimize configs. Eval-authoring migrates from Threshold into Crucible over
   time.
 - How much judgment an eval needs is a per-eval decision across deterministic,
   agentic, and human layers; most real evals are hybrid and a good portion need
   some human judgment.
 - Do not reinvent eval infrastructure. Leverage what already plugs in — the
-  existing Daedalus arenas/corpus/Harbor format and Cerberus for the code-review
+  existing Threshold arenas/corpus/Harbor format and Cerberus for the code-review
   wedge; existing frameworks (e.g. Promptfoo, Inspect AI) for execution and
   ordinary grading of future families where they fit. Crucible owns the eval
   artifact, the calibration/trust layer, the human-judgment surface, and the
@@ -202,7 +205,7 @@ Next candidates after that:
   export) biases Rust. A thin TypeScript/React layer is justified for the
   judgment UI. Execution and commodity grading are borrowed, not rebuilt.
 - Exports should be boring structured packages aligned to the consumer's
-  contract — the Daedalus Harbor task-directory format for the code-review
+  contract — the Threshold Harbor task-directory format for the code-review
   family: task definition, fixture references, grader manifest, runner hints,
   rubric, baselines, run records, labels, aggregate scores, uncertainty, and
   provenance.
@@ -217,8 +220,8 @@ Next candidates after that:
   surfaced through a delightful, approachable UI that works well from a phone.
 - Operator clarification on 2026-06-29 (/groom): Crucible is where evals and
   benchmarks are brainstormed, defined, designed, implemented, and iterated;
-  Daedalus runs Karpathy-style optimization loops that consume Crucible evals;
-  eval-authoring should migrate from Daedalus into Crucible over time.
+  Threshold runs Karpathy-style optimization loops that consume Crucible evals;
+  eval-authoring should migrate from Threshold into Crucible over time.
 - Operator clarification on 2026-06-29 (/groom): how much human vs. agentic vs.
   deterministic judgment an eval needs is a per-eval decision; many evals require
   a non-zero human-judgment component.

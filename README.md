@@ -8,7 +8,7 @@ Its one principle: **refuse to report a delta it cannot defend**. Every rate
 carries an interval, every judge needs calibration before it is trusted, and
 rank gaps inside the noise floor are reported as inconclusive.
 
-For the project north star and the boundary with Daedalus and Harness Kit, read
+For the project north star and the boundary with Threshold and Harness Kit, read
 [`VISION.md`](VISION.md). For the cold-agent command contract, read
 [`SKILL.md`](SKILL.md).
 
@@ -19,12 +19,12 @@ code-review quality. The shipped wedge can:
 
 - execute a declared `EvalSpec` with `crucible run <spec>`;
 - expose the same run surface as a stdio MCP tool for agents and Threshold;
-- adapt Cerberus review artifacts into Daedalus answer-key rows;
+- adapt Cerberus review artifacts into Threshold/Daedalus answer-key rows;
 - grade findings against either `solution/findings.json` or
   `tests/expected.json`;
 - build and label a `crucible.judgment_queue.v1` adjudication queue;
-- export accepted findings back into Harbor/Daedalus scorer artifacts;
-- render a phone-first eval dashboard over Daedalus arenas/runs;
+- export accepted findings back into Harbor scorer artifacts;
+- render a phone-first eval dashboard over Threshold/Daedalus arenas/runs;
 - run three committed eval receipts with defensible Wilson intervals;
 - render a static phone-first adjudication panel from an existing queue artifact.
 
@@ -40,10 +40,10 @@ Run the first declared benchmark spec:
 cargo run -p crucible -- run evals/pr-review-key-recall-v0.json --json
 ```
 
-That spec, `pr-review-key-recall-v0`, selects the frozen Daedalus
+That spec, `pr-review-key-recall-v0`, selects the frozen Threshold
 `pr-review-v0` trials corpus and grades the `probe-oneshot` candidate against
-the Harbor scorer keys under the sibling Daedalus checkout. The default evidence
-directory is `runs/local/pr-review-key-recall-v0/`.
+the Harbor scorer keys under the sibling `daedalus` checkout. The default
+evidence directory is `runs/local/pr-review-key-recall-v0/`.
 
 Run a Cerberus producer handoff through the same declared-spec runner:
 
@@ -76,7 +76,8 @@ The command writes `runs/local/factory-lane/run-report.json` plus one evidence
 directory per eval:
 
 - `code-review-deterministic-floor`: grades the real Cerberus fixture against a
-  Daedalus `tests/expected.json` scorer key and reports category-strict recall.
+  Threshold/Daedalus `tests/expected.json` scorer key and reports
+  category-strict recall.
 - `recoverable-adjudication-queue`: proves a co-located category mismatch is
   routed into the human queue as a recoverable adjudication item and renders the
   phone panel.
@@ -163,8 +164,8 @@ the browser.
 - `004` — eval object and per-eval grader-mix model
 - `005` — phone-first adjudication queue
 - `006` — agent-readiness and machine surface
-- `007` — extract eval-authoring from Daedalus
-- `008` — make `crucible grade` predict Daedalus reward
+- `007` — extract eval-authoring from Threshold
+- `008` — make `crucible grade` predict Threshold reward
 - `009` — live eval dashboard
 
 ## Gate

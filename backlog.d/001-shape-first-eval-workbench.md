@@ -20,11 +20,11 @@ emitted:
 - Eval object (task, inputs, outputs, fixtures, grader mix, human judgment,
   baselines, aggregation, uncertainty, export): epic `004-eval-object-and-grader-mix`.
 - Human-judgment UI incl. phone path: epic `005-phone-adjudication-queue`.
-- Smallest implementation stack and gate: borrow execution (Daedalus arenas +
+- Smallest implementation stack and gate: borrow execution (Threshold arenas +
   Cerberus); Crucible owns the eval artifact + calibration + export. Gate work in
   epic `006-agent-readiness-machine-surface`.
-- Crucible vs Daedalus vs project repos: rechartered in `VISION.md` — Crucible
-  owns eval authoring/calibration; Daedalus optimizes against trusted evals; the
+- Crucible vs Threshold vs project repos: rechartered in `VISION.md` — Crucible
+  owns eval authoring/calibration; Threshold optimizes against trusted evals; the
   migration is epic `007-extract-eval-authoring-from-daedalus`.
 
 ## Disposition

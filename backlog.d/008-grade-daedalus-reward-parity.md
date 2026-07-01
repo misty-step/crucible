@@ -1,4 +1,4 @@
-# Make crucible grade a faithful predictor of Daedalus's reward
+# Make crucible grade a faithful predictor of Threshold's reward
 
 Priority: P1 · Status: pending · Estimate: M
 
@@ -29,10 +29,14 @@ fidelity gaps remain by design and are documented in `export.rs`:
 1. the export span is a single-line under-approximation (`line_start==line_end==line`);
    widening needs a region anchor carried from the Cerberus finding.
 2. `crucible grade`'s matcher is a category-strict pre-adjudication FLOOR (file+line
-   ±tol, no FP penalty, no severity rank), NOT Daedalus's reward — so the grade rate
+   ±tol, no FP penalty, no severity rank), NOT Threshold's reward — so the grade rate
    is not directly comparable to the optimization objective.
 
 Authoritative scoring stays with `daedalus-score`; this ticket makes Crucible's own
 read-side a faithful predictor so it can guide adjudication and pre-flight a config
-without round-tripping to Daedalus every time. Needs a span/region anchor threaded
+without round-tripping to Threshold every time. Needs a span/region anchor threaded
 from the Cerberus finding through the adapter and the adjudication queue.
+
+Naming: **Threshold** (formerly Daedalus) is the sibling optimization project; its
+`daedalus-score` binary keeps the `daedalus` name on disk until the sibling repo
+physically renames, so every `daedalus-score` reference above is real and unchanged.

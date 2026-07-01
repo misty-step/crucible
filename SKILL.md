@@ -6,8 +6,8 @@ description: Run and extend Crucible evals. Use when an agent needs to author, r
 # Crucible Verification Skill
 
 Crucible owns eval artifacts, judgment queues, uncertainty, and exports. The
-first family is agentic code-review quality over Cerberus findings and Daedalus
-Harbor scorer keys.
+first family is agentic code-review quality over Cerberus findings and
+Threshold/Harbor scorer keys.
 
 ## Start Here
 
@@ -25,8 +25,10 @@ cargo run -p crucible -- run evals/pr-review-key-recall-v0.json --json
 ```
 
 The spec writes `runs/local/pr-review-key-recall-v0/run-report.json` by default.
-It measures Daedalus `pr-review-v0` key recall for the selected
-`probe-oneshot` candidate over the frozen six-task corpus.
+It measures Threshold `pr-review-v0` key recall for the selected
+`probe-oneshot` candidate over the frozen six-task corpus. The sibling checkout
+and scorer binary still use the `daedalus` name until that repo is physically
+renamed.
 
 Run a Cerberus producer handoff through the same declared runner:
 
@@ -56,7 +58,7 @@ The report is written to `runs/local/factory-lane/run-report.json`.
 
 The three concrete receipts are:
 
-- `code-review-deterministic-floor`: Cerberus fixture vs Daedalus
+- `code-review-deterministic-floor`: Cerberus fixture vs Threshold/Daedalus
   `tests/expected.json`, scored as category-strict recall with a Wilson interval.
 - `recoverable-adjudication-queue`: co-located category mismatch routed into the
   queue as a recoverable item, with a static phone panel artifact.
@@ -171,8 +173,9 @@ cargo run -p crucible -- dashboard \
   --out runs/local/dashboard
 ```
 
-Use the dashboard for read-side Daedalus run evidence. It reports bootstrap
-reward intervals, Wilson solve-rate intervals, and noise-floor verdicts.
+Use the dashboard for read-side Threshold/Daedalus run evidence. It reports
+bootstrap reward intervals, Wilson solve-rate intervals, and noise-floor
+verdicts.
 
 ## Gate
 
