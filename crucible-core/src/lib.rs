@@ -30,8 +30,8 @@
 //!   final.
 //! - [`provenance`] — the [`Provenance`] reproducibility kernel and the
 //!   top-level [`EvaluationCard`] and [`RunRecord`] that persist it, so a verdict
-//!   can be re-run with zero chat context (model, sampling, prompt/rubric hashes,
-//!   fixtures, cost, caller-supplied timestamp).
+//!   can be re-run with zero chat context (model, explicit sampling settings,
+//!   prompt/rubric hashes, fixtures, cost, caller-supplied timestamp).
 //! - [`label`] — an append-only [`Label`]: one human/judge judgment of a single
 //!   finding ([`Verdict`] + [`Disposition`]) plus the calibration-validity
 //!   conditions it was made under (`latency_ms`, `saw_grader_before_commit`).

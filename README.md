@@ -135,8 +135,9 @@ intervals; it does not claim statistical significance.
 `runs show --json` includes the normalized row, artifact pointers, indexed
 prompt task rows when present, the stored `run_record`, and the nested
 `evaluation_card` provenance. Prompt benchmark cards carry model/version,
-temperature, prompt/rubric hashes, fixture refs, cost, and timestamp;
-deterministic key-recall runs use explicit `deterministic` provenance.
+configured temperature when explicit, prompt/rubric hashes, fixture refs, cost,
+and timestamp; deterministic key-recall runs use explicit `deterministic`
+provenance.
 
 ## MCP
 

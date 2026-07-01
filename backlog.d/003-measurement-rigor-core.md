@@ -19,9 +19,10 @@ eval family.
   "inside noise floor") when p > α or the effect sits inside the CI.
 - [ ] A pre-run power check warns when the fixture set is underpowered for the
   target effect.
-- [ ] Every run persists an Evaluation Card (model+version, temperature, seed
-  count, prompt/rubric hash, fixture refs, raw per-item judgments, cost,
-  timestamp) that reproduces the verdict with zero chat context.
+- [ ] Every run persists an Evaluation Card (model+version, configured
+  temperature when explicit, seed count, prompt/rubric hash, fixture refs, raw
+  per-item judgments, cost, timestamp) that reproduces the verdict with zero
+  chat context.
 
 ## Children (ordered)
 

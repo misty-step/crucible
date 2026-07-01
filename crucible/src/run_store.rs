@@ -583,7 +583,7 @@ fn materialize_run_record(input: &MaterializeInput<'_>) -> Result<(RunRecord, Ev
         provenance: Provenance {
             model: provenance_model(input.metadata),
             model_version: provenance_model_version(input.metadata),
-            temperature: input.metadata.temperature.unwrap_or(0.0),
+            temperature: provenance_temperature(input.metadata),
             seed_count: 1,
             prompt_hash: combined_hash(
                 input
@@ -969,6 +969,16 @@ fn provenance_model_version(metadata: &EvidenceMetadata) -> String {
     }
 }
 
+fn provenance_temperature(metadata: &EvidenceMetadata) -> Option<f64> {
+    if metadata.temperature.is_some() {
+        return metadata.temperature;
+    }
+    if metadata.model.is_none() && metadata.prompt_tasks.is_empty() {
+        return Some(0.0);
+    }
+    None
+}
+
 fn combined_hash(values: Vec<&str>) -> String {
     match values.as_slice() {
         [] => String::new(),
@@ -1024,6 +1034,15 @@ mod tests {
     }
 
     fn prompt_report(root: &Path, model: &str, success: bool) -> RunReport {
+        prompt_report_with_temperature(root, model, success, Some(0))
+    }
+
+    fn prompt_report_with_temperature(
+        root: &Path,
+        model: &str,
+        success: bool,
+        temperature: Option<u32>,
+    ) -> RunReport {
         let out = root.join(model.replace('/', "-"));
         std::fs::create_dir_all(&out).expect("create output dir");
         std::fs::write(
@@ -1031,14 +1050,13 @@ mod tests {
             r#"{"schema_version":"crucible.eval_spec.v1","task":"prompt-smoke"}"#,
         )
         .expect("write spec artifact");
-        let prompt_evidence = serde_json::json!({
+        let mut prompt_evidence = serde_json::json!({
             "schema_version": "crucible.prompt_run_evidence.v1",
             "spec_id": "prompt-smoke-v0",
             "spec": root.join("prompt-smoke-v0.json").display().to_string(),
             "runner": "prompt_benchmark",
             "provider": "open_router",
             "model": model,
-            "temperature": 0,
             "system_prompt_hash": "fnv1a64:test",
             "score": {
                 "metric": "prompt_rubric_pass_rate",
@@ -1071,6 +1089,9 @@ mod tests {
                 "cost_usd": 0.0
             }]
         });
+        if let Some(temperature) = temperature {
+            prompt_evidence["temperature"] = serde_json::json!(temperature);
+        }
         let evidence_path = out.join("prompt-run.json");
         std::fs::write(
             &evidence_path,
@@ -1159,6 +1180,26 @@ mod tests {
         assert_eq!(record["benchmark_id"], "prompt-smoke-v0");
         assert_eq!(record["score"]["metric"], "prompt_rubric_pass_rate");
         assert_eq!(record["evaluation_card"], *card);
+    }
+
+    #[test]
+    fn omitted_prompt_temperature_stays_absent_in_the_card() {
+        let root = temp_dir("no-temperature");
+        let db = root.join("runs.sqlite");
+        let report = prompt_report_with_temperature(&root, "test/model-a", true, None);
+        persist_report(&db, &report).expect("persist report");
+
+        let list = list_runs(&db, Some("prompt-smoke-v0")).expect("list runs");
+        let detail = show_run(&db, &list.runs[0].run_id).expect("show run");
+        let card = detail
+            .evaluation_card
+            .as_ref()
+            .expect("evaluation card is persisted");
+        assert_eq!(card["provenance"]["model"], "test/model-a");
+        assert!(
+            card["provenance"].get("temperature").is_none(),
+            "provider-default temperature must not be rewritten to 0.0: {card}"
+        );
     }
 
     #[test]

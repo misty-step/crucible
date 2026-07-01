@@ -2,11 +2,11 @@
 //! re-run with zero chat context.
 //!
 //! Backlog 003 (child 1) requires every run to persist an evaluation card
-//! carrying enough to reproduce its verdict: the model and version, the sampling
-//! temperature and seed count, the prompt and rubric hashes, the fixtures it
-//! scored, the cost, and a timestamp. [`Provenance`] is that reproducibility
-//! kernel; [`EvaluationCard`] is the top-level persisted artifact that wraps it
-//! with the run-level cost, timing, and a `schema_version`.
+//! carrying enough to reproduce its verdict: the model and version, configured
+//! sampling temperature when explicit, seed count, the prompt and rubric hashes,
+//! the fixtures it scored, the cost, and a timestamp. [`Provenance`] is that
+//! reproducibility kernel; [`EvaluationCard`] is the top-level persisted artifact
+//! that wraps it with the run-level cost, timing, and a `schema_version`.
 //!
 //! Two contracts keep a card *reproducible* rather than merely descriptive. The
 //! hashes are stored, never computed here — the caller hashes the exact
@@ -33,9 +33,11 @@ pub const RUN_RECORD_SCHEMA: &str = "crucible.run_record.v1";
 /// the same verdict.
 ///
 /// Embedded in an [`EvaluationCard`]; not a standalone persisted artifact, so it
-/// carries no `schema_version` of its own. `model` and the sampling parameters
-/// are required — without them there is nothing to reproduce. The hashes and
-/// fixtures default to empty so a partial provenance (e.g. a deterministic
+/// carries no `schema_version` of its own. `model` and `seed_count` are required
+/// — without them there is nothing to reproduce. `temperature` is optional
+/// because some provider-backed runs intentionally use provider defaults and an
+/// omitted setting must not be rewritten as deterministic sampling. The hashes
+/// and fixtures default to empty so a partial provenance (e.g. a deterministic
 /// grader with no rubric) still serializes cleanly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Provenance {
@@ -45,9 +47,13 @@ pub struct Provenance {
     /// empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model_version: String,
-    /// Sampling temperature.
-    #[serde(serialize_with = "crate::serde_util::serialize_finite")]
-    pub temperature: f64,
+    /// Sampling temperature, when explicitly configured for the run.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::serde_util::serialize_finite_option"
+    )]
+    pub temperature: Option<f64>,
     /// Number of seeds / samples drawn per item.
     pub seed_count: u32,
     /// Hash of the exact prompt text — computed by the caller, stored verbatim.
@@ -186,7 +192,7 @@ mod tests {
         Provenance {
             model: "anthropic/claude-opus-4".to_string(),
             model_version: "claude-opus-4-8".to_string(),
-            temperature: 0.0,
+            temperature: Some(0.0),
             seed_count: 3,
             prompt_hash: "sha256:prompt".to_string(),
             rubric_hash: "sha256:rubric".to_string(),
@@ -249,6 +255,7 @@ mod tests {
         let card: EvaluationCard = serde_json::from_str(json).unwrap();
         assert_eq!(card.schema_version, EVALUATION_CARD_SCHEMA);
         assert_eq!(card.cost_usd, 0.0);
+        assert_eq!(card.provenance.temperature, Some(0.2));
         assert!(card.timestamp.is_empty());
         // Optional provenance fields default to empty without erroring.
         assert!(card.provenance.model_version.is_empty());
@@ -261,7 +268,7 @@ mod tests {
         let prov = Provenance {
             model: "anthropic/claude-opus-4".to_string(),
             model_version: String::new(),
-            temperature: 0.7,
+            temperature: Some(0.7),
             seed_count: 1,
             prompt_hash: String::new(),
             rubric_hash: String::new(),
@@ -272,6 +279,23 @@ mod tests {
             json,
             r#"{"model":"anthropic/claude-opus-4","temperature":0.7,"seed_count":1}"#
         );
+        let back: Provenance = serde_json::from_str(&json).unwrap();
+        assert_eq!(prov, back);
+    }
+
+    #[test]
+    fn omitted_temperature_stays_absent_on_the_wire() {
+        let prov = Provenance {
+            model: "openrouter/auto".to_string(),
+            model_version: String::new(),
+            temperature: None,
+            seed_count: 1,
+            prompt_hash: String::new(),
+            rubric_hash: String::new(),
+            fixture_refs: Vec::new(),
+        };
+        let json = serde_json::to_string(&prov).unwrap();
+        assert_eq!(json, r#"{"model":"openrouter/auto","seed_count":1}"#);
         let back: Provenance = serde_json::from_str(&json).unwrap();
         assert_eq!(prov, back);
     }
@@ -292,7 +316,7 @@ mod tests {
             "a NaN cost must not serialize to a non-round-tripping null"
         );
         card.cost_usd = 0.42;
-        card.provenance.temperature = f64::INFINITY;
+        card.provenance.temperature = Some(f64::INFINITY);
         assert!(
             serde_json::to_string(&card).is_err(),
             "a non-finite temperature must not serialize"
