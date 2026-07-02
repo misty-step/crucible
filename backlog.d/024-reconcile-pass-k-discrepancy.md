@@ -1,6 +1,6 @@
 # Investigate and document the pass^5 0.0434 vs 0.333 discrepancy
 
-Priority: P3 · Status: ready · Estimate: S
+Priority: P3 · Status: done · Estimate: S
 
 ## Goal
 
@@ -19,18 +19,18 @@ call.
 
 ## Oracle
 
-- [ ] `~/Development/cerberus/backlog.d/026-consistency-floor.md` (or wherever
+- [x] `~/Development/cerberus/backlog.d/026-consistency-floor.md` (or wherever
   it now lives — check `_done/` too) is read in full; the exact source of the
   0.0434 figure (which run, which task set, which candidate, which arena
   version, which pass/fail definition) is identified or confirmed
   unrecoverable.
-- [ ] A short reconciliation note is appended to `backlog.d/015-first-real-
+- [x] A short reconciliation note is appended to `backlog.d/015-first-real-
   cerberus-review-benchmark.md`'s Notes section (not a rewrite — append,
   dated) stating either: (a) the two numbers now have an identified,
   documented scope difference (task count, corpus version, candidate), or
   (b) the 0.0434 source could not be traced with confidence and why, with a
   named next step for whoever can access the original data.
-- [ ] No code changes. No claim is made about which number should gate
+- [x] No code changes. No claim is made about which number should gate
   Cerberus's advisory-vs-blocking status — that stays an explicit open
   question for daylight/operator review.
 
@@ -47,3 +47,22 @@ as a bounded investigation task.
 evidence-gathering + documentation — no design/taste call, no code risk, and
 it directly de-risks whatever daylight decision follows about Cerberus's
 consistency floor.
+
+**Progress 2026-07-02 (overnight):** done, read-only. Found (a): the two
+numbers have a fully identified, three-axis scope difference — different
+candidate (`seed2-kimi-k2-7-code-trace-callers` vs `incumbent`), different
+Threshold source run (`20260623T183514Z...` vs `20260625T161856Z...`), and
+different scorer (Daedalus's own `reward ≥ 1.00` pass rate vs Crucible's
+re-graded `score_against_expected_key` key-recall). The full trace — with
+exact file paths, table cells, and a bonus finding that the same candidate's
+pass^5 swings from 0.0434 to 0.1088 across the two Daedalus runs alone —
+is appended to `backlog.d/015-first-real-cerberus-review-benchmark.md`'s
+Notes, dated. No code changed; no correctness verdict was rendered on either
+number. Full source trail: `~/.factory-lanes/groom/cerberus.md` §9 → cerberus
+`backlog.d/026-consistency-floor.md` → Daedalus runs
+`20260623T183514Z-search-cerberus-reviewer/report.md` and
+`20260625T161856Z-search-cerberus-reviewer/report.md` (both under
+`~/Development/daedalus/runs/`) → their `trials.jsonl` files (read directly
+to confirm task-id overlap) → `~/Development/daedalus/arenas/pr-review-v0/
+arena.toml`/`adjudications.md` (to rule out an arena-version scope
+difference).
