@@ -3,11 +3,28 @@
 - North star: read `VISION.md` before changing product scope, eval semantics,
   grader/judgment boundaries, runner boundaries, UI direction, or the
   Daedalus/Harness Kit relationship.
-- Current state: Rust core + CLI + MCP for the first code-review eval wedge are
-  live. The next implementation priority is the author-and-run engine
-  (`backlog.d/010-*`): a Crucible-owned benchmark authored through CLI/MCP and
-  run end to end with a real model call. Do not invent a broad platform stack
-  ahead of it.
+- Current state: the author-and-run engine is real. Three runner kinds
+  (`key_recall`, `prompt_benchmark`, `agentic_judge`) execute declared
+  `EvalSpec`s through `crucible run`/MCP `crucible_run`, including live BYOK
+  OpenRouter model calls; every run persists to a SQLite ledger
+  (`runs/local/crucible-runs.sqlite`) queryable via `crucible runs
+  list/show/compare` (CLI + MCP). `crucible validate`/MCP `crucible_validate`
+  checks a spec's `{valid, runnable, errors, warnings}` before it runs, and the
+  runner refuses (not silently ignores) an unsupported `aggregation`,
+  `uncertainty.method`/`confidence`, or a missing grader of the kind the
+  runner's family actually executes. The agentic judge tier
+  (`backlog.d/012-*`) is real: a live judge call, a `CalibrationRecord`
+  measuring judge-vs-deterministic agreement on labeled calibration tasks, and
+  a judge-gaming canary that hard-refuses a run (no evidence persisted) if the
+  judge rubber-stamps a known-bad candidate. The adjudication panel has a real
+  writeback loop (`adjudication-panel --serve`, `backlog.d/005-*`) — a small
+  local HTTP server that persists Keep/Nit/Wrong/Noise taps as
+  `crucible.label.v1` labels through the same `apply_label` path
+  `adjudicate --apply` uses. See `SKILL.md` for the exact commands. Do not
+  invent a broad platform stack ahead of real usage; open work lives in
+  `backlog.d/` (deterministic grader dispatch beyond the required-kind check,
+  judge-calibration model-family separation, baseline comparison wiring, the
+  phone-adjudication epic's remaining UI polish).
 - Boundary (rechartered 2026-06-29, refreshed 2026-07-01): Crucible owns the
   eval/benchmark as a durable artifact — definition, design, implementation,
   selected execution, calibration, run records, judging, reporting, and export.
@@ -34,9 +51,11 @@
   format for code-review), not a Crucible-invented schema.
 - Backlog: active work lives in `backlog.d/NNN-*.md`; closed work moves to
   `backlog.d/_done/`.
-- Verification skill: `SKILL.md` is the cold-agent command contract for running
-  the three built-in eval receipts, the headless grade/adjudicate/export loop,
-  the adjudication panel, and the dashboard.
+- Verification skill: `SKILL.md` is the cold-agent command contract — the
+  three built-in eval receipts, declared-spec runs across all three runner
+  kinds, `crucible validate`, the SQLite run ledger queries, the headless
+  grade/adjudicate/export loop, the adjudication panel (static and
+  `--serve` writeback), and the dashboard.
 
 ## Gate
 

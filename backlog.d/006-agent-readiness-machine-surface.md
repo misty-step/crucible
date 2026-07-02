@@ -33,7 +33,7 @@ secret/content-leak gate, stable CLI JSON, and Harbor-schema-validated exports.
    Crucible writes artifacts (today `.gitignore` ignores only `runs/*/artifacts/`).
 4. ✅ Verification `SKILL.md` — author → run → grade → adjudicate → export with
    the real commands; serves as the agent-usability acceptance oracle for child 1.
-5. `AGENTS.md` refresh — name the borrowed surfaces + the Rust/TS boundary, link
+5. ✅ `AGENTS.md` refresh — name the borrowed surfaces + the Rust/TS boundary, link
    the skill, document the CLI/export/security contracts.
 
 ## Notes
@@ -74,3 +74,20 @@ repo-owned gate.
 **Factory groom 2026-07-01:** agent-first means CLI + MCP for define/manage/run,
 not just one `crucible_run` tool. The broader surface is tracked in `014`; keep
 this epic as the gate/contract/operability spine.
+
+**Progress 2026-07-02 (overnight):** child 5 landed. `AGENTS.md`'s "Current
+state" bullet was badly stale — it still named the author-and-run engine
+(`010`) as the *next* priority when 010, the runs database (`011`), the
+agentic judge tier (`012`), the one-scorer consolidation (`013`), the first
+real Cerberus benchmark (`015`), the adjudication writeback loop (`005`
+partial), and spec honesty/`validate` (`014` partial) had all already landed.
+Rewrote it to name what is actually real today (three runner kinds, the SQLite
+ledger, `validate`, the judge tier's calibration/canary guard, the writeback
+server) and where the remaining open work lives, so a cold agent reading
+`AGENTS.md` first gets the accurate picture instead of a nine-day-old one.
+`SKILL.md` (the command contract `AGENTS.md` points to) got the matching
+update: `crucible validate`, the agentic-judge and cerberus-review-quality run
+examples, the judge-gaming canary and calibration-record behavior,
+`adjudication-panel --serve`'s real writeback loop, and `crucible_validate` in
+the MCP tool list — all commands re-verified live against the real binary
+before committing. Docs-only; no code changed, gate still green.
