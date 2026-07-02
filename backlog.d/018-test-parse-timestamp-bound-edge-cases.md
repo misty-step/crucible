@@ -1,0 +1,38 @@
+# Test coverage: malformed --since/--until timestamp bounds
+
+Priority: P2 · Status: ready · Estimate: S
+
+## Goal
+
+`run_store::parse_timestamp_bound` (`crucible/src/run_store.rs:1166-1173`,
+merged tonight in the runs-database filter slice) has zero direct unit tests
+and no CLI test exercising a malformed `--since`/`--until` value. Add tests
+proving it fails cleanly (readable error, exit 1) rather than panicking on
+garbage input.
+
+## Oracle
+
+- [ ] A `#[cfg(test)]` unit test in `run_store.rs` covers: a valid RFC3339
+  timestamp, a valid `YYYY-MM-DD` date, and at least two invalid strings
+  (empty string, non-date garbage like `"not-a-date"`) — asserting `Err` with
+  a message that names the offending value.
+- [ ] A `crucible/tests/cli.rs` integration test runs `crucible runs list
+  --since garbage` (or `--until`) against a populated ledger and asserts a
+  clean non-zero exit with a stderr message, not a panic/backtrace.
+- [ ] `cargo test --all` passes; no `unwrap()`/panic path is introduced to hit
+  the new assertions.
+
+## Notes
+
+Live-code-verified 2026-07-01: `crucible/tests/cli.rs`'s
+`runs_list_filters_by_config_model_and_date` (line 955) only exercises valid
+`--since`/`--until` values (a far-future/far-past bound), never a malformed
+one; `rg 'parse_timestamp_bound|invalid.*timestamp|garbage|malformed'` across
+`run_store.rs`/`cli.rs` shows the only references are the function's own
+`.context(...)` error string and unrelated malformed-JSON tests elsewhere.
+This is exactly the "fresh code merged tonight, thin tests likely" category —
+`--since`/`--until` filtering shipped in PR #62 a few hours ago.
+
+**Why:** OVERNIGHT.md names test coverage on the newly-merged run-store/
+validate/adjudication paths as a safe overnight category; this is a small,
+mechanically verifiable gap in that exact code.
