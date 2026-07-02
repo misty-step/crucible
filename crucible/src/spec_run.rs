@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use crucible_core::{
     findings_from_artifact, schema_valid, to_key_findings, AgenticJudgeConfig, AgenticJudgeTask,
-    AggregationMethod, CerberusReceiptTask, CorpusSpec, Defect, EvalSpec, ExpectedKey, GraderKind,
+    AggregationMethod, CerberusReceiptTask, CorpusSpec, EvalSpec, ExpectedKey, GraderKind,
     IntervalMethod, KeyFinding, ModelProvider, PromptBenchmarkTask, PromptExpectation,
     PromptModelConfig, RunnerKind, RunnerSpec,
 };
@@ -750,7 +750,10 @@ fn parse_judge_verdict(output: &str) -> anyhow::Result<bool> {
 }
 
 fn grade_key_recall_task(findings: &[KeyFinding], expected: &ExpectedKey) -> KeyRecallTaskScore {
-    let grade = score_against_expected_key(findings, expected);
+    // The span-aware match (file + category + line-in-span + severity floor)
+    // lives in crucible-core (backlog 013): Threshold/Daedalus share this
+    // scorer by construction instead of by prose parity.
+    let grade = crucible_core::score_against_expected_key(findings, expected);
     let matched = grade.matched_ids.len() as u64;
     let missed = grade.missed_ids.len() as u64;
     let false_positives = grade.false_positives;
@@ -760,68 +763,6 @@ fn grade_key_recall_task(findings: &[KeyFinding], expected: &ExpectedKey) -> Key
         false_positives,
         expected_defects: matched + missed,
         grade,
-    }
-}
-
-fn score_against_expected_key(findings: &[KeyFinding], expected: &ExpectedKey) -> SpanGrade {
-    let mut matched_flags = vec![false; expected.defects.len()];
-    let mut matched_ids = Vec::new();
-    let mut false_positives = 0u64;
-
-    for finding in findings {
-        let hit = expected
-            .defects
-            .iter()
-            .enumerate()
-            .position(|(i, defect)| !matched_flags[i] && defect_matches(finding, defect));
-        match hit {
-            Some(i) => {
-                matched_flags[i] = true;
-                matched_ids.push(expected.defects[i].id.clone());
-            }
-            None => false_positives += 1,
-        }
-    }
-
-    let missed_ids = expected
-        .defects
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !matched_flags[*i])
-        .map(|(_, defect)| defect.id.clone())
-        .collect();
-
-    SpanGrade {
-        matched_ids,
-        missed_ids,
-        false_positives,
-    }
-}
-
-fn defect_matches(finding: &KeyFinding, defect: &Defect) -> bool {
-    finding.file == defect.file
-        && finding.category == defect.category
-        && defect.line_start <= finding.line
-        && finding.line <= defect.line_end
-        && severity_matches(finding.severity.as_str(), defect.severity.as_deref())
-}
-
-fn severity_matches(candidate: &str, expected: Option<&str>) -> bool {
-    let Some(expected) = expected else {
-        return true;
-    };
-    match (severity_rank(candidate), severity_rank(expected)) {
-        (Some(candidate), Some(expected)) => candidate <= expected,
-        _ => false,
-    }
-}
-
-fn severity_rank(label: &str) -> Option<u8> {
-    match label {
-        "blocking" => Some(0),
-        "serious" => Some(1),
-        "minor" => Some(2),
-        _ => None,
     }
 }
 
@@ -1180,7 +1121,7 @@ struct KeyRecallTaskScore {
     missed: u64,
     false_positives: u64,
     expected_defects: u64,
-    grade: SpanGrade,
+    grade: crucible_core::SpanGrade,
 }
 
 #[derive(Debug, Serialize)]
@@ -1370,13 +1311,6 @@ fn is_zero_usize(value: &usize) -> bool {
     *value == 0
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct SpanGrade {
-    matched_ids: Vec<String>,
-    missed_ids: Vec<String>,
-    false_positives: u64,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1478,7 +1412,7 @@ mod tests {
     #[test]
     fn expected_key_scoring_uses_daedalus_span_contract_without_line_tolerance() {
         let expected = ExpectedKey {
-            defects: vec![Defect {
+            defects: vec![crucible_core::Defect {
                 id: "d1".to_string(),
                 file: "src/lib.rs".to_string(),
                 line_start: 13,
@@ -1496,10 +1430,10 @@ mod tests {
             description: "near miss".to_string(),
             source_id: None,
         };
-        let grade = score_against_expected_key(&[just_outside], &expected);
+        let grade = crucible_core::score_against_expected_key(&[just_outside], &expected);
         assert_eq!(
             grade,
-            SpanGrade {
+            crucible_core::SpanGrade {
                 matched_ids: Vec::new(),
                 missed_ids: vec!["d1".to_string()],
                 false_positives: 1,

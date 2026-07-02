@@ -162,6 +162,106 @@ impl Defect {
     }
 }
 
+/// The deterministic grade of candidate findings against an [`ExpectedKey`]'s
+/// defect spans (backlog 013): a candidate hits a defect when its `file` and
+/// `category` equal the defect's, its `line` falls inside
+/// `[line_start, line_end]`, and it clears the defect's optional severity
+/// floor. This is the **span-aware** match — distinct from
+/// [`crate::key_match`]'s point-and-tolerance approximation
+/// ([`Defect::to_key_finding`] documents why that one exists) — the same
+/// semantics `daedalus-score` implements, extracted here so Crucible's
+/// key-recall runner and Threshold/Daedalus share one scorer by construction
+/// instead of by prose parity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpanGrade {
+    /// Ids of defects a candidate finding matched.
+    pub matched_ids: Vec<String>,
+    /// Ids of defects no candidate finding matched.
+    pub missed_ids: Vec<String>,
+    /// Candidate findings that matched no defect.
+    pub false_positives: u64,
+}
+
+/// Grade candidate findings against an expected key's defect spans.
+///
+/// Greedy and order-sensitive, matching [`mod@crate::grade`]'s matcher: each
+/// candidate, in order, claims the first still-unclaimed defect it matches on
+/// file, category, span, and severity floor. A candidate that claims no
+/// defect counts as a false positive; a defect no candidate claims is missed.
+pub fn score_against_expected_key(findings: &[KeyFinding], expected: &ExpectedKey) -> SpanGrade {
+    let mut matched_flags = vec![false; expected.defects.len()];
+    let mut matched_ids = Vec::new();
+    let mut false_positives = 0u64;
+
+    for finding in findings {
+        let hit = expected
+            .defects
+            .iter()
+            .enumerate()
+            .position(|(i, defect)| !matched_flags[i] && defect_matches(finding, defect));
+        match hit {
+            Some(i) => {
+                matched_flags[i] = true;
+                matched_ids.push(expected.defects[i].id.clone());
+            }
+            None => false_positives += 1,
+        }
+    }
+
+    let missed_ids = expected
+        .defects
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !matched_flags[*i])
+        .map(|(_, defect)| defect.id.clone())
+        .collect();
+
+    SpanGrade {
+        matched_ids,
+        missed_ids,
+        false_positives,
+    }
+}
+
+/// Whether a candidate finding hits a defect: same file, same category, the
+/// finding's line falls inside the defect's `[line_start, line_end]` span, and
+/// the finding clears the defect's optional severity floor.
+fn defect_matches(finding: &KeyFinding, defect: &Defect) -> bool {
+    finding.file == defect.file
+        && finding.category == defect.category
+        && defect.line_start <= finding.line
+        && finding.line <= defect.line_end
+        && severity_matches(finding.severity.as_str(), defect.severity.as_deref())
+}
+
+/// Whether a candidate's severity clears an optional severity floor.
+///
+/// An absent floor (`expected: None`, the common case per [`Defect::severity`])
+/// always clears. A present floor requires both labels to rank
+/// (`blocking` > `serious` > `minor`, an unrecognized label ranks as neither)
+/// and the candidate to be at least as severe as the floor.
+fn severity_matches(candidate: &str, expected: Option<&str>) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    match (severity_rank(candidate), severity_rank(expected)) {
+        (Some(candidate), Some(expected)) => candidate <= expected,
+        _ => false,
+    }
+}
+
+/// Daedalus's severity vocabulary, ranked most to least severe. `None` for an
+/// unrecognized label — a floor or candidate outside this vocabulary can never
+/// satisfy [`severity_matches`], rather than silently defaulting to a rank.
+fn severity_rank(label: &str) -> Option<u8> {
+    match label {
+        "blocking" => Some(0),
+        "serious" => Some(1),
+        "minor" => Some(2),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,5 +454,223 @@ mod tests {
             "{json}"
         );
         assert_eq!(serde_json::from_str::<Defect>(&json).unwrap(), defect);
+    }
+
+    fn defect(id: &str, file: &str, span: (u32, u32), category: &str) -> Defect {
+        Defect {
+            id: id.to_string(),
+            file: file.to_string(),
+            line_start: span.0,
+            line_end: span.1,
+            category: category.to_string(),
+            severity: None,
+            note: String::new(),
+        }
+    }
+
+    fn defect_with_severity(
+        id: &str,
+        file: &str,
+        span: (u32, u32),
+        category: &str,
+        severity: &str,
+    ) -> Defect {
+        Defect {
+            severity: Some(severity.to_string()),
+            ..defect(id, file, span, category)
+        }
+    }
+
+    fn finding(file: &str, line: u32, category: &str) -> KeyFinding {
+        KeyFinding {
+            file: file.to_string(),
+            line,
+            category: category.to_string(),
+            severity: String::new(),
+            description: String::new(),
+            source_id: None,
+        }
+    }
+
+    fn finding_with_severity(file: &str, line: u32, category: &str, severity: &str) -> KeyFinding {
+        KeyFinding {
+            severity: severity.to_string(),
+            ..finding(file, line, category)
+        }
+    }
+
+    #[test]
+    fn span_grade_matches_a_line_anywhere_inside_the_defect_span() {
+        let expected = ExpectedKey {
+            defects: vec![defect("d1", "src/lib.rs", (10, 20), "correctness")],
+        };
+        for line in [10, 15, 20] {
+            let grade = score_against_expected_key(
+                &[finding("src/lib.rs", line, "correctness")],
+                &expected,
+            );
+            assert_eq!(
+                grade,
+                SpanGrade {
+                    matched_ids: vec!["d1".to_string()],
+                    missed_ids: Vec::new(),
+                    false_positives: 0,
+                },
+                "line {line} is inside [10, 20]"
+            );
+        }
+    }
+
+    #[test]
+    fn span_grade_misses_a_line_just_outside_the_defect_span() {
+        let expected = ExpectedKey {
+            defects: vec![defect("d1", "src/lib.rs", (10, 20), "correctness")],
+        };
+        for line in [9, 21] {
+            let grade = score_against_expected_key(
+                &[finding("src/lib.rs", line, "correctness")],
+                &expected,
+            );
+            assert_eq!(
+                grade,
+                SpanGrade {
+                    matched_ids: Vec::new(),
+                    missed_ids: vec!["d1".to_string()],
+                    false_positives: 1,
+                },
+                "line {line} is outside [10, 20]: unlike crate::key_match, this scorer has no ±tolerance"
+            );
+        }
+    }
+
+    #[test]
+    fn span_grade_requires_exact_category_agreement() {
+        let expected = ExpectedKey {
+            defects: vec![defect("d1", "src/lib.rs", (10, 20), "correctness")],
+        };
+        let grade = score_against_expected_key(&[finding("src/lib.rs", 12, "security")], &expected);
+        assert_eq!(
+            grade,
+            SpanGrade {
+                matched_ids: Vec::new(),
+                missed_ids: vec!["d1".to_string()],
+                false_positives: 1,
+            },
+            "in-span but wrong category is a miss plus a false positive, not a match"
+        );
+    }
+
+    #[test]
+    fn span_grade_severity_floor_accepts_at_least_as_severe() {
+        let expected = ExpectedKey {
+            defects: vec![defect_with_severity(
+                "d1",
+                "src/lib.rs",
+                (10, 20),
+                "correctness",
+                "serious",
+            )],
+        };
+        for candidate_severity in ["blocking", "serious"] {
+            let grade = score_against_expected_key(
+                &[finding_with_severity(
+                    "src/lib.rs",
+                    12,
+                    "correctness",
+                    candidate_severity,
+                )],
+                &expected,
+            );
+            assert_eq!(
+                grade.matched_ids,
+                vec!["d1".to_string()],
+                "{candidate_severity} clears a serious floor"
+            );
+        }
+    }
+
+    #[test]
+    fn span_grade_severity_floor_rejects_less_severe_or_unranked() {
+        let expected = ExpectedKey {
+            defects: vec![defect_with_severity(
+                "d1",
+                "src/lib.rs",
+                (10, 20),
+                "correctness",
+                "serious",
+            )],
+        };
+        for candidate_severity in ["minor", "unranked-label", ""] {
+            let grade = score_against_expected_key(
+                &[finding_with_severity(
+                    "src/lib.rs",
+                    12,
+                    "correctness",
+                    candidate_severity,
+                )],
+                &expected,
+            );
+            assert_eq!(
+                grade.false_positives, 1,
+                "{candidate_severity:?} does not clear a serious floor"
+            );
+        }
+    }
+
+    #[test]
+    fn span_grade_no_severity_floor_accepts_any_candidate_severity() {
+        let expected = ExpectedKey {
+            defects: vec![defect("d1", "src/lib.rs", (10, 20), "correctness")],
+        };
+        let grade = score_against_expected_key(
+            &[finding_with_severity(
+                "src/lib.rs",
+                12,
+                "correctness",
+                "minor",
+            )],
+            &expected,
+        );
+        assert_eq!(
+            grade.matched_ids,
+            vec!["d1".to_string()],
+            "an absent floor accepts any candidate severity, even the least severe"
+        );
+    }
+
+    #[test]
+    fn span_grade_greedy_matching_claims_the_first_unclaimed_defect() {
+        let expected = ExpectedKey {
+            defects: vec![
+                defect("d1", "src/lib.rs", (10, 20), "correctness"),
+                defect("d2", "src/lib.rs", (10, 20), "correctness"),
+            ],
+        };
+        let grade = score_against_expected_key(
+            &[
+                finding("src/lib.rs", 12, "correctness"),
+                finding("src/lib.rs", 15, "correctness"),
+            ],
+            &expected,
+        );
+        assert_eq!(grade.matched_ids, vec!["d1".to_string(), "d2".to_string()]);
+        assert_eq!(grade.false_positives, 0);
+    }
+
+    #[test]
+    fn span_grade_extra_candidate_beyond_available_defects_is_a_false_positive() {
+        let expected = ExpectedKey {
+            defects: vec![defect("d1", "src/lib.rs", (10, 20), "correctness")],
+        };
+        let grade = score_against_expected_key(
+            &[
+                finding("src/lib.rs", 12, "correctness"),
+                finding("src/lib.rs", 14, "correctness"),
+            ],
+            &expected,
+        );
+        assert_eq!(grade.matched_ids, vec!["d1".to_string()]);
+        assert_eq!(grade.missed_ids, Vec::<String>::new());
+        assert_eq!(grade.false_positives, 1);
     }
 }
