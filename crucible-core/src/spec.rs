@@ -158,6 +158,11 @@ pub enum RunnerKind {
     /// Run authored prompt tasks against a model config and grade the text
     /// response with a deterministic rubric.
     PromptBenchmark,
+    /// Grade authored candidate outputs against a rubric with a live model
+    /// judge (backlog 012). The `GraderKind::Agentic` tier made real: the spec
+    /// must declare an `Agentic` grader in [`EvalSpec::graders`] or the runner
+    /// refuses before making a call.
+    AgenticJudge,
 }
 
 /// One executable runner declaration inside an [`EvalSpec`].
@@ -244,6 +249,63 @@ pub enum PromptExpectation {
     Contains { value: String },
 }
 
+/// Model config for an agentic judge runner (backlog 012).
+///
+/// `judge_prompt` is the shared judge framing — the rubric protocol and the
+/// verdict format every task's judge call is instructed to follow. Per-task
+/// rubric text in [`AgenticJudgeTask::rubric`] is appended per call, not
+/// substituted for it: the shared framing is what makes the verdict format
+/// (and therefore [`crate::provenance::Provenance::rubric_hash`]) stable
+/// across tasks in the same benchmark.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgenticJudgeConfig {
+    /// Provider adapter to use for the live judge call.
+    pub provider: ModelProvider,
+    /// Provider model slug for the judge, e.g. `anthropic/claude-opus-4`.
+    pub model: String,
+    /// Shared judge instructions: framing, grading discipline, and the
+    /// required `VERDICT: PASS`/`VERDICT: FAIL` output protocol.
+    pub judge_prompt: String,
+    /// Environment variable that contains the provider credential.
+    #[serde(default = "default_openrouter_credential_env")]
+    pub credential_env: String,
+    /// Optional integer temperature (see [`PromptModelConfig::temperature`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<u32>,
+}
+
+/// One candidate output for the judge to score against a rubric.
+///
+/// A task with `expected_pass: None` is a real candidate: the judge's verdict
+/// *is* the score contribution (backlog 012's "judge-gaming guard" needs at
+/// least one task with known ground truth to test against, so a corpus of
+/// only unknown-truth tasks is real but ungated). A task with
+/// `expected_pass: Some(_)` is a calibration probe — most commonly the
+/// judge-gaming canary: an obviously-bad candidate with
+/// `expected_pass: Some(false)` and `refuse_on_mismatch: true`, wired so a
+/// judge that rubber-stamps it refuses the whole run rather than silently
+/// shipping an untrustworthy score.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgenticJudgeTask {
+    /// Stable task id in the benchmark.
+    pub task_id: String,
+    /// The candidate output the judge scores.
+    pub candidate: String,
+    /// Task-specific rubric text, appended to the config's shared judge
+    /// framing for this call.
+    pub rubric: String,
+    /// Known ground truth for this task, when it has one. Present only for
+    /// calibration probes/canaries; absent for real candidates being judged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_pass: Option<bool>,
+    /// When `true` and `expected_pass` is set, a verdict that disagrees with
+    /// `expected_pass` refuses the whole run (`anyhow::bail!`s out of the
+    /// runner) instead of only counting as a miss. This is the judge-gaming
+    /// guard: set it on a canary the judge must reject.
+    #[serde(default)]
+    pub refuse_on_mismatch: bool,
+}
+
 /// The source of examples and candidate outputs for a declared runner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
@@ -282,6 +344,14 @@ pub enum CorpusSpec {
         config: PromptModelConfig,
         /// Authored prompt tasks to execute and grade.
         tasks: Vec<PromptBenchmarkTask>,
+    },
+    /// Crucible-authored candidate outputs graded by a live agentic judge
+    /// (backlog 012).
+    AgenticJudge {
+        /// Judge model provider/config under test.
+        config: AgenticJudgeConfig,
+        /// Candidate outputs and calibration probes to judge.
+        tasks: Vec<AgenticJudgeTask>,
     },
 }
 
