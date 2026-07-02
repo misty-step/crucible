@@ -6,14 +6,15 @@
 //! `RunRecord`/`EvaluationCard` materialization can migrate forward without
 //! reparsing chat or relying on a loose artifact still existing.
 
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use crucible_core::{
-    EvalSpec, EvaluationCard, FixtureRef, Provenance, RunRecord, RunScore, EVALUATION_CARD_SCHEMA,
-    RUN_RECORD_SCHEMA,
+    EvalSpec, EvaluationCard, FixtureRef, McnemarOutcome, PairedComparison, Provenance, RunRecord,
+    RunScore, EVALUATION_CARD_SCHEMA, RUN_RECORD_SCHEMA,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
@@ -25,6 +26,10 @@ use crate::eval_run::{EvalReport, RunReport};
 /// Default local run ledger path. The whole `runs/` tree is gitignored because
 /// real eval runs may contain proprietary diffs and raw model output.
 pub const DEFAULT_DB_PATH: &str = "runs/local/crucible-runs.sqlite";
+
+/// Default significance threshold for the paired McNemar verdict in
+/// [`compare_configs`].
+pub const DEFAULT_ALPHA: f64 = 0.05;
 
 const RUN_STORE_SCHEMA: &str = "crucible.run_store.v1";
 static INVOCATION_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -40,11 +45,29 @@ pub struct PersistedReport {
     pub prompt_task_results: usize,
 }
 
+/// Filter for [`list_runs`]. `None` fields are unconstrained.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RunListFilter<'a> {
+    pub benchmark: Option<&'a str>,
+    pub config: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub since_unix_ms: Option<i64>,
+    pub until_unix_ms: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RunList {
     pub schema_version: &'static str,
     pub db: String,
     pub benchmark: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until_unix_ms: Option<i64>,
     pub runs: Vec<StoredRun>,
 }
 
@@ -122,6 +145,15 @@ pub struct ConfigComparison {
     pub left: StoredRun,
     pub right: StoredRun,
     pub delta_point: Option<f64>,
+    /// Prompt task ids present in both the left and right run's task rows.
+    /// `0` when either run has no indexed prompt tasks or the two runs share
+    /// no task id — the comparison then falls back to the unpaired
+    /// descriptive delta.
+    pub common_tasks: usize,
+    /// The paired McNemar outcome over `common_tasks`, present only when
+    /// `common_tasks > 0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paired: Option<McnemarOutcome>,
     pub comparison_kind: &'static str,
     pub note: &'static str,
 }
@@ -355,7 +387,7 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     out
 }
 
-pub fn list_runs(db_path: &Path, benchmark: Option<&str>) -> Result<RunList> {
+pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
     let conn = open_initialized(db_path)?;
     let mut stmt = conn
         .prepare(
@@ -365,11 +397,24 @@ pub fn list_runs(db_path: &Path, benchmark: Option<&str>) -> Result<RunList> {
                 successes, n, point, lower, upper, confidence, score_method
              FROM run_records
              WHERE (?1 IS NULL OR benchmark_id = ?1)
+               AND (?2 IS NULL OR config_id = ?2)
+               AND (?3 IS NULL OR model = ?3)
+               AND (?4 IS NULL OR created_at_unix_ms >= ?4)
+               AND (?5 IS NULL OR created_at_unix_ms <= ?5)
              ORDER BY created_at_unix_ms DESC, run_id DESC",
         )
         .context("preparing run list query")?;
     let rows = stmt
-        .query_map(params![benchmark], row_to_stored_run)
+        .query_map(
+            params![
+                filter.benchmark,
+                filter.config,
+                filter.model,
+                filter.since_unix_ms,
+                filter.until_unix_ms
+            ],
+            row_to_stored_run,
+        )
         .context("querying run list")?
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("reading run list rows")?;
@@ -377,7 +422,11 @@ pub fn list_runs(db_path: &Path, benchmark: Option<&str>) -> Result<RunList> {
     Ok(RunList {
         schema_version: RUN_STORE_SCHEMA,
         db: db_path.display().to_string(),
-        benchmark: benchmark.map(str::to_string),
+        benchmark: filter.benchmark.map(str::to_string),
+        config: filter.config.map(str::to_string),
+        model: filter.model.map(str::to_string),
+        since_unix_ms: filter.since_unix_ms,
+        until_unix_ms: filter.until_unix_ms,
         runs: rows,
     })
 }
@@ -426,11 +475,20 @@ pub fn show_run(db_path: &Path, run_id: &str) -> Result<RunDetail> {
     })
 }
 
+/// Compare the latest stored run per config/model under one benchmark.
+///
+/// When both runs carry indexed prompt task rows that share at least one task
+/// id, the comparison is a paired [`McnemarOutcome`] over those shared tasks
+/// (backlog 003's noise-floor discipline: the discordant pairs are the only
+/// ones carrying information). Otherwise it falls back to the unpaired
+/// descriptive delta between each run's own point estimate — the same
+/// behavior as before this comparison learned to pair.
 pub fn compare_configs(
     db_path: &Path,
     benchmark: &str,
     left: &str,
     right: &str,
+    alpha: f64,
 ) -> Result<ConfigComparison> {
     let conn = open_initialized(db_path)?;
     let left_run = latest_for_config(&conn, benchmark, left).with_context(|| {
@@ -444,6 +502,25 @@ pub fn compare_configs(
         _ => None,
     };
 
+    let left_tasks = query_prompt_tasks(&conn, &left_run.run_id)?;
+    let right_tasks = query_prompt_tasks(&conn, &right_run.run_id)?;
+    let (paired, common_tasks) = match paired_mcnemar(&left_tasks, &right_tasks, alpha) {
+        Some((outcome, n)) => (Some(outcome), n),
+        None => (None, 0),
+    };
+
+    let (comparison_kind, note): (&'static str, &'static str) = if paired.is_some() {
+        (
+            "paired_mcnemar",
+            "Paired McNemar comparison over prompt tasks common to both runs; see paired.verdict for the noise-floor decision.",
+        )
+    } else {
+        (
+            "latest_unpaired_descriptive_delta",
+            "This compares the latest matching run per config/model and does not assert statistical significance.",
+        )
+    };
+
     Ok(ConfigComparison {
         schema_version: RUN_STORE_SCHEMA,
         db: db_path.display().to_string(),
@@ -453,9 +530,57 @@ pub fn compare_configs(
         left: left_run,
         right: right_run,
         delta_point,
-        comparison_kind: "latest_unpaired_descriptive_delta",
-        note: "This compares the latest matching run per config/model and does not assert statistical significance.",
+        common_tasks,
+        paired,
+        comparison_kind,
+        note,
     })
+}
+
+/// McNemar outcome over the prompt task ids common to both sides, or `None`
+/// when either side has no indexed prompt tasks or the two share none.
+fn paired_mcnemar(
+    left: &[StoredPromptTask],
+    right: &[StoredPromptTask],
+    alpha: f64,
+) -> Option<(McnemarOutcome, usize)> {
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
+    let right_by_task: HashMap<&str, bool> = right
+        .iter()
+        .map(|task| (task.task_id.as_str(), task.passed))
+        .collect();
+
+    let mut b: u64 = 0; // left passed, right failed
+    let mut c: u64 = 0; // left failed, right passed
+    let mut common = 0usize;
+    for task in left {
+        let Some(&right_passed) = right_by_task.get(task.task_id.as_str()) else {
+            continue;
+        };
+        common += 1;
+        match (task.passed, right_passed) {
+            (true, false) => b += 1,
+            (false, true) => c += 1,
+            _ => {}
+        }
+    }
+    if common == 0 {
+        return None;
+    }
+
+    let cmp = PairedComparison::mcnemar(b, c);
+    Some((
+        McnemarOutcome {
+            b: cmp.b,
+            c: cmp.c,
+            statistic: cmp.statistic,
+            p_value: cmp.p_value,
+            verdict: cmp.verdict(alpha),
+        },
+        common,
+    ))
 }
 
 fn open_initialized(db_path: &Path) -> Result<Connection> {
@@ -1024,6 +1149,18 @@ fn format_rfc3339_ms(unix_ms: i64) -> Result<String> {
         .context("formatting run timestamp")
 }
 
+/// Parse a `--since`/`--until` bound: an RFC3339 timestamp
+/// (`2026-07-01T00:00:00Z`) or a bare date (`2026-07-01`, taken as UTC
+/// midnight), into Unix milliseconds.
+pub fn parse_timestamp_bound(raw: &str) -> Result<i64> {
+    let timestamp = OffsetDateTime::parse(raw, &Rfc3339).or_else(|_| {
+        OffsetDateTime::parse(&format!("{raw}T00:00:00Z"), &Rfc3339)
+            .with_context(|| format!("invalid timestamp {raw:?}; expected RFC3339 or YYYY-MM-DD"))
+    })?;
+    i64::try_from(timestamp.unix_timestamp_nanos() / 1_000_000)
+        .context("timestamp exceeds i64 milliseconds")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1141,7 +1278,14 @@ mod tests {
         assert_eq!(receipt.run_records, 1);
         assert_eq!(receipt.prompt_task_results, 1);
 
-        let list = list_runs(&db, Some("prompt-smoke-v0")).expect("list runs");
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
         assert_eq!(list.runs.len(), 1);
         assert_eq!(list.runs[0].benchmark_id, "prompt-smoke-v0");
         assert_eq!(list.runs[0].model.as_deref(), Some("test/model-a"));
@@ -1193,7 +1337,14 @@ mod tests {
         let report = prompt_report_with_temperature(&root, "test/model-a", true, None);
         persist_report(&db, &report).expect("persist report");
 
-        let list = list_runs(&db, Some("prompt-smoke-v0")).expect("list runs");
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
         let detail = show_run(&db, &list.runs[0].run_id).expect("show run");
         let card = detail
             .evaluation_card
@@ -1224,7 +1375,14 @@ mod tests {
         .expect("rewrite prompt evidence");
 
         persist_report(&db, &report).expect("missing fixture refs do not abort persistence");
-        let list = list_runs(&db, Some("prompt-smoke-v0")).expect("list runs");
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
         let detail = show_run(&db, &list.runs[0].run_id).expect("show run");
         let card = detail
             .evaluation_card
@@ -1237,21 +1395,65 @@ mod tests {
     }
 
     #[test]
-    fn compares_latest_runs_by_model_without_claiming_significance() {
+    fn compares_latest_runs_by_model_as_a_paired_mcnemar_delta() {
+        // Both fixtures use the fixed task id "exact", so the two runs share a
+        // task and the comparison pairs on it instead of falling back.
         let root = temp_dir("compare");
         let db = root.join("runs.sqlite");
         persist_report(&db, &prompt_report(&root, "test/model-a", false)).expect("persist left");
         persist_report(&db, &prompt_report(&root, "test/model-b", true)).expect("persist right");
 
-        let comparison = compare_configs(&db, "prompt-smoke-v0", "test/model-a", "test/model-b")
-            .expect("compare configs");
+        let comparison =
+            compare_configs(&db, "prompt-smoke-v0", "test/model-a", "test/model-b", 0.05)
+                .expect("compare configs");
         assert_eq!(comparison.left.model.as_deref(), Some("test/model-a"));
         assert_eq!(comparison.right.model.as_deref(), Some("test/model-b"));
         assert_eq!(comparison.delta_point, Some(1.0));
+        assert_eq!(comparison.comparison_kind, "paired_mcnemar");
+        assert_eq!(comparison.common_tasks, 1);
+        let paired = comparison.paired.expect("paired outcome present");
+        // left failed & right passed on the one shared task: b = 0, c = 1.
+        assert_eq!(paired.b, 0);
+        assert_eq!(paired.c, 1);
+        assert_eq!(
+            paired.verdict,
+            crucible_core::DeltaVerdict::InsideNoiseFloor,
+            "a single discordant pair cannot clear any reasonable noise floor"
+        );
+    }
+
+    #[test]
+    fn compares_latest_runs_without_shared_tasks_falls_back_to_unpaired_delta() {
+        let root = temp_dir("compare-unpaired");
+        let db = root.join("runs.sqlite");
+
+        let left = prompt_report(&root, "test/model-a", false);
+        let left_evidence_path = Path::new(&left.evals[0].artifacts[1]);
+        let mut left_evidence: Value = serde_json::from_str(
+            &std::fs::read_to_string(left_evidence_path).expect("read left evidence"),
+        )
+        .expect("left evidence is JSON");
+        left_evidence["tasks"][0]["task_id"] = serde_json::json!("left-only");
+        std::fs::write(
+            left_evidence_path,
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&left_evidence).unwrap()
+            ),
+        )
+        .expect("rewrite left evidence with a distinct task id");
+        persist_report(&db, &left).expect("persist left");
+        persist_report(&db, &prompt_report(&root, "test/model-b", true)).expect("persist right");
+
+        let comparison =
+            compare_configs(&db, "prompt-smoke-v0", "test/model-a", "test/model-b", 0.05)
+                .expect("compare configs");
         assert_eq!(
             comparison.comparison_kind,
             "latest_unpaired_descriptive_delta"
         );
+        assert_eq!(comparison.common_tasks, 0);
+        assert!(comparison.paired.is_none());
     }
 
     #[test]
