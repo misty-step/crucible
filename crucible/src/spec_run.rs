@@ -13,10 +13,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use crucible_core::{
-    findings_from_artifact, schema_valid, to_key_findings, AgenticJudgeConfig, AgenticJudgeTask,
-    AggregationMethod, CerberusReceiptTask, CorpusSpec, EvalSpec, ExpectedKey, GraderKind,
+    agreement, cohen_kappa, findings_from_artifact, schema_valid, to_key_findings,
+    AgenticJudgeConfig, AgenticJudgeTask, AggregationMethod, CalibrationRecord,
+    CerberusReceiptTask, ConfusionMatrix, CorpusSpec, EvalSpec, ExpectedKey, GraderKind,
     IntervalMethod, KeyFinding, ModelProvider, PromptBenchmarkTask, PromptExpectation,
-    PromptModelConfig, RunnerKind, RunnerSpec,
+    PromptModelConfig, RunnerKind, RunnerSpec, CALIBRATION_RECORD_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
 
@@ -549,6 +550,13 @@ fn run_prompt_benchmark_with_client(
 /// `judge_prompt`: exactly one `VERDICT: PASS` or `VERDICT: FAIL` line.
 const JUDGE_VERDICT_PROTOCOL: &str = "\n\nRespond with exactly one line in the form `VERDICT: PASS` or `VERDICT: FAIL`, followed by one sentence of reasoning on the next line. Do not rubber-stamp: a candidate that fails the rubric must get VERDICT: FAIL even if it is close.";
 
+/// Raw-agreement floor an agentic judge's calls against the tasks with a known
+/// `expected_pass` (the deterministic tier for the same tasks) must clear to
+/// unlock. Below this, the judge's score is diagnostic, not trusted — backlog
+/// 012's "refuses to unlock without a CalibrationRecord that clears the
+/// configured agreement threshold."
+const CALIBRATION_AGREEMENT_THRESHOLD: f64 = 0.8;
+
 fn run_agentic_judge(
     spec: &EvalSpec,
     runner: &RunnerSpec,
@@ -608,6 +616,12 @@ fn run_agentic_judge_with_client(
     let mut scored_successes = 0u64;
     let mut scored_n = 0u64;
     let mut canary_notes = Vec::new();
+    // Every task with a known `expected_pass` is a paired (judge, deterministic)
+    // calibration item, not only the judge-gaming canary — backlog 012's
+    // calibration record measures the judge against the deterministic tier on
+    // the same tasks.
+    let mut calibration_judge = Vec::new();
+    let mut calibration_human = Vec::new();
 
     for task in tasks {
         let user_prompt = format!(
@@ -638,12 +652,16 @@ fn run_agentic_judge_with_client(
                         task.task_id
                     );
                 }
+                calibration_judge.push(verdict);
+                calibration_human.push(expected);
                 canary_notes.push(format!(
                     "calibration task {:?} disagreed with the judge (expected {expected}, got {verdict}) but did not refuse the run.",
                     task.task_id
                 ));
             }
-            Some(_) => {
+            Some(expected) => {
+                calibration_judge.push(verdict);
+                calibration_human.push(expected);
                 canary_notes.push(format!(
                     "calibration task {:?} matched its expected verdict.",
                     task.task_id
@@ -681,6 +699,9 @@ fn run_agentic_judge_with_client(
         );
     }
 
+    let calibration =
+        build_calibration_record(&config.model, &calibration_judge, &calibration_human);
+
     let score = wilson_score("judge_pass_rate", scored_successes, scored_n);
     let evidence_path = out.join("agentic-judge-run.json");
     write_json(
@@ -701,6 +722,7 @@ fn run_agentic_judge_with_client(
                 failed: scored_n - scored_successes,
             },
             tasks: &task_results,
+            calibration: calibration.as_ref(),
         },
     )?;
 
@@ -713,6 +735,20 @@ fn run_agentic_judge_with_client(
         ),
     ];
     notes.extend(canary_notes);
+    match &calibration {
+        Some(record) if record.unlocked => notes.push(format!(
+            "Calibration UNLOCKED: {} paired task(s) vs. the deterministic tier, agreement {:.2}, κ {:.2} (threshold {:.2}) — this judge's score is trusted.",
+            record.n, record.agreement, record.cohen_kappa, record.unlock_threshold
+        )),
+        Some(record) => notes.push(format!(
+            "Calibration LOCKED: {} paired task(s) vs. the deterministic tier, agreement {:.2}, κ {:.2} (threshold {:.2}) — this judge's score is diagnostic, not trusted.",
+            record.n, record.agreement, record.cohen_kappa, record.unlock_threshold
+        )),
+        None => notes.push(
+            "No calibration tasks declared (no task carried a known expected_pass); this judge's score is unlicensed/diagnostic."
+                .to_string(),
+        ),
+    }
 
     Ok(EvalReport {
         id: spec_id(spec, spec_path),
@@ -747,6 +783,54 @@ fn parse_judge_verdict(output: &str) -> anyhow::Result<bool> {
             anyhow::bail!("judge response had both VERDICT: PASS and VERDICT: FAIL: {output:?}")
         }
     }
+}
+
+/// Build the judge's [`CalibrationRecord`] (backlog 012) from the paired
+/// (judge verdict, deterministic/expected verdict) vectors accumulated over
+/// every task in the run that carried a known `expected_pass` — every
+/// calibration probe, not only the judge-gaming canary. `None` when the run
+/// declared no calibration tasks at all: an unmeasured judge has no record to
+/// report, not a fabricated `unlocked: true`.
+///
+/// Reuses `crucible_core::measure`'s [`agreement`]/[`cohen_kappa`] kernels (the
+/// same ones the leaderboard's noise-floor discipline uses) rather than
+/// recomputing agreement here — this function only assembles the record from
+/// their outputs, per [`CalibrationRecord`]'s own "records, does not compute"
+/// contract. `unlocked` gates on raw [`agreement`] against
+/// [`CALIBRATION_AGREEMENT_THRESHOLD`] (backlog 012's oracle: "clears the
+/// configured agreement threshold"); κ is recorded for audit but does not
+/// itself gate. A degenerate κ (all-one-label calibration set) records as
+/// `0.0` — descriptive metadata on the record, never the gate input, so an
+/// undefined κ cannot silently unlock a judge.
+fn build_calibration_record(
+    judge_id: &str,
+    judge_verdicts: &[bool],
+    expected_verdicts: &[bool],
+) -> Option<CalibrationRecord> {
+    if judge_verdicts.is_empty() {
+        return None;
+    }
+    let observed_agreement = agreement(judge_verdicts, expected_verdicts).unwrap_or(0.0);
+    let kappa = cohen_kappa(judge_verdicts, expected_verdicts).unwrap_or(0.0);
+    let mut confusion = ConfusionMatrix::default();
+    for (&judge, &expected) in judge_verdicts.iter().zip(expected_verdicts.iter()) {
+        match (judge, expected) {
+            (true, true) => confusion.true_positive += 1,
+            (true, false) => confusion.false_positive += 1,
+            (false, true) => confusion.false_negative += 1,
+            (false, false) => confusion.true_negative += 1,
+        }
+    }
+    Some(CalibrationRecord {
+        schema_version: CALIBRATION_RECORD_SCHEMA.to_string(),
+        judge_id: judge_id.to_string(),
+        n: judge_verdicts.len() as u64,
+        agreement: observed_agreement,
+        cohen_kappa: kappa,
+        confusion,
+        unlock_threshold: CALIBRATION_AGREEMENT_THRESHOLD,
+        unlocked: observed_agreement >= CALIBRATION_AGREEMENT_THRESHOLD,
+    })
 }
 
 fn grade_key_recall_task(findings: &[KeyFinding], expected: &ExpectedKey) -> KeyRecallTaskScore {
@@ -1214,6 +1298,10 @@ struct AgenticJudgeEvidence<'a> {
     score: &'a Score,
     totals: PromptTotals,
     tasks: &'a [AgenticJudgeTaskResult],
+    /// The judge's calibration against the deterministic tier on this run's
+    /// calibration tasks (backlog 012). `None` when the run declared none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    calibration: Option<&'a CalibrationRecord>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1588,6 +1676,110 @@ mod tests {
         assert_eq!(evidence["tasks"][1]["task_id"], "canary");
         assert_eq!(evidence["tasks"][1]["passed"], false);
         assert_eq!(evidence["tasks"][1]["expected_pass"], false);
+
+        assert_eq!(
+            evidence["calibration"]["schema_version"],
+            "crucible.calibration_record.v1"
+        );
+        assert_eq!(evidence["calibration"]["judge_id"], "test/judge");
+        assert_eq!(evidence["calibration"]["n"], 1);
+        assert_eq!(evidence["calibration"]["agreement"], 1.0);
+        assert_eq!(evidence["calibration"]["unlocked"], true);
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("Calibration UNLOCKED")),
+            "notes record the calibration unlock state: {:?}",
+            report.notes
+        );
+    }
+
+    #[test]
+    fn agentic_judge_calibration_locks_below_the_agreement_threshold() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-miscalibrated-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-miscalibrated.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        // One real task plus three non-refusing calibration probes; the judge
+        // disagrees with two of three (agreement 1/3 ≈ 0.33 < 0.8 threshold).
+        let tasks = vec![
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "A correct answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+            },
+            AgenticJudgeTask {
+                task_id: "calib-agree".to_string(),
+                candidate: "Agrees with the judge.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: Some(true),
+                refuse_on_mismatch: false,
+            },
+            AgenticJudgeTask {
+                task_id: "calib-disagree-1".to_string(),
+                candidate: "Disagrees with the judge.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: Some(true),
+                refuse_on_mismatch: false,
+            },
+            AgenticJudgeTask {
+                task_id: "calib-disagree-2".to_string(),
+                candidate: "Also disagrees with the judge.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: Some(false),
+                refuse_on_mismatch: false,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec![
+            "VERDICT: PASS\nreal task passes",
+            "VERDICT: PASS\nagrees",
+            "VERDICT: FAIL\ndisagrees with expected true",
+            "VERDICT: PASS\ndisagrees with expected false",
+        ]);
+
+        let report = run_agentic_judge_with_client(
+            &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
+        )
+        .expect("agentic judge runs; non-refusing calibration mismatches do not abort");
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json"))
+            .expect("agentic judge evidence is written");
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["calibration"]["n"], 3);
+        let agreement = evidence["calibration"]["agreement"].as_f64().unwrap();
+        assert!(
+            (agreement - (1.0 / 3.0)).abs() < 1e-9,
+            "agreement is 1/3: {agreement}"
+        );
+        assert_eq!(
+            evidence["calibration"]["unlocked"], false,
+            "1/3 agreement does not clear the 0.8 threshold"
+        );
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("Calibration LOCKED")),
+            "notes record the diagnostic (locked) calibration state: {:?}",
+            report.notes
+        );
     }
 
     #[test]
