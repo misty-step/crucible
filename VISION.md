@@ -88,6 +88,11 @@ Crucible should support the full eval lifecycle:
   especially on a phone, for the evals that need human judgment;
 - collect human labels, preferences, ratings, comments, and adjudications;
 - compare runs without hiding uncertainty;
+- import eval and benchmark definitions authored elsewhere — public
+  benchmarks, other teams' rubrics, other harnesses' task formats — through
+  adapters, and run them locally against Crucible's own grader mix,
+  calibration, and run database rather than as one-off scripts outside the
+  trust layer;
 - export eval and benchmark packages, plus defensible run records, to consumers
   like Threshold, Harness Kit, Cerberus, or product repos;
 - generate reports that can be used internally, attached to PRs, or published
@@ -239,3 +244,8 @@ Next families after that:
   `pr-review-{verification,product,simplification}` names are not live arenas;
   Crucible has Rust core/CLI/MCP grade/adjudicate/export/run receipts, but no
   live model-call engine yet.
+- Eval-OS intake (2026-07-02): the "What Crucible Should Do" list named export
+  but never import, despite the operator's verbatim want to "IMPORT
+  benchmarks/evals others have defined and run them locally"
+  (`backlog.d/026-external-benchmark-import-adapters.md`) — added as a small
+  surgical gap-fill, not a reframing.
