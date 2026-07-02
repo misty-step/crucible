@@ -104,7 +104,7 @@ pub mod spec;
 
 pub use adapter::{findings_from_artifact, to_key_findings};
 pub use adjudication::{Disposition, Verdict};
-pub use artifact::{Anchor, AnchorKind, Finding, ReviewArtifact, Severity};
+pub use artifact::{Anchor, AnchorKind, Finding, ReviewArtifact, Severity, REVIEW_ARTIFACT_SCHEMA};
 pub use calibration::{CalibrationRecord, ConfusionMatrix, CALIBRATION_RECORD_SCHEMA};
 pub use dashboard::{
     Config, Dataset, DeltaEstimate, DeltaSign, Estimate, Eval, EvalTask, Leaderboard,

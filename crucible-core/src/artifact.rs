@@ -8,19 +8,39 @@
 
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::{Error, Result};
+
+/// Schema identifier a real Cerberus artifact carries. Crucible only reads
+/// this envelope (it never mints one), so — unlike the schema-stamped
+/// artifacts Crucible itself writes (`EvaluationCard`, `Label`, …) — there is
+/// no `#[serde(default = ...)]` fallback: a real artifact always sets this
+/// field, and an absent one is as much a mismatch as a wrong one.
+pub const REVIEW_ARTIFACT_SCHEMA: &str = "cerberus.review_artifact.v1";
 
 /// A Cerberus code-review artifact: the output of one review run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReviewArtifact {
-    /// Schema identifier, e.g. `cerberus.review_artifact.v1`.
+    /// Schema identifier. Validated on deserialize against
+    /// [`REVIEW_ARTIFACT_SCHEMA`] — an artifact from a future/renamed Cerberus
+    /// schema fails loudly here instead of Crucible silently reading it
+    /// through the current field mirror and dropping whatever changed.
+    #[serde(deserialize_with = "deserialize_review_artifact_schema")]
     pub schema_version: String,
     /// The findings the reviewer reported. Absent in some artifacts; defaults
     /// to empty.
     #[serde(default)]
     pub findings: Vec<Finding>,
+}
+
+fn deserialize_review_artifact_schema<'de, D>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    crate::serde_util::expect_schema(deserializer, REVIEW_ARTIFACT_SCHEMA)
 }
 
 impl ReviewArtifact {
@@ -176,15 +196,37 @@ mod tests {
     #[test]
     fn artifact_ignores_unknown_envelope_fields() {
         let json = r#"{
-            "schema_version": "v1",
+            "schema_version": "cerberus.review_artifact.v1",
             "artifact_id": "x",
             "verdict": "WARN",
             "summary": { "title": "t", "body": "b" },
             "findings": []
         }"#;
         let a = ReviewArtifact::from_json_str(json).unwrap();
-        assert_eq!(a.schema_version, "v1");
+        assert_eq!(a.schema_version, REVIEW_ARTIFACT_SCHEMA);
         assert!(a.findings.is_empty());
+    }
+
+    #[test]
+    fn artifact_rejects_an_unexpected_schema_version() {
+        let json = r#"{ "schema_version": "cerberus.review_artifact.v2", "findings": [] }"#;
+        let err = ReviewArtifact::from_json_str(json).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("cerberus.review_artifact.v2")
+                && message.contains("cerberus.review_artifact.v1"),
+            "error names both the unexpected and the expected schema_version: {message}"
+        );
+    }
+
+    #[test]
+    fn artifact_rejects_a_missing_schema_version() {
+        let json = r#"{ "findings": [] }"#;
+        assert!(
+            ReviewArtifact::from_json_str(json).is_err(),
+            "an absent schema_version is a mismatch, not a default to the current schema \
+             (unlike Crucible-minted artifacts, Crucible never writes this envelope)"
+        );
     }
 
     #[test]
