@@ -239,7 +239,8 @@ pub struct PromptBenchmarkTask {
     pub expectation: PromptExpectation,
 }
 
-/// Deterministic v0 rubric for prompt benchmarks.
+/// Deterministic rubric for prompt benchmarks (backlog 017: the closed-enum
+/// grader library, broadened past the original `Exact`/`Contains` pair).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PromptExpectation {
@@ -247,6 +248,14 @@ pub enum PromptExpectation {
     Exact { value: String },
     /// The model response must contain `value`.
     Contains { value: String },
+    /// The model response must contain `value`, case-insensitively.
+    CaseInsensitiveContains { value: String },
+    /// The model response must match the regular expression `pattern`
+    /// (unanchored — matches anywhere in the response, per `regex::is_match`).
+    /// A pattern that fails to compile is a spec/validation error, not a
+    /// grading-time panic; the runner checks this before it makes any model
+    /// call.
+    Regex { pattern: String },
 }
 
 /// Model config for an agentic judge runner (backlog 012).

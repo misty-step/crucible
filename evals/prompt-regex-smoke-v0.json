@@ -1,0 +1,53 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "prompt-regex-smoke-v0",
+  "task": "prompt-regex-smoke",
+  "inputs": "One authored prompt sent through a BYOK OpenRouter chat-completions model config, graded by regex and case-insensitive-contains rubrics (backlog 017).",
+  "outputs": "Model text graded by a regex pattern and a case-insensitive contains rubric.",
+  "graders": {
+    "graders": [
+      {
+        "id": "pattern_rubric",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "decision": "Prove the broadened deterministic grader library (Regex, CaseInsensitiveContains) is real: declared, validated, and routed by the same runner as Exact/Contains.",
+  "runner": {
+    "kind": "prompt_benchmark",
+    "corpus": {
+      "source": "prompt_benchmark",
+      "config": {
+        "provider": "open_router",
+        "model": "openrouter/auto",
+        "system_prompt": "You are executing a benchmark smoke test. Follow the user instruction directly and keep the answer short.",
+        "credential_env": "OPENROUTER_API_KEY",
+        "max_tokens": 24,
+        "temperature": 0
+      },
+      "tasks": [
+        {
+          "task_id": "phone-number-format",
+          "prompt": "Reply with a fake US phone number in the exact format 555-1234, nothing else.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^\\d{3}-\\d{4}$"
+          }
+        },
+        {
+          "task_id": "marker-any-case",
+          "prompt": "Reply with one short sentence that includes the word CRUCIBLE-SMOKE in any capitalization.",
+          "expectation": {
+            "kind": "case_insensitive_contains",
+            "value": "crucible-smoke"
+          }
+        }
+      ]
+    }
+  }
+}
