@@ -110,3 +110,66 @@ this benchmark yet); cost/latency reporting per task; human-adjudicated
 truth for at least one slice (today this run trusts the arena's existing
 frozen keys, not a fresh Crucible-owned adjudication pass); and the
 Cerberus/Threshold export bundle (child 5).
+
+**Reconciliation 2026-07-02 (overnight, backlog `024`):** the 0.0434 figure's
+full provenance is traced with confidence. It comes from
+`~/.factory-lanes/groom/cerberus.md` §9, which cites Threshold/Daedalus arena
+run `20260623T183514Z-search-cerberus-reviewer`
+(`report.md`'s "Reliability (pass rate at reward ≥ 1.00)" table): candidate
+`seed2-kimi-k2-7-code-trace-callers`, n=30 (6 `pr-review-v0` tasks × 5
+trials), pass≥1.00 = 0.5667, **pass^5 = 0.0434** — computed by Daedalus's own
+search/reliability scorer from each trial's self-reported `reward` field
+against a reward ≥ 1.00 floor.
+
+This is a different number on every axis from Crucible's 0.333:
+
+1. **Different candidate.** 0.0434 scores `seed2-kimi-k2-7-code-trace-callers`
+   — a search-discovered agent composition, one of several candidates a
+   Threshold optimizer run was evaluating. 0.333 scores `incumbent`
+   (`deepseek/deepseek-v4-pro`) — Cerberus's actual shipped production
+   reviewer config. These are not the same reviewer. Notably,
+   `seed2-kimi-k2-7-code-trace-callers` never appears as `incumbent` in any
+   Daedalus run inspected, and `incumbent` never gets its own pass^5 row in
+   any Daedalus `report.md` — Crucible's 0.333 is the *first* pass^5 ever
+   computed for the production config specifically.
+2. **Different source run.** 0.0434's trials are from
+   `20260623T183514Z-search-cerberus-reviewer`; 0.333's trials are from
+   `20260625T161856Z-search-cerberus-reviewer` (per this ticket's own Notes,
+   above) — a separate Threshold search run two days later. Both runs cover
+   the same 6 `pr-review-v0` task ids (`js-cart-total`, `js-clean-rename`,
+   `py-auth-sqli`, `py-file-cache`, `py-pagination`, `rs-retry-backoff`,
+   confirmed by reading both runs' `trials.jsonl`), and the arena's
+   `adjudications.md` (the file that drives version bumps) has been
+   unchanged since 2026-06-10 — well before both runs — so both used the
+   same frozen `0.3.0` keys. Arena/key version is **not** a scope
+   difference; candidate identity and source run are.
+3. **Different scorer.** 0.0434 is Daedalus's own reward-based pass rate
+   (`reward ≥ 1.00`, self-reported by the trial). 0.333 is Crucible's
+   independent re-graded key-recall match (`score_against_expected_key`)
+   against the current adjudicated keys — Crucible never reads the trial's
+   `reward` field for this benchmark. Even if the two numbers scored the
+   same candidate and run, they would not be measuring the same pass/fail
+   predicate.
+4. **Bonus finding, not previously visible:** the *same* candidate name,
+   `seed2-kimi-k2-7-code-trace-callers`, scores pass^5 = 0.0434 in the
+   06-23 run and pass^5 = 0.1088 in the 06-25 run — a >2x swing from
+   Daedalus's own scorer alone, before Crucible's independent regrading
+   enters at all. At n=30 (6 tasks × 5 trials), pass^5's sampling variance
+   is large regardless of scorer or candidate — consistent with Crucible's
+   own wide Wilson CI on 0.333, `[0.097, 0.700]`.
+
+**Conclusion:** the two numbers are not comparable and neither should gate
+anything as currently measured — not because either is wrong, but because
+they describe different reviewers, different runs, and different scoring
+methods. No number is picked as "correct" here; that stays an operator call.
+**Named next step:** to get a true apples-to-apples pass^5 for `incumbent`
+against Daedalus's own reward-based scoring — or a true apples-to-apples
+pass^5 for `seed2-kimi-k2-7-code-trace-callers` against Crucible's
+re-graded key-recall scoring — someone needs to author a Crucible spec
+pointing at the other run/candidate combination and run it; both are
+mechanically straightforward given the existing `cerberus-review-quality-v0`
+spec shape (backlog 017's grader library and this epic's runner already
+generalize past `incumbent`), but authoring and running that spec is real
+work, not a documentation-only task, and is left for whoever picks up
+"extend the spec/corpus to cover Threshold's other search runs and
+candidates" above.
