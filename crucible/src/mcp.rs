@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use crate::eval_run::{self, RunEval};
 use crate::run_store;
 use crate::spec_run;
+use crate::validate;
 
 const PROTOCOL_VERSION: &str = "2025-11-25";
 
@@ -85,6 +86,20 @@ fn dispatch(method: &str, message: &Value) -> Result<Value> {
 
 fn tool_defs() -> Value {
     json!([
+        {
+            "name": "crucible_validate",
+            "description": "Check whether a declared Crucible EvalSpec is an executable contract: every preflight rule crucible_run enforces (aggregation, uncertainty method/confidence, required grader kind), without needing a runnable corpus. Returns valid/runnable booleans plus named errors and warnings — call this before crucible_run to check a spec is well-formed.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["spec"],
+                "properties": {
+                    "spec": {
+                        "type": "string",
+                        "description": "Path to a declared Crucible EvalSpec JSON."
+                    }
+                }
+            }
+        },
         {
             "name": "crucible_run",
             "description": "Run a declared Crucible EvalSpec or one/all built-in eval receipts. Returns the scored crucible.run_report.v1 object with Wilson intervals and writes the same run-report.json evidence packet to disk.",
@@ -213,12 +228,28 @@ fn call_tool(params: &Value) -> Result<Value> {
         .unwrap_or_else(|| json!({}));
 
     match name {
+        "crucible_validate" => crucible_validate(arguments),
         "crucible_run" => crucible_run(arguments),
         "crucible_runs_list" => crucible_runs_list(arguments),
         "crucible_runs_show" => crucible_runs_show(arguments),
         "crucible_runs_compare" => crucible_runs_compare(arguments),
         other => Err(anyhow!("unknown tool: {other}")),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct CrucibleValidateArgs {
+    spec: PathBuf,
+}
+
+fn crucible_validate(arguments: Value) -> Result<Value> {
+    let args: CrucibleValidateArgs =
+        serde_json::from_value(arguments).context("parse crucible_validate arguments")?;
+    let report = validate::validate(&args.spec)?;
+    Ok(json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&report)? }],
+        "structuredContent": report
+    }))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -385,6 +416,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "crucible_validate",
                 "crucible_run",
                 "crucible_runs_list",
                 "crucible_runs_show",
