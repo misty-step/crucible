@@ -45,7 +45,8 @@ agents can query trusted run history instead of scraping loose artifacts.
    `crucible-core` stats kernel) when both runs carry indexed task rows, and
    falls back to the unpaired descriptive delta otherwise. Export remains.
 4. Dashboard read path for Crucible-owned runs.
-5. Backup/restore note and migration tests.
+5. ✅ Backup/restore note and migration tests — see
+   `backlog.d/020-run-ledger-reopen-and-backup-doc.md`.
 
 ## Notes
 

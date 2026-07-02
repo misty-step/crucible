@@ -1465,6 +1465,54 @@ mod tests {
     }
 
     #[test]
+    fn persist_report_reopens_an_existing_populated_db_without_data_loss() {
+        // persist_report opens its own Connection per call (open_initialized),
+        // so calling it twice against the same path is exactly the "reopen an
+        // existing populated ledger" scenario a second `crucible run`
+        // invocation hits in practice — not a simulated one.
+        let root = temp_dir("reopen");
+        let db = root.join("runs.sqlite");
+
+        let first = prompt_report(&root, "test/model-a", true);
+        persist_report(&db, &first).expect("persist first report into a fresh db");
+
+        let second = prompt_report(&root, "test/model-b", false);
+        persist_report(&db, &second)
+            .expect("persist second report into the reopened, already-populated db");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs after reopen");
+        assert_eq!(
+            list.runs.len(),
+            2,
+            "both runs survive the reopen — init_schema's CREATE TABLE IF NOT \
+             EXISTS does not clobber the first run's rows: {:?}",
+            list.runs
+        );
+        let models: std::collections::HashSet<&str> = list
+            .runs
+            .iter()
+            .filter_map(|run| run.model.as_deref())
+            .collect();
+        assert!(models.contains("test/model-a"), "{models:?}");
+        assert!(models.contains("test/model-b"), "{models:?}");
+
+        // Both rows are independently readable, not just listed — a reopen
+        // that silently corrupted one run's detail rows while leaving the
+        // summary row intact would slip past the count-only assertion above.
+        for run in &list.runs {
+            let detail = show_run(&db, &run.run_id).expect("show run after reopen");
+            assert_eq!(detail.prompt_tasks.len(), 1);
+        }
+    }
+
+    #[test]
     fn omitted_prompt_temperature_stays_absent_in_the_card() {
         let root = temp_dir("no-temperature");
         let db = root.join("runs.sqlite");

@@ -135,6 +135,20 @@ config/model, Wilson intervals shown, no significance claim.
 (`crucible.evaluation_card.v1`). Use this to inspect the persisted
 reproducibility card for a run without scraping `prompt-run.json`.
 
+**Backup/restore:** the ledger is one file, `runs/local/crucible-runs.sqlite`
+by default (`--db <PATH>` for any other location) — fully gitignored, so
+backing it up is not a repo concern. Copy the file while no `crucible run`/
+`crucible adjudication-panel --serve` process has it open (SQLite does not
+guarantee a consistent snapshot mid-write; a plain `cp` while a writer holds
+the connection can copy a torn page). To restore, stop any writer and replace
+the file with the backup copy — `open_initialized`'s schema init
+(`CREATE TABLE IF NOT EXISTS`, see `run_store.rs`) is idempotent, so the next
+`crucible run` reopens a restored file exactly like any other populated
+ledger, no migration step. This is deliberately a documentation note, not new
+backup infrastructure: real automated backup (e.g. Canary's Litestream
+pattern) is an operator-scoped infra decision for if/when this ledger holds
+data worth losing sleep over, not something to stand up unilaterally.
+
 Run a Cerberus producer handoff through the same declared runner:
 
 ```sh
