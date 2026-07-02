@@ -1,9 +1,12 @@
-//! Static, phone-first renderer for a [`JudgmentQueue`].
+//! Phone-first renderer for a [`JudgmentQueue`], in two modes.
 //!
-//! The panel is deliberately just a projection of the existing queue artifact:
-//! no store, no server, no hidden write path. It gives backlog 005 a concrete
-//! human surface while preserving the shipped `crucible.judgment_queue.v1` /
-//! `crucible.label.v1` contract as the narrow waist.
+//! [`render`]/[`write_panel`] are the original static projection: no store, no
+//! server, no hidden write path. [`render_live`] is the same markup wired for
+//! [`crate::adjudication_server`]'s minimal local writeback loop (backlog 005)
+//! — each verdict button posts to `/label` instead of doing nothing. Both
+//! preserve the shipped `crucible.judgment_queue.v1` / `crucible.label.v1`
+//! contract as the narrow waist; `render_live` adds no new data model, only a
+//! `fetch()` call.
 
 use std::path::Path;
 
@@ -45,8 +48,21 @@ pub struct PanelReceipt {
     pub queue_path: std::path::PathBuf,
 }
 
-/// Render the panel HTML.
+/// Render the static (non-interactive) panel HTML: verdict buttons present,
+/// wired to nothing. What [`write_panel`] has always produced.
 pub fn render(queue: &JudgmentQueue) -> String {
+    render_shell(queue, false)
+}
+
+/// Render the panel HTML wired for [`crate::adjudication_server`]'s live
+/// writeback loop: each verdict button posts a decision to `POST /label` and
+/// the page reflects the response without a reload. Identical markup and data
+/// model to [`render`] otherwise — the only new surface is the `fetch()` call.
+pub fn render_live(queue: &JudgmentQueue) -> String {
+    render_shell(queue, true)
+}
+
+fn render_shell(queue: &JudgmentQueue, live: bool) -> String {
     let labeled = queue.labels.len();
     let total = queue.items.len();
     let remaining = total.saturating_sub(labeled);
@@ -98,9 +114,60 @@ pub fn render(queue: &JudgmentQueue) -> String {
         }
     }
 
-    html.push_str("</main>\n</body>\n</html>\n");
+    html.push_str("</main>\n");
+    if live {
+        html.push_str(LIVE_SCRIPT);
+    }
+    html.push_str("</body>\n</html>\n");
     html
 }
+
+/// Wires every `.item .actions button[data-verdict]` to `POST /label`
+/// ([`crate::adjudication_server`]) on click: computes `latency_ms` from page
+/// load to click, disables the item's buttons during the request, and on
+/// success replaces the item's actions with the returned label so a re-click
+/// isn't possible without a reload. `saw_grader_before_commit` is always
+/// `true` here — the panel shows the deterministic grader's context (category,
+/// recoverable-against rows) inline before every verdict, so that is the
+/// honest value for this surface, not a default to override later.
+const LIVE_SCRIPT: &str = r#"<script>
+(function () {
+  var renderedAt = Date.now();
+  document.querySelectorAll('.item .actions button[data-verdict]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var item = button.closest('.item');
+      var findingId = item.getAttribute('data-finding-id');
+      var actions = item.querySelector('.actions');
+      actions.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+      fetch('/label', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          finding_id: findingId,
+          verdict: button.getAttribute('data-verdict'),
+          in_scope: true,
+          latency_ms: Date.now() - renderedAt
+        })
+      }).then(function (res) {
+        if (!res.ok) { return res.text().then(function (text) { throw new Error(text); }); }
+        return res.json();
+      }).then(function (data) {
+        var note = document.createElement('div');
+        note.className = 'labels';
+        note.textContent = 'Label: ' + data.label.verdict + ' · saved (' + data.labeled + '/' + data.total + ')';
+        actions.replaceWith(note);
+      }).catch(function (err) {
+        actions.querySelectorAll('button').forEach(function (b) { b.disabled = false; });
+        var note = document.createElement('div');
+        note.className = 'labels';
+        note.textContent = 'Save failed: ' + err.message;
+        actions.after(note);
+      });
+    });
+  });
+})();
+</script>
+"#;
 
 fn stat(label: &str, n: usize) -> String {
     format!(
@@ -117,7 +184,10 @@ fn render_item(item: &JudgmentItem, labels: &[Label]) -> String {
         "plain"
     };
     let mut html = String::new();
-    html.push_str(&format!("<section class=\"item {kind}\">\n"));
+    html.push_str(&format!(
+        "<section class=\"item {kind}\" data-finding-id=\"{}\">\n",
+        escape_html(&item.finding_id)
+    ));
     html.push_str("<div class=\"meta\">");
     html.push_str(&pill(&item.finding_id));
     html.push_str(&pill(if item.is_recoverable() {
@@ -147,10 +217,10 @@ fn render_item(item: &JudgmentItem, labels: &[Label]) -> String {
         html.push_str("</div>\n");
     }
     html.push_str("<div class=\"actions\" aria-label=\"Verdicts\">");
-    html.push_str("<button class=\"keep\" type=\"button\">Keep</button>");
-    html.push_str("<button class=\"nit\" type=\"button\">Nit</button>");
-    html.push_str("<button class=\"wrong\" type=\"button\">Wrong</button>");
-    html.push_str("<button class=\"noise\" type=\"button\">Noise</button>");
+    html.push_str("<button class=\"keep\" type=\"button\" data-verdict=\"keep\">Keep</button>");
+    html.push_str("<button class=\"nit\" type=\"button\" data-verdict=\"nit\">Nit</button>");
+    html.push_str("<button class=\"wrong\" type=\"button\" data-verdict=\"wrong\">Wrong</button>");
+    html.push_str("<button class=\"noise\" type=\"button\" data-verdict=\"noise\">Noise</button>");
     html.push_str("</div>\n");
 
     let item_labels: Vec<&Label> = labels
