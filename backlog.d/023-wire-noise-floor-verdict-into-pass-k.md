@@ -1,6 +1,6 @@
 # Wire the noise-floor verdict into pass^k reporting
 
-Priority: P1 · Status: ready · Estimate: M
+Priority: P1 · Status: blocked (needs design decision) · Estimate: M
 
 ## Goal
 
@@ -50,3 +50,32 @@ benchmark comparisons tonight.
 **Why:** epic-named remaining work with the hard statistical/design part
 already solved and proven elsewhere in the same codebase — matches
 OVERNIGHT.md's "calibration/adjudication polish" bucket.
+
+**Skipped 2026-07-02 (overnight) — the ticket's own premise does not hold on
+live-tree verification.** The claim "deliberately scoped as *wiring*, not new
+statistics — the exact same pattern PR #62 already applied to prompt-benchmark
+comparisons" is false for pass^k specifically: `run_store.rs`'s paired-McNemar
+path in `compare_configs` pairs on `StoredPromptTask` rows fetched from the
+`prompt_task_results` SQL table via `query_prompt_tasks`. Those rows are
+populated only when a run's evidence carries schema
+`crucible.prompt_run_evidence.v1` or `crucible.agentic_judge_evidence.v1` (see
+`extract_metadata`'s dispatch, `run_store.rs`). `key_recall`'s evidence —
+`crucible.spec_run_evidence.v1`, the schema `cerberus-review-quality-v0` and
+every pass^k-bearing run uses — routes to `merge_spec_metadata` instead, which
+does **not** populate `metadata.prompt_tasks` at all (confirmed by reading the
+function: it sets only `runner_kind`/`spec_path`/`config_id`). So today, zero
+`key_recall` runs have ANY per-task rows in the SQL ledger to pair on —
+`compare_configs`'s existing logic has nothing to read for a pass^k
+comparison, full stop.
+
+Making this real requires first deciding how `key_recall`'s per-task
+pass/fail rows (the ones `compute_pass_k` already computes in-process from
+`TaskResult`) get persisted into the run store at all: reuse
+`prompt_task_results`'s shape under a generalized name, add a parallel table,
+or store them differently given `key_recall` tasks aren't 1:1 with "prompt
+tasks" the way `prompt_benchmark`/`agentic_judge` tasks are. That's a real
+schema/persistence-pipeline decision, not "wiring" an already-proven pattern —
+exactly the kind of design call this overnight lane defers rather than
+deciding unilaterally. Falling back to a smaller, unambiguous ticket instead.
+Un-skip this once someone decides where `key_recall` per-task rows live in
+the ledger.
