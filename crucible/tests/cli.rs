@@ -1128,6 +1128,76 @@ fn runs_list_filters_by_config_model_and_date() {
     assert!(compare["paired"].is_null());
 }
 
+/// A malformed `--since`/`--until` bound is a clean load error (exit 1, a
+/// readable stderr message), not a panic/backtrace — `run_store::
+/// parse_timestamp_bound` refuses garbage input before any query runs.
+#[test]
+fn runs_list_rejects_a_malformed_since_bound_cleanly() {
+    let root = temp_root("run-db-bad-since");
+    let db = root.join("runs.sqlite");
+    let out_dir = root.join("out");
+    let spec = fixture("specs/key-recall-fixture.json");
+
+    let run = crucible()
+        .arg("run")
+        .arg(&spec)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    assert!(
+        run.status.success(),
+        "seeding the ledger must succeed; stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let bad_since = crucible()
+        .arg("runs")
+        .arg("list")
+        .arg("--db")
+        .arg(&db)
+        .arg("--since")
+        .arg("not-a-date")
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    assert_eq!(
+        bad_since.status.code(),
+        Some(1),
+        "a malformed --since is a load error, not a panic: stderr={}",
+        String::from_utf8_lossy(&bad_since.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&bad_since.stderr);
+    assert!(
+        stderr.contains("not-a-date"),
+        "error names the offending value: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked") && !stderr.contains("RUST_BACKTRACE"),
+        "no panic/backtrace, a clean error: {stderr}"
+    );
+
+    let bad_until = crucible()
+        .arg("runs")
+        .arg("list")
+        .arg("--db")
+        .arg(&db)
+        .arg("--until")
+        .arg("")
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    assert_eq!(
+        bad_until.status.code(),
+        Some(1),
+        "an empty --until is likewise a clean load error: stderr={}",
+        String::from_utf8_lossy(&bad_until.stderr)
+    );
+}
+
 #[test]
 fn run_prompt_benchmark_requires_openrouter_key_without_fallback() {
     let out_dir = temp_root("prompt-no-key");

@@ -1604,4 +1604,42 @@ mod tests {
         validate_db_write_path(Path::new("runs/local/crucible-runs.sqlite"))
             .expect("repo-local DB under runs is allowed");
     }
+
+    #[test]
+    fn parse_timestamp_bound_accepts_rfc3339_and_bare_date() {
+        let rfc3339 = parse_timestamp_bound("2026-07-01T00:00:00Z").expect("RFC3339 parses");
+        let bare_date = parse_timestamp_bound("2026-07-01").expect("bare date parses");
+        assert_eq!(
+            rfc3339, bare_date,
+            "a bare date is UTC midnight of the same instant as the equivalent RFC3339 timestamp"
+        );
+
+        let midday =
+            parse_timestamp_bound("2026-07-01T12:30:00Z").expect("RFC3339 with a time parses");
+        assert!(
+            midday > rfc3339,
+            "a later time of day on the same date parses to a later Unix ms value"
+        );
+    }
+
+    #[test]
+    fn parse_timestamp_bound_rejects_an_empty_string() {
+        let err = parse_timestamp_bound("").expect_err("an empty string is not a timestamp");
+        let message = err.to_string();
+        assert!(
+            message.contains("invalid timestamp") && message.contains("\"\""),
+            "error names the empty value and the field's expected shape: {message}"
+        );
+    }
+
+    #[test]
+    fn parse_timestamp_bound_rejects_garbage() {
+        let err =
+            parse_timestamp_bound("not-a-date").expect_err("garbage input is not a timestamp");
+        let message = err.to_string();
+        assert!(
+            message.contains("not-a-date") && message.contains("RFC3339"),
+            "error names the offending value and the accepted formats: {message}"
+        );
+    }
 }
