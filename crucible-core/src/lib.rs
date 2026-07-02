@@ -125,7 +125,7 @@ pub use judgment::{
     apply_label, build_queue, GradeSummary, JudgmentItem, JudgmentQueue, LabelConditions,
     JUDGMENT_QUEUE_SCHEMA,
 };
-pub use key::{AnswerKey, Defect, ExpectedKey, KeyFinding};
+pub use key::{score_against_expected_key, AnswerKey, Defect, ExpectedKey, KeyFinding, SpanGrade};
 pub use label::{Label, LABEL_SCHEMA};
 pub use measure::{
     agreement, bootstrap_envelope, bootstrap_interval, cohen_kappa, power_warning, proportion,
