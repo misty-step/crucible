@@ -1,0 +1,23 @@
+{
+  "schema_version": "cerberus.review_artifact.v1",
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "major",
+      "category": "correctness",
+      "title": "retry loop stops one attempt early",
+      "description": "The retry loop's bound check uses `attempt < max_attempts - 1` instead of `attempt < max_attempts`, so the final configured retry never runs.",
+      "evidence": "diff",
+      "confidence": 0.85,
+      "anchors": [
+        {
+          "kind": "inline",
+          "path": "src/config.rs",
+          "line": 42,
+          "start_line": 40,
+          "end_line": 44
+        }
+      ]
+    }
+  ]
+}

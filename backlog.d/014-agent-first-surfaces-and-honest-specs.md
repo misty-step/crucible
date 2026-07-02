@@ -42,8 +42,9 @@ execution or rejected by validation.
    baselines still genuinely unenforced (reported as a warning, not wired).
 4. MCP tools for validate ✅ (list/show/compare already existed pre-epic); no
    create/update — this repo's specs are files, not a store (see note).
-5. Fixture-backed authoring smoke: a cold agent creates a tiny benchmark that
-   validates and runs hermetically.
+5. ✅ Fixture-backed authoring smoke: a cold agent creates a tiny benchmark
+   that validates and runs hermetically — see
+   `backlog.d/022-cold-agent-authoring-smoke-test.md`.
 
 ## Notes
 
@@ -117,7 +118,5 @@ without a bespoke tool) and "update" is editing one. Inventing CRUD tools over
 a file format would be exactly the "broad platform ahead of `010`" this
 epic's own notes warn against.
 
-Remaining: child 5 (a genuinely fresh/cold-agent authoring smoke test —
-tonight's specs were all authored by this same lane across prior sessions, not
-demonstrated cold); the baseline-comparison wiring that would let `baselines`
+Remaining: the baseline-comparison wiring that would let `baselines`
 become a hard error instead of a warning.

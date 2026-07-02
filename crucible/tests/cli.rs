@@ -1425,6 +1425,70 @@ fn run_declared_spec_grades_cerberus_receipt_bundle_artifacts() {
     assert_eq!(evidence["tasks"][0]["expected_defects"], 2);
 }
 
+/// Backlog 014 child 5: a cold-agent-authored spec (fresh content, not a copy
+/// of `cerberus-receipt-fixture.json`'s exact shape — see
+/// `tests/fixtures/specs/cold-agent-smoke-v0.json` and its three referenced
+/// fixture files) validates and runs hermetically end to end: no
+/// `OPENROUTER_API_KEY`, no sibling checkout, no network. `key_recall` over a
+/// `cerberus_receipt_bundles` corpus is the genuinely hermetic runner family
+/// (unlike `prompt_benchmark`, which always makes a live OpenRouter call) —
+/// SKILL.md documents the corpus fields but not the internal shape its
+/// referenced `artifact`/`receipt_bundle`/`expected` files must carry (e.g.
+/// `receipt_bundle.validation.status` must be `"passed"`, `artifact_uri` must
+/// match the declared `task.artifact` string); that gap is exactly the signal
+/// this child was meant to surface.
+#[test]
+fn cold_agent_authored_spec_validates_and_runs_hermetically() {
+    let spec = fixture("specs/cold-agent-smoke-v0.json");
+
+    let validate = crucible()
+        .arg("validate")
+        .arg(&spec)
+        .arg("--json")
+        .env_remove("OPENROUTER_API_KEY")
+        .output()
+        .expect("crucible binary runs");
+    assert_eq!(validate.status.code(), Some(0));
+    let report: serde_json::Value =
+        serde_json::from_slice(&validate.stdout).expect("validate --json emits JSON");
+    assert_eq!(
+        report["valid"], true,
+        "cold-agent-authored spec must be valid: {report}"
+    );
+    assert_eq!(report["runnable"], true);
+    assert_eq!(report["errors"].as_array().unwrap().len(), 0);
+
+    let out_dir = temp_root("cold-agent-smoke");
+    let run = crucible()
+        .arg("run")
+        .arg(&spec)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--json")
+        .env_remove("OPENROUTER_API_KEY")
+        .output()
+        .expect("crucible binary runs");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "cold-agent-authored spec must run hermetically with no OPENROUTER_API_KEY set; stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&run.stdout).expect("run --json emits JSON");
+    let eval = &report["evals"][0];
+    assert_eq!(eval["id"], "cold-agent-smoke-v0");
+    assert_eq!(eval["score"]["metric"], "pr_review_key_recall");
+    assert_eq!(
+        eval["score"]["successes"], 1,
+        "the one seeded matching defect"
+    );
+    assert_eq!(
+        eval["score"]["n"], 2,
+        "one matched, one deliberately missed"
+    );
+}
+
 /// The standalone panel command renders an existing judgment queue artifact into
 /// a phone-first static HTML panel plus the copied queue model.
 #[test]

@@ -1,0 +1,20 @@
+{
+  "defects": [
+    {
+      "id": "retry-off-by-one",
+      "file": "src/config.rs",
+      "line_start": 40,
+      "line_end": 44,
+      "category": "correctness",
+      "note": "The seeded scorer-key defect the review's lone finding should match."
+    },
+    {
+      "id": "unfound-elsewhere",
+      "file": "src/other.rs",
+      "line_start": 5,
+      "line_end": 8,
+      "category": "resource-leak",
+      "note": "A defect at a location the review never raised — a miss, so the fixture proves recall < 100%."
+    }
+  ]
+}
