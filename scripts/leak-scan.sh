@@ -107,14 +107,25 @@ gitleaks_pass() {
     [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/    /'
     rc=1
   fi
-  if ((${#tracked_files[@]})); then
-    out="$(gitleaks dir --no-banner --redact --exit-code 1 --log-level error "${tracked_files[@]}" 2>&1)" || drc=$?
+  # `gitleaks dir` takes exactly one positional [path] (its own usage says so,
+  # and the `file`/`directory` aliases confirm it); handing it the whole
+  # tracked-file list as separate argv words does not error loudly — past some
+  # combined-length threshold it silently joins them into one bogus path and
+  # every subsequent gate run passes trivially (a false "clean") until, at
+  # ~95 tracked files here, the joined string tripped the OS's own
+  # ENAMETOOLONG and the gate started failing on target/ noise instead. So one
+  # file at a time, not one call for every file.
+  local f findings=0
+  for f in "${tracked_files[@]}"; do
+    out="$(gitleaks dir --no-banner --redact --exit-code 1 --log-level error "$f" 2>&1)" || drc=$?
     if ((drc != 0)); then
+      findings=1
       echo "  gitleaks findings — working tree (redacted):"
       [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/    /'
-      rc=1
+      drc=0
     fi
-  fi
+  done
+  ((findings)) && rc=1
   return "$rc"
 }
 
