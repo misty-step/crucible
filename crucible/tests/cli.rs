@@ -9,10 +9,12 @@
 //! expects that finding plus one the review never raised, so a grade over the
 //! pair is a non-trivial 1 matched / 0 disputed / 1 missed.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{Shutdown, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use serde_json::json;
 
@@ -53,6 +55,43 @@ fn temp_root(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp root");
     dir
+}
+
+fn http_get(port: u16, path: &str) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to crucible serve");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set read timeout");
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write HTTP request");
+    stream
+        .shutdown(Shutdown::Write)
+        .expect("finish HTTP request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read HTTP response");
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK"),
+        "expected 200 for {path}, got {response}"
+    );
+    response
+        .split("\r\n\r\n")
+        .nth(1)
+        .expect("HTTP response has a body")
+        .to_string()
+}
+
+fn http_get_json(port: u16, path: &str) -> serde_json::Value {
+    serde_json::from_str(&http_get(port, path)).expect("HTTP response body is JSON")
+}
+
+fn stop_child(mut child: Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// The headline test: `grade --json` over the real artifact emits a stable,
@@ -1196,6 +1235,104 @@ fn runs_list_rejects_a_malformed_since_bound_cleanly() {
         "an empty --until is likewise a clean load error: stderr={}",
         String::from_utf8_lossy(&bad_until.stderr)
     );
+}
+
+/// `crucible serve` is the local-first application face over the same run
+/// ledger/spec validation contracts the CLI and MCP already expose. The UI
+/// shell is static, but every table/detail view is backed by these JSON routes.
+#[test]
+fn serve_exposes_specs_runs_trends_and_run_detail_over_http() {
+    let root = temp_root("serve-ui");
+    let db = root.join("runs.sqlite");
+    let out_dir = root.join("out");
+    let spec = fixture("specs/key-recall-fixture.json");
+
+    let run = crucible()
+        .arg("run")
+        .arg(&spec)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    assert!(
+        run.status.success(),
+        "seed run must persist; stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let mut child = crucible()
+        .arg("serve")
+        .arg("--db")
+        .arg(&db)
+        .arg("--specs")
+        .arg(repo_fixture("evals"))
+        .arg("--port")
+        .arg("0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn crucible serve");
+    let stdout = child.stdout.take().expect("serve stdout is piped");
+    let mut stdout = BufReader::new(stdout);
+    let mut line = String::new();
+    stdout
+        .read_line(&mut line)
+        .expect("read serve startup line");
+    let port: u16 = line
+        .split("http://127.0.0.1:")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|port| port.parse().ok())
+        .unwrap_or_else(|| panic!("startup line names bound localhost port: {line:?}"));
+
+    let shell = http_get(port, "/");
+    assert!(shell.contains("Crucible"));
+    assert!(
+        shell.contains("ae-shell"),
+        "UI shell composes the aesthetic app shell"
+    );
+    assert!(
+        shell.contains("/api/specs") && shell.contains("/api/runs"),
+        "shell is wired to the local API face"
+    );
+
+    let specs = http_get_json(port, "/api/specs");
+    assert_eq!(specs["schema_version"], "crucible.ui.specs.v1");
+    let specs_array = specs["specs"].as_array().expect("specs array");
+    assert!(
+        specs_array
+            .iter()
+            .any(|spec| spec["id"] == "cerberus-review-quality-v0"
+                && spec["validation"]["valid"] == true
+                && spec["confidence"] == 0.95),
+        "spec library includes real eval specs with validation and confidence: {specs}"
+    );
+
+    let runs = http_get_json(port, "/api/runs");
+    assert_eq!(runs["schema_version"], "crucible.ui.runs.v1");
+    let rows = runs["runs"].as_array().expect("runs array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["benchmark_id"], "key-recall-fixture");
+    let run_id = rows[0]["run_id"].as_str().expect("run id");
+    let trends = runs["trendlines"].as_array().expect("trendlines array");
+    assert_eq!(trends.len(), 1);
+    assert_eq!(trends[0]["benchmark_id"], "key-recall-fixture");
+    assert_eq!(
+        trends[0]["points"].as_array().expect("trend points").len(),
+        1,
+        "the runs API returns enough data for SVG sparklines"
+    );
+
+    let detail = http_get_json(port, &format!("/api/runs/{run_id}"));
+    assert_eq!(detail["schema_version"], "crucible.run_store.v1");
+    assert_eq!(detail["run"]["run_id"], run_id);
+    assert_eq!(detail["run"]["method"], "Wilson");
+    assert_eq!(detail["eval_json"]["id"], "key-recall-fixture");
+
+    stop_child(child);
 }
 
 #[test]
