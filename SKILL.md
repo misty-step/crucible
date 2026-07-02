@@ -152,8 +152,19 @@ target/debug/cerberus review \
 Then run a Crucible spec with `runner.corpus.source =
 "cerberus_receipt_bundles"`. Each task must name `artifact`, `receipt_bundle`,
 and the Harbor `tests/expected.json` scorer key. See
-`crucible/tests/fixtures/specs/cerberus-receipt-fixture.json` for the committed
-shape; keep real producer artifacts and specs under `runs/local/`.
+`crucible/tests/fixtures/specs/cerberus-receipt-fixture.json` and
+`crucible/tests/fixtures/specs/cold-agent-smoke-v0.json` for two independently
+authored committed shapes; keep real producer artifacts and specs under
+`runs/local/`. Two things a real Cerberus producer already gets right but a
+hand-authored fixture must set explicitly: `receipt_bundle.validation.status`
+must be exactly `"passed"` (any other value refuses the run —
+Crucible only grades trusted receipts), and `receipt_bundle.artifact_uri`
+must match the spec's own `task.artifact` string (or resolve to the same
+file) so Crucible can confirm the receipt actually vouches for the artifact
+it is paired with. Both are the only fields `key_recall`'s
+`cerberus_receipt_bundles` path validates beyond `schema_version`; this
+runner (unlike `prompt_benchmark`) makes no network call, so a
+hand-authored fixture spec runs fully hermetically.
 
 ```sh
 cargo run -p crucible -- run --out runs/local/factory-lane --json

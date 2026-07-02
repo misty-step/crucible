@@ -1,0 +1,36 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "cold-agent-smoke-v0",
+  "task": "cold-agent-authoring-smoke",
+  "inputs": "One Cerberus ReviewArtifact plus ReviewReceiptBundle.v1, authored fresh from SKILL.md and the schema types only (backlog 014 child 5).",
+  "outputs": "Key recall over two seeded defects, one matched and one missed.",
+  "graders": {
+    "graders": [
+      {
+        "id": "expected_key_match",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "decision": "Prove a cold agent — SKILL.md and the schema Rust types only, no chat context, no copy of an existing spec's exact shape — can author a spec that validates and runs hermetically.",
+  "runner": {
+    "kind": "key_recall",
+    "corpus": {
+      "source": "cerberus_receipt_bundles",
+      "candidate_id": "cold-agent-smoke",
+      "tasks": [
+        {
+          "task_id": "retry-loop-review",
+          "artifact": "../cold-agent-artifact.json",
+          "receipt_bundle": "../cold-agent-receipt-bundle.json",
+          "expected": "../cold-agent-expected.json"
+        }
+      ]
+    }
+  }
+}

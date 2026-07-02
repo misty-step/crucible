@@ -1,0 +1,24 @@
+{
+  "schema_version": "cerberus.review_receipt_bundle.v1",
+  "request_id": "fixture-cold-agent-001",
+  "request_digest": "sha256:request",
+  "artifact_id": "artifact-cold-agent-smoke",
+  "artifact_digest": "sha256:artifact",
+  "harness": "fixture",
+  "model": "fixture",
+  "latency_ms": 1,
+  "capability_tier": "diff_repo_head",
+  "context_capabilities": {
+    "diff": true,
+    "repo_head": true,
+    "repo_base": false,
+    "local_runtime": false,
+    "remote_runtime": false,
+    "external_research": "forbid"
+  },
+  "artifact_uri": "../cold-agent-artifact.json",
+  "validation": {
+    "status": "passed",
+    "trusted_for_posting": true
+  }
+}
