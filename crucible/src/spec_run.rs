@@ -240,6 +240,7 @@ fn run_key_recall_daedalus(
     }
 
     let score = wilson_score("pr_review_key_recall", total_matched, total_expected);
+    let pass_k = compute_pass_k(&task_results);
     let evidence_path = out.join("task-results.json");
     write_json(
         &evidence_path,
@@ -263,8 +264,33 @@ fn run_key_recall_daedalus(
                 recoverable_misses: total_recoverable,
             },
             tasks: &task_results,
+            pass_k: pass_k.as_ref(),
         },
     )?;
+
+    let mut notes = vec![
+        "Executed from a declared Crucible EvalSpec runner, not a built-in receipt.".to_string(),
+        format!(
+            "Selected {} Daedalus trial(s) for candidate {:?} and graded them against Harbor scorer keys.",
+            selected_trial_count, candidate_id
+        ),
+    ];
+    match &pass_k {
+        Some(pk) => notes.push(format!(
+            "pass^{}: {}/{} tasks fully matched the key on every trial ({:.1}%, {:.0}% CI [{:.1}%, {:.1}%]; Wilson over tasks, not trials).",
+            pk.k,
+            pk.score.successes,
+            pk.score.n,
+            pk.score.point.unwrap_or(0.0) * 100.0,
+            pk.score.confidence * 100.0,
+            pk.score.lower * 100.0,
+            pk.score.upper * 100.0,
+        )),
+        None => notes.push(
+            "pass^k not reported: tasks in this selection do not share a uniform trial count ≥ 2."
+                .to_string(),
+        ),
+    }
 
     Ok(EvalReport {
         id: spec_id(spec, spec_path),
@@ -274,14 +300,11 @@ fn run_key_recall_daedalus(
             spec.task.clone()
         },
         score,
-        artifacts: vec![spec_path.display().to_string(), evidence_path.display().to_string()],
-        notes: vec![
-            "Executed from a declared Crucible EvalSpec runner, not a built-in receipt.".to_string(),
-            format!(
-                "Selected {} Daedalus trial(s) for candidate {:?} and graded them against Harbor scorer keys.",
-                selected_trial_count, candidate_id
-            ),
+        artifacts: vec![
+            spec_path.display().to_string(),
+            evidence_path.display().to_string(),
         ],
+        notes,
     })
 }
 
@@ -396,6 +419,9 @@ fn run_key_recall_cerberus_receipts(
                 recoverable_misses: total_recoverable,
             },
             tasks: &task_results,
+            // Cerberus receipt bundles are one artifact per task, not repeated
+            // trials — there is no k to measure consistency over here.
+            pass_k: None,
         },
     )?;
 
@@ -833,6 +859,51 @@ fn build_calibration_record(
     })
 }
 
+/// Compute pass^k task consistency (backlog 015) over a batch of graded
+/// trials: group by `task_id`, require every task to share the same trial
+/// count `k ≥ 2` (otherwise there is no single `k` to report — returns
+/// `None`), and Wilson-score the fraction of tasks where *every* trial fully
+/// matched the key (zero missed, zero false positives).
+fn compute_pass_k(task_results: &[TaskResult]) -> Option<PassKScore> {
+    let mut by_task: std::collections::BTreeMap<&str, Vec<&TaskResult>> =
+        std::collections::BTreeMap::new();
+    for result in task_results {
+        by_task
+            .entry(result.task_id.as_str())
+            .or_default()
+            .push(result);
+    }
+
+    let mut k: Option<u64> = None;
+    for trials in by_task.values() {
+        let n = trials.len() as u64;
+        match k {
+            None => k = Some(n),
+            Some(existing) if existing != n => return None,
+            _ => {}
+        }
+    }
+    let k = k?;
+    if k < 2 {
+        return None;
+    }
+
+    let n_tasks = by_task.len() as u64;
+    let n_tasks_all_passed = by_task
+        .values()
+        .filter(|trials| {
+            trials
+                .iter()
+                .all(|t| t.missed == 0 && t.false_positives == 0)
+        })
+        .count() as u64;
+
+    Some(PassKScore {
+        k,
+        score: wilson_score("pass_k_task_consistency", n_tasks_all_passed, n_tasks),
+    })
+}
+
 fn grade_key_recall_task(findings: &[KeyFinding], expected: &ExpectedKey) -> KeyRecallTaskScore {
     // The span-aware match (file + category + line-in-span + severity floor)
     // lives in crucible-core (backlog 013): Threshold/Daedalus share this
@@ -1218,6 +1289,24 @@ struct SpecRunEvidence<'a> {
     score: &'a Score,
     totals: Totals,
     tasks: &'a [TaskResult],
+    /// pass^k task-consistency (backlog 015): `None` unless every task in this
+    /// run shares the same trial count `k ≥ 2` — an uneven repetition count
+    /// has no single `k` to report a consistency rate for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pass_k: Option<&'a PassKScore>,
+}
+
+/// pass^k over one run's tasks: `k` repeated trials per task, scored as
+/// PASSED (`k` for `k`) only when *every* trial fully matched the adjudicated
+/// key (zero missed defects, zero false positives) — the same "task counts as
+/// solved iff every trial earned full reward" bar
+/// [`crucible_core::Leaderboard`]'s `solve_rate` uses. `score` is a Wilson
+/// proportion over tasks (the independence unit — trials of the same task are
+/// correlated), not trials.
+#[derive(Debug, Serialize)]
+struct PassKScore {
+    k: u64,
+    score: Score,
 }
 
 #[derive(Debug, Serialize)]
@@ -1876,5 +1965,95 @@ mod tests {
         assert!(!parse_judge_verdict("VERDICT: FAIL\nreason").unwrap());
         assert!(parse_judge_verdict("no verdict here").is_err());
         assert!(parse_judge_verdict("VERDICT: PASS and also VERDICT: FAIL").is_err());
+    }
+
+    fn task_result(task_id: &str, missed: u64, false_positives: u64) -> TaskResult {
+        TaskResult {
+            task_id: task_id.to_string(),
+            run_id: format!("{task_id}-run"),
+            trial: Some(1),
+            candidate_id: "incumbent".to_string(),
+            candidate_kind: None,
+            arena_id: None,
+            arena_version: None,
+            key: String::new(),
+            findings: 0,
+            dropped_invalid: 0,
+            matched: 0,
+            matched_ids: Vec::new(),
+            missed,
+            missed_ids: Vec::new(),
+            disputed: false_positives,
+            false_positives,
+            recoverable_misses: 0,
+            expected_defects: 0,
+            daedalus_reward: None,
+            daedalus_recall: None,
+            daedalus_false_positives: None,
+            error: None,
+            scorer_error: None,
+            artifacts: None,
+            artifact: None,
+            receipt_bundle: None,
+            receipt_harness: None,
+            receipt_model: None,
+            receipt_validation: None,
+            receipt_trusted_for_posting: None,
+        }
+    }
+
+    #[test]
+    fn pass_k_counts_tasks_that_fully_matched_on_every_trial() {
+        // Two tasks, k=5 trials each: task "a" fully matches all 5 trials;
+        // task "b" has one trial with a missed defect. pass^5 = 1/2.
+        let mut results = Vec::new();
+        for trial in 0..5 {
+            results.push(task_result("a", 0, 0));
+            let miss = if trial == 2 { 1 } else { 0 };
+            results.push(task_result("b", miss, 0));
+        }
+        let pass_k = compute_pass_k(&results).expect("uniform k=5 reports pass^k");
+        assert_eq!(pass_k.k, 5);
+        assert_eq!(pass_k.score.successes, 1);
+        assert_eq!(pass_k.score.n, 2);
+        assert_eq!(pass_k.score.metric, "pass_k_task_consistency");
+    }
+
+    #[test]
+    fn pass_k_counts_a_false_positive_trial_as_not_passed() {
+        let mut results = Vec::new();
+        for _ in 0..3 {
+            results.push(task_result("a", 0, 0));
+        }
+        results.push(task_result("a", 0, 0));
+        results.push(task_result("a", 0, 1)); // one trial has a false positive
+        let pass_k = compute_pass_k(&results).expect("uniform k=5 reports pass^k");
+        assert_eq!(
+            pass_k.score.successes, 0,
+            "one FP trial fails the whole task"
+        );
+        assert_eq!(pass_k.score.n, 1);
+    }
+
+    #[test]
+    fn pass_k_is_none_for_uneven_trial_counts() {
+        let results = vec![
+            task_result("a", 0, 0),
+            task_result("a", 0, 0),
+            task_result("b", 0, 0),
+        ];
+        assert!(
+            compute_pass_k(&results).is_none(),
+            "task a has 2 trials, task b has 1 — no single k to report"
+        );
+    }
+
+    #[test]
+    fn pass_k_is_none_for_a_single_trial_per_task() {
+        let results = vec![task_result("a", 0, 0), task_result("b", 0, 0)];
+        assert!(
+            compute_pass_k(&results).is_none(),
+            "k=1 has no repetition to measure consistency over"
+        );
     }
 }

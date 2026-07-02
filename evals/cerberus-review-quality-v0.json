@@ -1,0 +1,41 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "cerberus-review-quality-v0",
+  "task": "cerberus-review-quality",
+  "inputs": "The production Cerberus reviewer config (\"incumbent\", deepseek/deepseek-v4-pro) run 5 times per task over the pr-review-v0 arena's 6 tasks, from Threshold's real search-cerberus-reviewer run.",
+  "outputs": "Key-recall against the arena's adjudicated tests/expected.json keys, plus pass^5 task consistency across the 5 repeated trials.",
+  "graders": {
+    "graders": [
+      {
+        "id": "daedalus_expected_key_match",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "baselines": [
+    "incumbent"
+  ],
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "decision": "The eval that gates Cerberus's path from advisory toward blocking (backlog 015/026): measure the incumbent reviewer's key-recall and pass^5 consistency against adjudicated truth, so a blocking-gate threshold can be set above the measured floor instead of assumed.",
+  "runner": {
+    "kind": "key_recall",
+    "corpus": {
+      "source": "daedalus_trials",
+      "arena_dir": "../../daedalus/arenas/pr-review-v0",
+      "trials_jsonl": "../../daedalus/runs/20260625T161856Z-search-cerberus-reviewer/trials.jsonl",
+      "candidate_id": "incumbent",
+      "tasks": [
+        "js-cart-total",
+        "js-clean-rename",
+        "py-auth-sqli",
+        "py-file-cache",
+        "py-pagination",
+        "rs-retry-backoff"
+      ]
+    }
+  }
+}

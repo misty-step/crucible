@@ -1,6 +1,6 @@
 # Ship the first real Cerberus review-quality benchmark
 
-Priority: P1 · Status: pending · Estimate: XL (epic)
+Priority: P1 · Status: in-progress · Estimate: XL (epic)
 
 ## Goal
 
@@ -34,10 +34,14 @@ Cerberus can earn its path from advisory toward blocking.
 
 ## Children
 
-1. Define the benchmark spec and task set from current Cerberus/Threshold data.
-2. Collect/adapt adjudicated truth through the human queue.
-3. Run repeated Cerberus configs and compute pass^k consistency.
-4. Report key-recall, intervals, noise-floor verdict, cost, and examples.
+1. ✅ Define the benchmark spec and task set from current Cerberus/Threshold data.
+2. Collect/adapt adjudicated truth through the human queue (partial — uses the
+   arena's existing frozen `tests/expected.json` keys, not a fresh human
+   adjudication pass; see progress note).
+3. ✅ Run repeated Cerberus configs and compute pass^k consistency (k=5, one
+   candidate — see progress note for multi-config scope left).
+4. ✅ Report key-recall, intervals, and pass^k for the first live run (partial —
+   no noise-floor verdict, cost breakdown, or worked examples yet; see note).
 5. Export benchmark/run artifacts to Cerberus and Threshold consumers.
 
 ## Notes
@@ -46,3 +50,63 @@ Operator decision 2026-07-01: "First real benchmark: cerberus review quality
 (pass^k consistency + key-recall vs adjudicated truth) — the eval that gates
 cerberus's path to blocking." Until this benchmark is defensible, Cerberus stays
 advisory everywhere.
+
+Progress 2026-07-01: first live scored run landed. `evals/cerberus-review-quality-v0.json`
+(the durable spec, authored and run through Crucible's own CLI — `crucible run`,
+no bespoke script) points the existing `key_recall`/`daedalus_trials` runner at
+real data: the `incumbent` candidate (Cerberus's production reviewer config,
+`deepseek/deepseek-v4-pro`) from Threshold's real
+`../../daedalus/runs/20260625T161856Z-search-cerberus-reviewer/trials.jsonl`
+search run, 5 trials × 6 tasks, scored against the live `pr-review-v0` arena
+(`../../daedalus/arenas/pr-review-v0`, version `0.3.0`) — the same hardcoded
+sibling-checkout convention the existing flagship spec
+(`evals/pr-review-key-recall-v0.json`) already uses (backlog `016`'s hygiene
+item about that convention is still open, not solved by this ticket).
+
+This landed a real `spec_run.rs` feature, not just the spec: `compute_pass_k`
+(new, unit-tested) groups a run's task results by `task_id`, requires every
+task to share one trial count `k ≥ 2` (else refuses to report a number, per
+"never report a rate you cannot defend"), and Wilson-scores the fraction of
+tasks where *every* trial fully matched the key (zero missed, zero false
+positives) — reusing `crucible_core::Leaderboard`'s `solve_rate` "task is the
+independence unit" pattern, computed from Crucible's own re-graded key match
+(`crucible_core::score_against_expected_key`), not the trial's self-reported
+`reward`/`recall` fields. Both the `key_recall`/`daedalus_trials` and
+`cerberus_receipt_bundles` runners now carry an optional `pass_k` field on
+`crucible.spec_run_evidence.v1` (`None` for receipt-bundle runs — one artifact
+per task, no repetition to measure).
+
+**The first live scored run** (`crucible run evals/cerberus-review-quality-v0.json
+--db <db>`, exit 0, persisted and queryable via `crucible runs list/show
+--benchmark cerberus-review-quality-v0`):
+
+- `pr_review_key_recall`: 23/45 matched, point 0.511, 95% Wilson CI
+  [0.370, 0.650].
+- `pass^5`: 2/6 tasks fully matched the key on **every** trial
+  (`js-clean-rename`, `py-pagination`), point 0.333, 95% Wilson CI
+  [0.097, 0.700]. `py-auth-sqli` and `py-file-cache` never fully matched
+  across 5 trials; `rs-retry-backoff` swung from a fully-correct trial to a
+  fully-missed one — real, measured inconsistency in the production config.
+
+**Open discrepancy, not resolved here**: `026-consistency-floor.md` in the
+Cerberus repo cites a prior pass^5 measurement "near 0.0434" as the number to
+beat; this run measured 0.333 on the same arena/candidate concept. The two
+numbers are **not directly comparable as reported** — this run uses Crucible's
+own re-graded key match against the *current* (`0.3.0`) adjudicated keys over
+exactly 6 tasks / 30 trials from one specific Threshold search run, while the
+0.0434 figure's source data, task set, and scoring method are not established
+here (it may span more tasks, other candidates, an older arena version, or a
+different pass/fail bar). Reconciling the two — same corpus, same scorer, same
+definition of "passed" — is real follow-up work before either number can gate
+anything; flagging the gap explicitly rather than either dismissing 0.0434 or
+uncritically treating 0.333 as the new floor.
+
+Remaining, in rough priority order: reconcile the pass^5 discrepancy above;
+extend the spec/corpus to cover Threshold's other search runs and candidates
+(a true multi-config pass^k comparison, not just `incumbent`); a real
+noise-floor verdict on the pass^k delta (this epic's `PairedComparison`/
+`DeltaVerdict` kernel already exists in `crucible-core`, just not wired to
+this benchmark yet); cost/latency reporting per task; human-adjudicated
+truth for at least one slice (today this run trusts the arena's existing
+frozen keys, not a fresh Crucible-owned adjudication pass); and the
+Cerberus/Threshold export bundle (child 5).
