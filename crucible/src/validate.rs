@@ -16,8 +16,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::spec_run::{load_spec, preflight_spec};
-use crucible_core::{CorpusSpec, EvalSpec};
+use crate::spec_run::{check_prompt_regexes, load_spec, preflight_spec};
+use crucible_core::{CorpusSpec, EvalSpec, RunnerKind};
 
 /// Schema identifier for a persisted [`ValidationReport`].
 pub const VALIDATE_REPORT_SCHEMA: &str = "crucible.validate_report.v1";
@@ -54,7 +54,7 @@ pub fn validate(spec_path: &Path) -> anyhow::Result<ValidationReport> {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    let runnable = match &spec.runner {
+    let mut runnable = match &spec.runner {
         None => {
             warnings.push(ValidationIssue {
                 field: "runner".to_string(),
@@ -73,6 +73,22 @@ pub fn validate(spec_path: &Path) -> anyhow::Result<ValidationReport> {
             }
         },
     };
+
+    if runnable {
+        if let Some(runner) = &spec.runner {
+            if runner.kind == RunnerKind::PromptBenchmark {
+                if let CorpusSpec::PromptBenchmark { tasks, .. } = &runner.corpus {
+                    if let Err(err) = check_prompt_regexes(tasks) {
+                        errors.push(ValidationIssue {
+                            field: "runner.corpus.tasks[].expectation.pattern".to_string(),
+                            message: err.to_string(),
+                        });
+                        runnable = false;
+                    }
+                }
+            }
+        }
+    }
 
     check_baselines(&spec, &mut warnings);
     check_portability(&spec, &mut warnings);
@@ -140,7 +156,8 @@ mod tests {
     use super::*;
     use crucible_core::{
         AgenticJudgeConfig, AgenticJudgeTask, AggregationMethod, CorpusSpec, EvalSpec, Grader,
-        GraderKind, GraderManifest, ModelProvider, RunnerKind, RunnerSpec, UncertaintyRule,
+        GraderKind, GraderManifest, ModelProvider, PromptBenchmarkTask, PromptExpectation,
+        PromptModelConfig, RunnerKind, RunnerSpec, UncertaintyRule,
     };
 
     fn write_spec(dir: &Path, name: &str, spec: &EvalSpec) -> std::path::PathBuf {
@@ -312,6 +329,52 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.field == "runner.corpus.trials_jsonl"));
+    }
+
+    #[test]
+    fn a_malformed_prompt_expectation_regex_is_an_error_before_any_model_call() {
+        let dir = temp_dir("bad-regex");
+        let mut spec = base_spec();
+        spec.graders = GraderManifest {
+            graders: vec![Grader {
+                id: "regex_rubric".to_string(),
+                kind: GraderKind::Deterministic,
+            }],
+        };
+        spec.runner = Some(RunnerSpec {
+            kind: RunnerKind::PromptBenchmark,
+            corpus: CorpusSpec::PromptBenchmark {
+                config: PromptModelConfig {
+                    provider: ModelProvider::OpenRouter,
+                    model: "test/model".to_string(),
+                    system_prompt: "Answer.".to_string(),
+                    credential_env: "OPENROUTER_API_KEY".to_string(),
+                    max_output_units: None,
+                    temperature: None,
+                },
+                tasks: vec![PromptBenchmarkTask {
+                    task_id: "broken".to_string(),
+                    prompt: "irrelevant".to_string(),
+                    expectation: PromptExpectation::Regex {
+                        pattern: "(unclosed".to_string(),
+                    },
+                }],
+            },
+        });
+        let path = write_spec(&dir, "spec.json", &spec);
+        let report = validate(&path).unwrap();
+        assert!(!report.valid);
+        assert!(!report.runnable);
+        assert_eq!(report.errors.len(), 1);
+        assert_eq!(
+            report.errors[0].field,
+            "runner.corpus.tasks[].expectation.pattern"
+        );
+        assert!(
+            report.errors[0].message.contains("broken"),
+            "{:?}",
+            report.errors[0]
+        );
     }
 
     #[test]

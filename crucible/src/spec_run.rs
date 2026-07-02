@@ -516,8 +516,26 @@ fn run_prompt_benchmark(
     let CorpusSpec::PromptBenchmark { config, tasks } = &runner.corpus else {
         anyhow::bail!("prompt_benchmark runner requires corpus.source=prompt_benchmark");
     };
+    // A malformed Regex expectation fails here, before any model call is
+    // made — not mid-grading after tasks have already spent real API calls.
+    check_prompt_regexes(tasks)?;
     let client = OpenRouterClient::from_config(config)?;
     run_prompt_benchmark_with_client(spec, runner, spec_path, out, config, tasks, &client)
+}
+
+/// Precompile every declared `Regex` expectation's pattern, failing on the
+/// first that does not compile. Shared by [`run_prompt_benchmark`] (a hard
+/// refusal before any model call) and `crucible validate`
+/// (`crate::validate`, which reports the same failure as a named error
+/// instead of a load-time bail).
+pub(crate) fn check_prompt_regexes(tasks: &[PromptBenchmarkTask]) -> anyhow::Result<()> {
+    for task in tasks {
+        if let PromptExpectation::Regex { pattern } = &task.expectation {
+            compile_expectation_regex(pattern)
+                .with_context(|| format!("task {:?}", task.task_id))?;
+        }
+    }
+    Ok(())
 }
 
 fn run_prompt_benchmark_with_client(
@@ -552,7 +570,8 @@ fn run_prompt_benchmark_with_client(
             temperature: config.temperature,
         })?;
         let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-        let task_passed = prompt_expectation_passes(&response.output, &task.expectation);
+        let task_passed = prompt_expectation_passes(&response.output, &task.expectation)
+            .with_context(|| format!("grading prompt task {:?}", task.task_id))?;
         if task_passed {
             passed += 1;
         }
@@ -1159,23 +1178,49 @@ fn chat_content_to_string(content: serde_json::Value) -> Option<String> {
     }
 }
 
-fn prompt_expectation_passes(output: &str, expectation: &PromptExpectation) -> bool {
-    match expectation {
+/// Grade a model response against a declared rubric. Returns `Err` for a
+/// `Regex` variant whose `pattern` fails to compile — a malformed pattern is
+/// a spec error surfaced at grading time here (and, before any model call
+/// runs, at `crucible validate`/preflight time — see `check_prompt_regexes`),
+/// never a panic.
+fn prompt_expectation_passes(
+    output: &str,
+    expectation: &PromptExpectation,
+) -> anyhow::Result<bool> {
+    Ok(match expectation {
         PromptExpectation::Exact { value } => output.trim() == value.trim(),
         PromptExpectation::Contains { value } => output.contains(value),
-    }
+        PromptExpectation::CaseInsensitiveContains { value } => {
+            output.to_lowercase().contains(&value.to_lowercase())
+        }
+        PromptExpectation::Regex { pattern } => {
+            compile_expectation_regex(pattern)?.is_match(output)
+        }
+    })
+}
+
+/// Compile a `Regex` expectation's pattern, with an error that names the
+/// pattern rather than surfacing the raw `regex` crate error alone.
+fn compile_expectation_regex(pattern: &str) -> anyhow::Result<regex::Regex> {
+    regex::Regex::new(pattern)
+        .with_context(|| format!("prompt expectation regex {pattern:?} failed to compile"))
 }
 
 fn expectation_kind(expectation: &PromptExpectation) -> &'static str {
     match expectation {
         PromptExpectation::Exact { .. } => "exact",
         PromptExpectation::Contains { .. } => "contains",
+        PromptExpectation::CaseInsensitiveContains { .. } => "case_insensitive_contains",
+        PromptExpectation::Regex { .. } => "regex",
     }
 }
 
 fn expectation_value(expectation: &PromptExpectation) -> &str {
     match expectation {
-        PromptExpectation::Exact { value } | PromptExpectation::Contains { value } => value,
+        PromptExpectation::Exact { value }
+        | PromptExpectation::Contains { value }
+        | PromptExpectation::CaseInsensitiveContains { value } => value,
+        PromptExpectation::Regex { pattern } => pattern,
     }
 }
 
@@ -1719,6 +1764,119 @@ mod tests {
         assert_eq!(evidence["tasks"][0]["output"], "crucible-smoke");
         assert_eq!(evidence["tasks"][0]["passed"], true);
         assert_eq!(evidence["tasks"][0]["total_tokens"], 10);
+    }
+
+    #[test]
+    fn prompt_expectation_case_insensitive_contains_ignores_case() {
+        let expectation = PromptExpectation::CaseInsensitiveContains {
+            value: "Crucible-Smoke".to_string(),
+        };
+        assert!(prompt_expectation_passes("this has crucible-smoke in it", &expectation).unwrap());
+        assert!(prompt_expectation_passes("THIS HAS CRUCIBLE-SMOKE IN IT", &expectation).unwrap());
+        assert!(!prompt_expectation_passes("no match here", &expectation).unwrap());
+    }
+
+    #[test]
+    fn prompt_expectation_regex_matches_and_refuses_to_compile_garbage() {
+        let expectation = PromptExpectation::Regex {
+            pattern: r"^\d{3}-\d{4}$".to_string(),
+        };
+        assert!(prompt_expectation_passes("555-1234", &expectation).unwrap());
+        assert!(!prompt_expectation_passes("not a phone number", &expectation).unwrap());
+
+        let malformed = PromptExpectation::Regex {
+            pattern: "(unclosed".to_string(),
+        };
+        let err = prompt_expectation_passes("anything", &malformed)
+            .expect_err("an unclosed group must refuse to compile, not panic");
+        assert!(
+            err.to_string().contains("(unclosed"),
+            "error names the offending pattern: {err}"
+        );
+    }
+
+    #[test]
+    fn check_prompt_regexes_names_the_task_with_the_bad_pattern() {
+        let tasks = vec![
+            PromptBenchmarkTask {
+                task_id: "fine".to_string(),
+                prompt: "p".to_string(),
+                expectation: PromptExpectation::Regex {
+                    pattern: "ok".to_string(),
+                },
+            },
+            PromptBenchmarkTask {
+                task_id: "broken".to_string(),
+                prompt: "p".to_string(),
+                expectation: PromptExpectation::Regex {
+                    pattern: "[".to_string(),
+                },
+            },
+        ];
+        let err = check_prompt_regexes(&tasks).expect_err("the second task's pattern is invalid");
+        assert!(err.to_string().contains("broken"), "{err}");
+    }
+
+    #[test]
+    fn run_prompt_benchmark_refuses_a_malformed_regex_before_any_model_call() {
+        let temp =
+            std::env::temp_dir().join(format!("crucible-prompt-bad-regex-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("prompt-bad-regex.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+        let spec = EvalSpec {
+            schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
+            id: "prompt-bad-regex".to_string(),
+            task: "prompt-bad-regex".to_string(),
+            inputs: String::new(),
+            outputs: String::new(),
+            fixtures: Vec::new(),
+            graders: crucible_core::GraderManifest {
+                graders: vec![crucible_core::Grader {
+                    id: "regex_rubric".to_string(),
+                    kind: GraderKind::Deterministic,
+                }],
+            },
+            baselines: Vec::new(),
+            aggregation: AggregationMethod::Proportion,
+            uncertainty: crucible_core::UncertaintyRule::default(),
+            decision: String::new(),
+            runner: None,
+        };
+        let runner = RunnerSpec {
+            kind: RunnerKind::PromptBenchmark,
+            corpus: CorpusSpec::PromptBenchmark {
+                config: PromptModelConfig {
+                    provider: ModelProvider::OpenRouter,
+                    model: "test/model".to_string(),
+                    system_prompt: "Answer exactly.".to_string(),
+                    credential_env: "OPENROUTER_API_KEY".to_string(),
+                    max_output_units: None,
+                    temperature: None,
+                },
+                tasks: vec![PromptBenchmarkTask {
+                    task_id: "broken".to_string(),
+                    prompt: "irrelevant".to_string(),
+                    expectation: PromptExpectation::Regex {
+                        pattern: "(unclosed".to_string(),
+                    },
+                }],
+            },
+        };
+
+        // No OPENROUTER_API_KEY is set in this test process, and the client
+        // is never reached: run_prompt_benchmark checks every Regex pattern
+        // before it even builds an OpenRouterClient, so if this refused for
+        // the credential instead of the pattern, the assertion below would
+        // catch it.
+        let err = run_prompt_benchmark(&spec, &runner, &spec_path, &temp)
+            .expect_err("a malformed regex must refuse before any model call");
+        let full_chain = format!("{err:#}");
+        assert!(
+            full_chain.contains("(unclosed") && full_chain.contains("broken"),
+            "error chain names the pattern and the task, not a credential complaint: {full_chain}"
+        );
     }
 
     #[test]

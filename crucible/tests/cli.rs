@@ -1223,6 +1223,109 @@ fn run_prompt_benchmark_requires_openrouter_key_without_fallback() {
     );
 }
 
+/// Backlog 017: the broadened deterministic grader library (`Regex`,
+/// `CaseInsensitiveContains`) is real, not just a schema addition — a spec
+/// declaring both variants validates clean and routes through the same
+/// `prompt_benchmark` runner as `Exact`/`Contains` (reaching the BYOK
+/// credential guard, proving the regex precompiled and dispatch worked,
+/// without a live network call in the gate).
+#[test]
+fn regex_and_case_insensitive_contains_expectations_validate_and_dispatch() {
+    let spec = repo_fixture("evals/prompt-regex-smoke-v0.json");
+
+    let validate = crucible()
+        .arg("validate")
+        .arg(&spec)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    let report: serde_json::Value =
+        serde_json::from_slice(&validate.stdout).expect("validate --json emits JSON");
+    assert_eq!(report["valid"], true, "{report}");
+    assert_eq!(report["runnable"], true, "{report}");
+    assert_eq!(report["errors"].as_array().unwrap().len(), 0);
+
+    let out_dir = temp_root("prompt-regex-no-key");
+    let out = crucible()
+        .arg("run")
+        .arg(&spec)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--json")
+        .env_remove("OPENROUTER_API_KEY")
+        .output()
+        .expect("crucible binary runs");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "reaches the same BYOK credential guard as any other prompt_benchmark spec"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("OPENROUTER_API_KEY"),
+        "the regex compiled fine and dispatch reached the client construction step: {stderr}"
+    );
+}
+
+/// A spec declaring a `Regex` expectation whose pattern does not compile
+/// refuses at `crucible validate` time — before any runnable corpus is
+/// needed — and again at `crucible run` time before any model call.
+#[test]
+fn a_malformed_regex_expectation_refuses_at_validate_and_run_time() {
+    let root = temp_root("prompt-regex-malformed");
+    let spec_text = std::fs::read_to_string(repo_fixture("evals/prompt-regex-smoke-v0.json"))
+        .expect("read prompt-regex-smoke-v0.json");
+    let mut spec: serde_json::Value = serde_json::from_str(&spec_text).unwrap();
+    spec["runner"]["corpus"]["tasks"][0]["expectation"]["pattern"] = json!("(unclosed");
+    let spec_path = root.join("malformed-regex.json");
+    std::fs::write(&spec_path, serde_json::to_string_pretty(&spec).unwrap())
+        .expect("write malformed-regex spec");
+
+    let validate = crucible()
+        .arg("validate")
+        .arg(&spec_path)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    let report: serde_json::Value =
+        serde_json::from_slice(&validate.stdout).expect("validate --json emits JSON");
+    assert_eq!(report["valid"], false, "{report}");
+    assert_eq!(report["runnable"], false, "{report}");
+    let errors = report["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("phone-number-format"),
+        "{report}"
+    );
+
+    let out_dir = root.join("out");
+    let run = crucible()
+        .arg("run")
+        .arg(&spec_path)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "run must also refuse a malformed regex, independent of --json validate"
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("(unclosed"),
+        "run's error names the offending pattern: {stderr}"
+    );
+    assert!(
+        !stderr.contains("OPENROUTER_API_KEY"),
+        "refuses on the malformed pattern before ever reaching the credential check: {stderr}"
+    );
+}
+
 /// The agentic judge runner (backlog 012) parses its declared spec, validates
 /// the `Agentic` grader declaration, and reaches the same BYOK credential
 /// guard as the prompt benchmark runner — proving the CLI dispatch wire-up
