@@ -1153,6 +1153,35 @@ fn run_prompt_benchmark_requires_openrouter_key_without_fallback() {
     );
 }
 
+/// The agentic judge runner (backlog 012) parses its declared spec, validates
+/// the `Agentic` grader declaration, and reaches the same BYOK credential
+/// guard as the prompt benchmark runner — proving the CLI dispatch wire-up
+/// end to end without a live model call.
+#[test]
+fn run_agentic_judge_requires_openrouter_key_without_fallback() {
+    let out_dir = temp_root("judge-no-key");
+    let out = crucible()
+        .arg("run")
+        .arg(repo_fixture("evals/agentic-judge-smoke-v0.json"))
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--json")
+        .env_remove("OPENROUTER_API_KEY")
+        .output()
+        .expect("crucible binary runs");
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "missing model key is a load/runtime error, not usage"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("OPENROUTER_API_KEY") && stderr.contains("BYOK OpenRouter key"),
+        "error names the missing key without a fallback: {stderr}"
+    );
+}
+
 /// MCP exposes the same declared-spec runner as the CLI: initialize the stdio
 /// server, list tools, call `crucible_run`, and get the scored run report plus
 /// the on-disk evidence packet.

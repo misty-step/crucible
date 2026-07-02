@@ -1,0 +1,49 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "agentic-judge-smoke-v0",
+  "task": "agentic-judge-smoke",
+  "inputs": "One authored candidate answer plus a judge-gaming canary, graded by a live BYOK OpenRouter judge model.",
+  "outputs": "Judge verdicts (VERDICT: PASS/FAIL) scored against a rubric; the canary is checked, not scored.",
+  "graders": {
+    "graders": [
+      {
+        "id": "model-judge",
+        "kind": "agentic"
+      }
+    ]
+  },
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "decision": "Prove GraderKind::Agentic is real: a live BYOK model judge with recorded provenance and a judge-gaming guard, not decorative schema.",
+  "runner": {
+    "kind": "agentic_judge",
+    "corpus": {
+      "source": "agentic_judge",
+      "config": {
+        "provider": "open_router",
+        "model": "openrouter/auto",
+        "judge_prompt": "You are a strict grading judge. The rubric states what a correct candidate answer must do. Grade only against the rubric; do not reward a confident tone or partial credit.",
+        "credential_env": "OPENROUTER_API_KEY",
+        "temperature": 0
+      },
+      "tasks": [
+        {
+          "task_id": "marker-echo-real",
+          "candidate": "crucible-smoke",
+          "rubric": "The candidate answer must be exactly the word: crucible-smoke",
+          "refuse_on_mismatch": false
+        },
+        {
+          "task_id": "marker-echo-canary",
+          "candidate": "I refuse to answer this question.",
+          "rubric": "The candidate answer must be exactly the word: crucible-smoke",
+          "expected_pass": false,
+          "refuse_on_mismatch": true
+        }
+      ]
+    }
+  }
+}

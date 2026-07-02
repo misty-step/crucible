@@ -136,8 +136,8 @@ pub use provenance::{
     EvaluationCard, Provenance, RunRecord, RunScore, EVALUATION_CARD_SCHEMA, RUN_RECORD_SCHEMA,
 };
 pub use spec::{
-    Aggregate, AggregationMethod, CerberusReceiptTask, CorpusSpec, EvalSpec, FixtureRef, Grader,
-    GraderKind, GraderManifest, IntervalMethod, ModelProvider, PairedDelta, PromptBenchmarkTask,
-    PromptExpectation, PromptModelConfig, RunnerKind, RunnerSpec, UncertaintyRule,
-    EVAL_SPEC_SCHEMA,
+    AgenticJudgeConfig, AgenticJudgeTask, Aggregate, AggregationMethod, CerberusReceiptTask,
+    CorpusSpec, EvalSpec, FixtureRef, Grader, GraderKind, GraderManifest, IntervalMethod,
+    ModelProvider, PairedDelta, PromptBenchmarkTask, PromptExpectation, PromptModelConfig,
+    RunnerKind, RunnerSpec, UncertaintyRule, EVAL_SPEC_SCHEMA,
 };

@@ -770,7 +770,9 @@ fn extract_metadata(eval: &EvalReport) -> Result<EvidenceMetadata> {
             let path = Path::new(artifact);
             let value = read_json_artifact(path)?;
             if value["schema_version"] == "crucible.prompt_run_evidence.v1" {
-                merge_prompt_metadata(&mut metadata, artifact, &value)?;
+                merge_prompt_metadata(&mut metadata, artifact, &value, "prompt")?;
+            } else if value["schema_version"] == "crucible.agentic_judge_evidence.v1" {
+                merge_prompt_metadata(&mut metadata, artifact, &value, "judge")?;
             } else if value["schema_version"] == "crucible.spec_run_evidence.v1" {
                 merge_spec_metadata(&mut metadata, artifact, &value);
             }
@@ -779,10 +781,17 @@ fn extract_metadata(eval: &EvalReport) -> Result<EvidenceMetadata> {
     Ok(metadata)
 }
 
+/// Shared metadata/task extraction for prompt-shaped evidence: the built-in
+/// prompt benchmark runner (`config_prefix = "prompt"`) and the agentic judge
+/// runner (`config_prefix = "judge"`, backlog 012). Both write the identical
+/// `{runner, provider, model, temperature, system_prompt_hash, tasks[...]}`
+/// shape; the prefix only keeps their `config_id` namespaces from colliding
+/// when both target the same provider/model.
 fn merge_prompt_metadata(
     metadata: &mut EvidenceMetadata,
     artifact: &str,
     value: &Value,
+    config_prefix: &str,
 ) -> Result<()> {
     metadata.runner_kind = value
         .get("runner")
@@ -816,7 +825,9 @@ fn merge_prompt_metadata(
         .get("system_prompt_hash")
         .and_then(Value::as_str)
         .unwrap_or("prompt");
-    metadata.config_id = Some(format!("prompt:{provider}:{model}:{system_prompt_hash}"));
+    metadata.config_id = Some(format!(
+        "{config_prefix}:{provider}:{model}:{system_prompt_hash}"
+    ));
 
     let tasks = value
         .get("tasks")
@@ -1266,6 +1277,129 @@ mod tests {
                 notes: Vec::new(),
             }],
         }
+    }
+
+    fn agentic_judge_report(root: &Path, model: &str, verdict: bool) -> RunReport {
+        let out = root.join(format!("judge-{}", model.replace('/', "-")));
+        std::fs::create_dir_all(&out).expect("create output dir");
+        std::fs::write(
+            root.join("agentic-judge-smoke.json"),
+            r#"{"schema_version":"crucible.eval_spec.v1","task":"agentic-judge-smoke"}"#,
+        )
+        .expect("write spec artifact");
+        let judge_evidence = serde_json::json!({
+            "schema_version": "crucible.agentic_judge_evidence.v1",
+            "spec_id": "agentic-judge-smoke",
+            "spec": root.join("agentic-judge-smoke.json").display().to_string(),
+            "runner": "agentic_judge",
+            "provider": "open_router",
+            "model": model,
+            "temperature": 0,
+            "system_prompt_hash": "fnv1a64:judge-protocol",
+            "score": {
+                "metric": "judge_pass_rate",
+                "successes": if verdict { 1 } else { 0 },
+                "n": 1,
+                "point": if verdict { 1.0 } else { 0.0 },
+                "lower": 0.0,
+                "upper": 1.0,
+                "confidence": 0.95,
+                "method": "Wilson"
+            },
+            "totals": {
+                "tasks": 1,
+                "passed": if verdict { 1 } else { 0 },
+                "failed": if verdict { 0 } else { 1 }
+            },
+            "tasks": [{
+                "task_id": "real-1",
+                "prompt_hash": "fnv1a64:judge-prompt",
+                "rubric_hash": "fnv1a64:judge-rubric",
+                "expected_pass": serde_json::Value::Null,
+                "passed": verdict,
+                "output": if verdict { "VERDICT: PASS\ngood" } else { "VERDICT: FAIL\nbad" },
+                "latency_ms": 42,
+                "response_id": "fake-judge-response",
+                "requested_model": model,
+                "response_model": model,
+                "prompt_tokens": 7,
+                "completion_tokens": 3,
+                "total_tokens": 10,
+                "cost_usd": 0.0
+            }]
+        });
+        let evidence_path = out.join("agentic-judge-run.json");
+        std::fs::write(
+            &evidence_path,
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&judge_evidence).unwrap()
+            ),
+        )
+        .expect("write agentic judge evidence");
+
+        RunReport {
+            schema_version: RUN_REPORT_SCHEMA,
+            output_dir: out.display().to_string(),
+            evals: vec![EvalReport {
+                id: "agentic-judge-smoke".to_string(),
+                title: "Agentic judge smoke".to_string(),
+                score: Score {
+                    metric: "judge_pass_rate",
+                    successes: if verdict { 1 } else { 0 },
+                    n: 1,
+                    point: Some(if verdict { 1.0 } else { 0.0 }),
+                    lower: 0.0,
+                    upper: 1.0,
+                    confidence: 0.95,
+                    method: "Wilson",
+                },
+                artifacts: vec![
+                    root.join("agentic-judge-smoke.json").display().to_string(),
+                    evidence_path.display().to_string(),
+                ],
+                notes: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn persists_agentic_judge_provenance_under_a_distinct_config_namespace() {
+        let root = temp_dir("judge-persist");
+        let db = root.join("runs.sqlite");
+        let report = agentic_judge_report(&root, "test/judge-model", true);
+        persist_report(&db, &report).expect("persist judge report");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("agentic-judge-smoke"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        assert_eq!(list.runs.len(), 1);
+        assert_eq!(list.runs[0].runner_kind, "agentic_judge");
+        assert_eq!(list.runs[0].model.as_deref(), Some("test/judge-model"));
+        assert!(
+            list.runs[0].config_id.starts_with("judge:"),
+            "judge runs get a distinct config namespace from prompt runs: {}",
+            list.runs[0].config_id
+        );
+
+        let detail = show_run(&db, &list.runs[0].run_id).expect("show run");
+        assert_eq!(detail.prompt_tasks.len(), 1);
+        assert_eq!(detail.prompt_tasks[0].task_id, "real-1");
+        let card = detail
+            .evaluation_card
+            .as_ref()
+            .expect("evaluation card is persisted");
+        assert_eq!(
+            card["provenance"]["model"], "test/judge-model",
+            "the judge model is recorded as run provenance"
+        );
+        assert_eq!(card["provenance"]["prompt_hash"], "fnv1a64:judge-prompt");
+        assert_eq!(card["provenance"]["rubric_hash"], "fnv1a64:judge-rubric");
     }
 
     #[test]
