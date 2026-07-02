@@ -133,6 +133,89 @@ fn tool_defs() -> Value {
             }
         },
         {
+            "name": "crucible_grade",
+            "description": "Run the deterministic pre-grader: score a Cerberus review artifact's findings against a Daedalus answer key. Returns matched/disputed/missed counts and a Wilson-scored match rate. The same computation crucible grade --json emits.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["artifact", "key"],
+                "properties": {
+                    "artifact": {
+                        "type": "string",
+                        "description": "Path to the Cerberus review artifact JSON."
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Path to a Daedalus answer key JSON — either the solution/findings.json oracle or the tests/expected.json span scorer key."
+                    }
+                }
+            }
+        },
+        {
+            "name": "crucible_adjudicate",
+            "description": "Grade a Cerberus artifact against a Daedalus answer key and build the adjudication queue (disputed findings plus already-applied labels). With apply, mints and includes labels from a JSON array of label decisions. The same computation crucible adjudicate --json emits — use this to drive a headless labeling loop mid-agent-run instead of adjudication-panel --serve.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["artifact", "key"],
+                "properties": {
+                    "artifact": {
+                        "type": "string",
+                        "description": "Path to the Cerberus review artifact JSON."
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Path to a Daedalus answer key JSON — either the solution/findings.json oracle or the tests/expected.json span scorer key."
+                    },
+                    "apply": {
+                        "type": "string",
+                        "description": "Path to a JSON array of label decisions to apply to the queue. Each entry names a finding_id present in the queue plus its verdict, disposition, and (optionally) the conditions it was committed under."
+                    }
+                }
+            }
+        },
+        {
+            "name": "crucible_export",
+            "description": "Turn a labeled judgment queue (adjudicate --apply output) into the Daedalus key-extension artifacts under out: adjudications.md always, solution/findings.json when key is given, tests/expected.json when expected is given. The same computation crucible export performs; every output is rendered before anything is written, so a bad key/expected fails fast with no half-written tree.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["labels", "out", "arena", "task", "base_version"],
+                "properties": {
+                    "labels": {
+                        "type": "string",
+                        "description": "Path to a labeled judgment queue JSON — the adjudicate --apply output."
+                    },
+                    "out": {
+                        "type": "string",
+                        "description": "Output directory; adjudications.md (and solution/findings.json, tests/expected.json when requested) are written under it."
+                    },
+                    "arena": {
+                        "type": "string",
+                        "description": "Arena id for the log title and Harbor path, e.g. pr-review-v0."
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Harbor task id the findings were raised against, e.g. py-file-cache."
+                    },
+                    "base_version": {
+                        "type": "string",
+                        "description": "Arena version the first ACCEPT bumps from, e.g. 0.2.0."
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "Date to stamp each adjudication with (e.g. 2026-06-29); optional.",
+                        "default": ""
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Original point oracle (solution/findings.json) to extend with the accepted findings. When omitted, no solution/findings.json is written."
+                    },
+                    "expected": {
+                        "type": "string",
+                        "description": "Original scorer key (tests/expected.json) to extend with the accepted findings as line-span defects. When omitted, no tests/expected.json is written."
+                    }
+                }
+            }
+        },
+        {
             "name": "crucible_runs_list",
             "description": "List stored Crucible run records from the SQLite ledger, optionally filtered by benchmark id, config id, model slug, or creation date.",
             "inputSchema": {
@@ -230,6 +313,9 @@ fn call_tool(params: &Value) -> Result<Value> {
     match name {
         "crucible_validate" => crucible_validate(arguments),
         "crucible_run" => crucible_run(arguments),
+        "crucible_grade" => crucible_grade(arguments),
+        "crucible_adjudicate" => crucible_adjudicate(arguments),
+        "crucible_export" => crucible_export(arguments),
         "crucible_runs_list" => crucible_runs_list(arguments),
         "crucible_runs_show" => crucible_runs_show(arguments),
         "crucible_runs_compare" => crucible_runs_compare(arguments),
@@ -297,6 +383,71 @@ fn crucible_run(arguments: Value) -> Result<Value> {
             "run_store": stored,
             "report": report_json
         }
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CrucibleGradeArgs {
+    artifact: PathBuf,
+    key: PathBuf,
+}
+
+fn crucible_grade(arguments: Value) -> Result<Value> {
+    let args: CrucibleGradeArgs =
+        serde_json::from_value(arguments).context("parse crucible_grade arguments")?;
+    let report = crate::build_grade_report(&args.artifact, &args.key)?;
+    Ok(json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&report)? }],
+        "structuredContent": report
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CrucibleAdjudicateArgs {
+    artifact: PathBuf,
+    key: PathBuf,
+    apply: Option<PathBuf>,
+}
+
+fn crucible_adjudicate(arguments: Value) -> Result<Value> {
+    let args: CrucibleAdjudicateArgs =
+        serde_json::from_value(arguments).context("parse crucible_adjudicate arguments")?;
+    let queue = crate::build_judgment_queue(&args.artifact, &args.key, args.apply.as_deref())?;
+    Ok(json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&queue)? }],
+        "structuredContent": queue
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CrucibleExportArgs {
+    labels: PathBuf,
+    out: PathBuf,
+    arena: String,
+    task: String,
+    base_version: String,
+    #[serde(default)]
+    date: String,
+    key: Option<PathBuf>,
+    expected: Option<PathBuf>,
+}
+
+fn crucible_export(arguments: Value) -> Result<Value> {
+    let args: CrucibleExportArgs =
+        serde_json::from_value(arguments).context("parse crucible_export arguments")?;
+    let report = crate::build_export(&crate::ExportRequest {
+        labels: &args.labels,
+        out: &args.out,
+        arena: &args.arena,
+        task: &args.task,
+        base_version: &args.base_version,
+        date: &args.date,
+        key: args.key.as_deref(),
+        expected: args.expected.as_deref(),
+    })?;
+    Ok(json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&report)? }],
+        "structuredContent": report
     }))
 }
 
@@ -418,6 +569,9 @@ mod tests {
             vec![
                 "crucible_validate",
                 "crucible_run",
+                "crucible_grade",
+                "crucible_adjudicate",
+                "crucible_export",
                 "crucible_runs_list",
                 "crucible_runs_show",
                 "crucible_runs_compare"

@@ -248,6 +248,16 @@ Query tools:
 
 - `crucible_validate`: check a declared spec's `{valid, runnable, errors,
   warnings}` before spending a `crucible_run` call on it — call this first.
+- `crucible_grade`: score a Cerberus artifact against a Daedalus answer key —
+  the same computation `crucible grade --json` emits.
+- `crucible_adjudicate`: grade an artifact and build the adjudication queue,
+  optionally applying labels from an `--apply`-shaped JSON array — the same
+  computation `crucible adjudicate --json` emits. Use this to drive a headless
+  labeling loop mid-agent-run instead of `adjudication-panel --serve`.
+- `crucible_export`: turn a labeled judgment queue into the Daedalus
+  key-extension artifacts (`adjudications.md`, and `solution/findings.json`/
+  `tests/expected.json` when `key`/`expected` are given) — the same
+  computation `crucible export` performs, writes and all.
 - `crucible_runs_list`: list stored run rows, optionally filtered by
   benchmark, config id, model slug, or creation date.
 - `crucible_runs_show`: fetch one run by run id with artifact pointers and
