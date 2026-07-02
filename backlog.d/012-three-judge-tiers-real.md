@@ -42,7 +42,8 @@ phone/web panel.
 3. ✅ Calibration unlock: κ/agreement threshold, confusion matrix, and refusal
    messaging (partial — see progress note; model-family separation from the
    generator is not yet enforced).
-4. Minimal human writeback server/panel over the existing judgment queue.
+4. ✅ Minimal human writeback server/panel over the existing judgment queue —
+   see `005-phone-adjudication-queue.md`'s 2026-07-02 progress note.
 5. Hybrid run reporting: trusted vs diagnostic vs refused tiers (partial — see
    progress note; scoped to one agentic-judge run, not yet a mixed grader run).
 

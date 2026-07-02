@@ -82,6 +82,7 @@ use crucible_core::{
 use serde::Serialize;
 
 mod adjudication_panel;
+mod adjudication_server;
 mod dashboard_html;
 mod eval_run;
 mod mcp;
@@ -230,8 +231,9 @@ enum Command {
         #[command(subcommand)]
         command: RunsCommand,
     },
-    /// Render a static phone-first adjudication panel from an existing
-    /// `crucible.judgment_queue.v1` queue artifact.
+    /// Render a phone-first adjudication panel from an existing
+    /// `crucible.judgment_queue.v1` queue artifact, optionally serving it with
+    /// real writeback (backlog 005).
     AdjudicationPanel {
         /// Path to a judgment queue JSON artifact.
         #[arg(long, value_name = "PATH")]
@@ -239,6 +241,17 @@ enum Command {
         /// Output directory; `index.html` and a copied `queue.json` are written.
         #[arg(long, value_name = "DIR")]
         out: PathBuf,
+        /// Serve the panel locally with a real `POST /label` writeback loop
+        /// instead of only writing static files.
+        #[arg(long)]
+        serve: bool,
+        /// Port to bind for `--serve`. `0` asks the OS for a free port.
+        #[arg(long, value_name = "PORT", default_value_t = 4173)]
+        port: u16,
+        /// Where `--serve` persists applied labels as a `crucible.label.v1`
+        /// JSON array. Defaults to `<out>/labels.json`; resumed on restart.
+        #[arg(long, value_name = "PATH")]
+        labels: Option<PathBuf>,
     },
     /// Serve Crucible's run surface as a stdio Model Context Protocol server.
     Mcp,
@@ -355,7 +368,13 @@ fn main() -> ExitCode {
             db,
         } => run_eval(spec.as_deref(), eval, out.as_deref(), json, &db),
         Command::Runs { command } => run_runs(command),
-        Command::AdjudicationPanel { queue, out } => run_adjudication_panel(&queue, &out),
+        Command::AdjudicationPanel {
+            queue,
+            out,
+            serve,
+            port,
+            labels,
+        } => run_adjudication_panel(&queue, &out, serve, port, labels.as_deref()),
         Command::Mcp => mcp::run_stdio(),
     };
     match result {
@@ -597,8 +616,14 @@ fn plural(count: usize) -> &'static str {
 }
 
 /// `crucible adjudication-panel`: render a phone-first static HTML panel from an
-/// existing judgment queue.
-fn run_adjudication_panel(queue: &Path, out: &Path) -> anyhow::Result<()> {
+/// existing judgment queue, or (`--serve`) serve it with real writeback.
+fn run_adjudication_panel(
+    queue: &Path,
+    out: &Path,
+    serve: bool,
+    port: u16,
+    labels: Option<&Path>,
+) -> anyhow::Result<()> {
     let receipt = adjudication_panel::write_panel(queue, out)?;
     println!("crucible adjudication-panel");
     println!("  queue    {}", queue.display());
@@ -606,6 +631,16 @@ fn run_adjudication_panel(queue: &Path, out: &Path) -> anyhow::Result<()> {
     println!("  labels   {}", receipt.labels);
     println!("  wrote    {}", receipt.html_path.display());
     println!("  wrote    {}", receipt.queue_path.display());
+    if serve {
+        let labels_path = labels
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| out.join("labels.json"));
+        adjudication_server::serve(adjudication_server::ServeOptions {
+            queue_path: queue.to_path_buf(),
+            labels_path,
+            port,
+        })?;
+    }
     Ok(())
 }
 
