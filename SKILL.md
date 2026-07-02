@@ -16,6 +16,26 @@ boundaries, runner boundaries, exports, or UI. Raw model outputs and raw diffs
 must stay under `runs/` unless deliberately committed as sanitized fixtures under
 `crucible*/tests/fixtures/`.
 
+## Validate A Spec Before Running
+
+Check a declared spec is an executable contract — no sibling checkout, no
+trials file, no `OPENROUTER_API_KEY` required:
+
+```sh
+cargo run -p crucible -- validate evals/pr-review-key-recall-v0.json --json
+```
+
+Returns `{valid, runnable, errors, warnings}`. `errors` name a field the
+runner will refuse to run over (wrong `aggregation`/`uncertainty.method`, a
+declared `uncertainty.confidence` other than `0.95` — the only interval the
+runner computes — or a missing grader of the kind the runner's family
+actually executes). `warnings` name fields that are honestly not yet wired
+(`baselines`) or informational (a `daedalus_trials` corpus path that escapes
+the spec's own directory, so it only runs against a specific sibling
+checkout). Exits `0` whether or not the spec is valid — the verdict is in the
+body, same as `grade`/`adjudicate`; exit `1` is a genuine load error (unknown
+`schema_version`, malformed JSON).
+
 ## Run Declared And Built-In Evals
 
 Run the first declared benchmark spec:
@@ -53,6 +73,43 @@ cargo run -p crucible -- run evals/prompt-smoke-v0.json \
   --db runs/local/crucible-runs.sqlite \
   --json
 ```
+
+Run the agentic judge (`GraderKind::Agentic` made real, backlog 012): a live
+BYOK judge model scores a candidate against a rubric, with a judge-gaming
+canary — a deliberately bad candidate the judge must reject:
+
+```sh
+OPENROUTER_API_KEY=... \
+cargo run -p crucible -- run evals/agentic-judge-smoke-v0.json \
+  --out runs/local/agentic-judge-smoke \
+  --json
+```
+
+If the judge rubber-stamps the canary (agrees it passes when the spec says it
+must not), the run refuses outright — no evidence is written, not even
+`run-report.json`. Every task carrying a known `expected_pass` (the canary is
+one example) also feeds a `CalibrationRecord`: raw agreement, Cohen's κ, and
+an `unlocked` flag (agreement ≥ 0.8) recorded in the evidence JSON and spelled
+out in the run's notes as "Calibration UNLOCKED"/"LOCKED".
+
+Run the first real Cerberus review-quality benchmark (backlog 015) — the
+production reviewer config scored against the live Threshold arena, with
+pass^k task consistency across repeated trials:
+
+```sh
+cargo run -p crucible -- run evals/cerberus-review-quality-v0.json \
+  --out runs/local/cerberus-review-quality \
+  --json
+```
+
+`pass^k` (`k` = trials per task) only reports when every selected task shares
+the same trial count ≥ 2 — it Wilson-scores the fraction of tasks where *every*
+trial fully matched the adjudicated key (zero missed, zero false positives).
+The independence unit is the task, not the trial — the same pattern
+`crucible dashboard`'s leaderboard already used for `solve_rate`. This is a
+real measurement of consistency, not just of average recall: a config that is
+80% correct on average but never fully correct twice in a row reports a *low*
+pass^k even with a decent key-recall score.
 
 Query the ledger:
 
@@ -164,11 +221,16 @@ client needs to invoke evals directly.
 
 Query tools:
 
-- `crucible_runs_list`: list stored run rows, optionally filtered by benchmark.
+- `crucible_validate`: check a declared spec's `{valid, runnable, errors,
+  warnings}` before spending a `crucible_run` call on it — call this first.
+- `crucible_runs_list`: list stored run rows, optionally filtered by
+  benchmark, config id, model slug, or creation date.
 - `crucible_runs_show`: fetch one run by run id with artifact pointers and
   indexed prompt task rows.
-- `crucible_runs_compare`: compare latest stored runs for two config ids or
-  model slugs under one benchmark.
+- `crucible_runs_compare`: compare the latest stored runs for two config ids
+  or model slugs under one benchmark — pairs on shared prompt-task fixtures
+  (McNemar) when both runs indexed the same task ids, falls back to an
+  unpaired descriptive delta otherwise.
 
 ## Headless Eval Loop
 
@@ -229,6 +291,24 @@ cargo run -p crucible -- adjudication-panel \
 ```
 
 Open `runs/local/adjudication-panel/index.html` to inspect the queue.
+
+Or serve the panel with real writeback (backlog 005/012): a small local HTTP
+server, no framework, that actually persists a Keep/Nit/Wrong/Noise tap:
+
+```sh
+cargo run -p crucible -- adjudication-panel \
+  --queue crucible/tests/fixtures/export-queue.json \
+  --out runs/local/adjudication-panel \
+  --serve --port 4173
+```
+
+Open `http://127.0.0.1:4173/` and tap a verdict; each tap `POST`s to
+`/label`, mints a `Label` through the same `apply_label` path `--apply` uses,
+and persists the accumulated labels to `runs/local/adjudication-panel/labels.json`
+(override with `--labels`) as a `crucible.label.v1` JSON array — the exact
+shape `crucible adjudicate --apply <that file>` reads back, so a served
+session re-enters the headless loop with zero conversion. Resumable: restart
+`--serve` against the same `--labels` path and prior work is still there.
 
 ## Dashboard
 
