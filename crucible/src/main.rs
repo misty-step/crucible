@@ -50,6 +50,8 @@
 //!   ledger unless `--db` points at a different ledger.
 //! - `crucible runs list|show|compare` queries the SQLite run ledger by
 //!   benchmark, run id, or latest config/model pair.
+//! - `crucible serve` exposes the same spec validation and run ledger surfaces
+//!   as a local-first browser application.
 //! - `crucible adjudication-panel --queue <queue.json> --out <DIR>` renders an
 //!   existing `crucible.judgment_queue.v1` artifact into a static phone-first
 //!   `index.html` panel plus the copied `queue.json` model.
@@ -87,6 +89,7 @@ mod dashboard_html;
 mod eval_run;
 mod mcp;
 mod run_store;
+mod serve;
 mod spec_run;
 mod validate;
 
@@ -248,6 +251,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Serve Crucible's local benchmark workbench over HTTP on 127.0.0.1.
+    Serve {
+        /// SQLite run ledger path.
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        db: PathBuf,
+        /// Directory containing declared EvalSpec JSON files.
+        #[arg(long, value_name = "DIR", default_value = "evals")]
+        specs: PathBuf,
+        /// Port to bind. `0` asks the OS for a free port.
+        #[arg(long, value_name = "PORT", default_value_t = 4174)]
+        port: u16,
+    },
     /// Render a phone-first adjudication panel from an existing
     /// `crucible.judgment_queue.v1` queue artifact, optionally serving it with
     /// real writeback (backlog 005).
@@ -386,6 +401,11 @@ fn main() -> ExitCode {
         } => run_eval(spec.as_deref(), eval, out.as_deref(), json, &db),
         Command::Runs { command } => run_runs(command),
         Command::Validate { spec, json } => run_validate(&spec, json),
+        Command::Serve { db, specs, port } => serve::serve(serve::ServeOptions {
+            db_path: db,
+            specs_dir: specs,
+            port,
+        }),
         Command::AdjudicationPanel {
             queue,
             out,
