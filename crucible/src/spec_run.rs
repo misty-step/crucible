@@ -50,11 +50,83 @@ pub fn run(spec_path: &Path, out: Option<&Path>) -> anyhow::Result<RunReport> {
     Ok(report)
 }
 
-fn load_spec(spec_path: &Path) -> anyhow::Result<EvalSpec> {
+pub(crate) fn load_spec(spec_path: &Path) -> anyhow::Result<EvalSpec> {
     let bytes = std::fs::read(spec_path)
         .with_context(|| format!("reading eval spec {}", spec_path.display()))?;
     serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing {} as a Crucible EvalSpec", spec_path.display()))
+}
+
+/// The grader kind a runner requires declared in `graders.graders` before it
+/// will execute — the grading tier the runner actually performs, not an
+/// aspiration. `key_recall`/`prompt_benchmark` grade deterministically;
+/// `agentic_judge` makes the live judge call `GraderKind::Agentic` names.
+pub(crate) fn required_grader_kind(runner_kind: RunnerKind) -> GraderKind {
+    match runner_kind {
+        RunnerKind::KeyRecall | RunnerKind::PromptBenchmark => GraderKind::Deterministic,
+        RunnerKind::AgenticJudge => GraderKind::Agentic,
+    }
+}
+
+/// The checks every runner enforces before it will make a call or read a
+/// corpus — shared by the real bail path below and `crucible validate`
+/// (backlog 014), so the two can never drift apart. Refuses (does not merely
+/// warn) a spec that declares a runner kind's aggregation, uncertainty
+/// method/confidence, or grader mix it cannot honor: backlog 014's "wired or
+/// removed," applied to `aggregation`, `uncertainty.confidence`, and
+/// `graders` (`fixtures` already flows into evaluation-card provenance;
+/// `baselines` remains genuinely unenforced — not claimed honest here).
+pub(crate) fn preflight_spec(spec: &EvalSpec, runner_kind: RunnerKind) -> anyhow::Result<()> {
+    let label = runner_kind_label(runner_kind);
+    if spec.aggregation != AggregationMethod::Proportion {
+        anyhow::bail!(
+            "{label} runner requires aggregation=proportion, got {:?}",
+            spec.aggregation
+        );
+    }
+    if spec.uncertainty.method != IntervalMethod::Wilson {
+        anyhow::bail!(
+            "{label} runner requires uncertainty.method=wilson, got {:?}",
+            spec.uncertainty.method
+        );
+    }
+    // The runner always computes a Wilson interval at 95% confidence
+    // (main.rs's Z_95 = 1.96, hardcoded) regardless of what a spec declares.
+    // A spec declaring anything else is a lie the runner used to tell by
+    // silently ignoring the field; refuse instead.
+    const HONORED_CONFIDENCE: f64 = 0.95;
+    if (spec.uncertainty.confidence - HONORED_CONFIDENCE).abs() > f64::EPSILON {
+        anyhow::bail!(
+            "{label} runner only computes a {:.2} confidence Wilson interval; spec declares uncertainty.confidence={}",
+            HONORED_CONFIDENCE,
+            spec.uncertainty.confidence
+        );
+    }
+    let required = required_grader_kind(runner_kind);
+    if !spec
+        .graders
+        .graders
+        .iter()
+        .any(|grader| grader.kind == required)
+    {
+        let article = if matches!(required, GraderKind::Agentic) {
+            "an"
+        } else {
+            "a"
+        };
+        anyhow::bail!(
+            "{label} runner requires {article} {required:?} grader declared in graders.graders"
+        );
+    }
+    Ok(())
+}
+
+fn runner_kind_label(kind: RunnerKind) -> &'static str {
+    match kind {
+        RunnerKind::KeyRecall => "key_recall",
+        RunnerKind::PromptBenchmark => "prompt_benchmark",
+        RunnerKind::AgenticJudge => "agentic_judge",
+    }
 }
 
 fn run_runner(
@@ -76,18 +148,7 @@ fn run_key_recall(
     spec_path: &Path,
     out: &Path,
 ) -> anyhow::Result<EvalReport> {
-    if spec.aggregation != AggregationMethod::Proportion {
-        anyhow::bail!(
-            "key_recall runner requires aggregation=proportion, got {:?}",
-            spec.aggregation
-        );
-    }
-    if spec.uncertainty.method != IntervalMethod::Wilson {
-        anyhow::bail!(
-            "key_recall runner requires uncertainty.method=wilson, got {:?}",
-            spec.uncertainty.method
-        );
-    }
+    preflight_spec(spec, RunnerKind::KeyRecall)?;
 
     match &runner.corpus {
         CorpusSpec::DaedalusTrials {
@@ -450,18 +511,7 @@ fn run_prompt_benchmark(
     spec_path: &Path,
     out: &Path,
 ) -> anyhow::Result<EvalReport> {
-    if spec.aggregation != AggregationMethod::Proportion {
-        anyhow::bail!(
-            "prompt_benchmark runner requires aggregation=proportion, got {:?}",
-            spec.aggregation
-        );
-    }
-    if spec.uncertainty.method != IntervalMethod::Wilson {
-        anyhow::bail!(
-            "prompt_benchmark runner requires uncertainty.method=wilson, got {:?}",
-            spec.uncertainty.method
-        );
-    }
+    preflight_spec(spec, RunnerKind::PromptBenchmark)?;
 
     let CorpusSpec::PromptBenchmark { config, tasks } = &runner.corpus else {
         anyhow::bail!("prompt_benchmark runner requires corpus.source=prompt_benchmark");
@@ -589,30 +639,7 @@ fn run_agentic_judge(
     spec_path: &Path,
     out: &Path,
 ) -> anyhow::Result<EvalReport> {
-    if spec.aggregation != AggregationMethod::Proportion {
-        anyhow::bail!(
-            "agentic_judge runner requires aggregation=proportion, got {:?}",
-            spec.aggregation
-        );
-    }
-    if spec.uncertainty.method != IntervalMethod::Wilson {
-        anyhow::bail!(
-            "agentic_judge runner requires uncertainty.method=wilson, got {:?}",
-            spec.uncertainty.method
-        );
-    }
-    // GraderKind::Agentic constructed for real (backlog 012): the spec must
-    // name an agentic grader before this runner will make a model call.
-    if !spec
-        .graders
-        .graders
-        .iter()
-        .any(|grader| grader.kind == GraderKind::Agentic)
-    {
-        anyhow::bail!(
-            "agentic_judge runner requires an Agentic grader declared in graders.graders"
-        );
-    }
+    preflight_spec(spec, RunnerKind::AgenticJudge)?;
 
     let CorpusSpec::AgenticJudge { config, tasks } = &runner.corpus else {
         anyhow::bail!("agentic_judge runner requires corpus.source=agentic_judge");

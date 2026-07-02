@@ -88,6 +88,7 @@ mod eval_run;
 mod mcp;
 mod run_store;
 mod spec_run;
+mod validate;
 
 /// Standard-normal quantile for a two-sided 95% interval.
 const Z_95: f64 = 1.96;
@@ -231,6 +232,19 @@ enum Command {
         #[command(subcommand)]
         command: RunsCommand,
     },
+    /// Check whether a declared EvalSpec is an executable contract: every
+    /// preflight rule `run` enforces, without needing a runnable corpus
+    /// (backlog 014). Exits 0 whether or not the spec is valid — the
+    /// `valid`/`runnable` fields carry the verdict; exit 1 is reserved for a
+    /// spec that fails to load (unknown schema, malformed JSON).
+    Validate {
+        /// Path to a declared Crucible EvalSpec JSON.
+        #[arg(value_name = "SPEC")]
+        spec: PathBuf,
+        /// Emit a stable JSON object instead of a human-readable report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Render a phone-first adjudication panel from an existing
     /// `crucible.judgment_queue.v1` queue artifact, optionally serving it with
     /// real writeback (backlog 005).
@@ -368,6 +382,7 @@ fn main() -> ExitCode {
             db,
         } => run_eval(spec.as_deref(), eval, out.as_deref(), json, &db),
         Command::Runs { command } => run_runs(command),
+        Command::Validate { spec, json } => run_validate(&spec, json),
         Command::AdjudicationPanel {
             queue,
             out,
@@ -435,6 +450,33 @@ fn run_eval(
         );
     }
     Ok(())
+}
+
+/// `crucible validate`: is a declared spec an executable contract?
+fn run_validate(spec: &Path, json: bool) -> anyhow::Result<()> {
+    let report = validate::validate(spec)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_validation_report(&report);
+    }
+    Ok(())
+}
+
+fn print_validation_report(report: &validate::ValidationReport) {
+    println!("crucible validate");
+    println!("  spec      {}", report.spec);
+    println!("  valid     {}", report.valid);
+    println!("  runnable  {}", report.runnable);
+    for error in &report.errors {
+        println!("  ERROR     {}: {}", error.field, error.message);
+    }
+    for warning in &report.warnings {
+        println!("  warning   {}: {}", warning.field, warning.message);
+    }
+    if report.errors.is_empty() && report.warnings.is_empty() {
+        println!("  (no issues)");
+    }
 }
 
 fn run_runs(command: RunsCommand) -> anyhow::Result<()> {

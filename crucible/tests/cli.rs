@@ -1223,9 +1223,15 @@ fn mcp_crucible_run_executes_declared_spec() {
     );
     let tools = read_jsonrpc(&mut stdout);
     assert!(tools.get("error").is_none(), "tools/list succeeds: {tools}");
-    assert_eq!(
-        tools["result"]["tools"][0]["name"], "crucible_run",
-        "MCP exposes the eval runner as an agent-callable tool"
+    let tool_names: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("tool name"))
+        .collect();
+    assert!(
+        tool_names.contains(&"crucible_run"),
+        "MCP exposes the eval runner as an agent-callable tool: {tool_names:?}"
     );
 
     write_jsonrpc(
@@ -1303,6 +1309,68 @@ fn mcp_crucible_run_executes_declared_spec() {
         shutdown.get("error").is_none(),
         "shutdown succeeds: {shutdown}"
     );
+    drop(stdin);
+    let status = child.wait().expect("MCP process exits");
+    assert!(status.success(), "MCP process exits cleanly");
+}
+
+/// `crucible_validate` over MCP (backlog 014): an agent checks a spec before
+/// spending a `crucible_run` call on it.
+#[test]
+fn mcp_crucible_validate_confirms_a_real_fixture_spec_is_valid_and_runnable() {
+    let spec = fixture("specs/key-recall-fixture.json");
+    let mut child = crucible()
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn crucible mcp");
+    let mut stdin = child.stdin.take().expect("MCP stdin");
+    let stdout = child.stdout.take().expect("MCP stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "protocolVersion": "2025-11-25" }
+        }),
+    );
+    read_jsonrpc(&mut stdout);
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "crucible_validate",
+                "arguments": { "spec": spec }
+            }
+        }),
+    );
+    let call = read_jsonrpc(&mut stdout);
+    assert!(
+        call.get("error").is_none(),
+        "crucible_validate tool call succeeds: {call}"
+    );
+    let report = &call["result"]["structuredContent"];
+    assert_eq!(report["schema_version"], "crucible.validate_report.v1");
+    assert_eq!(
+        report["valid"], true,
+        "the real key-recall fixture spec is a valid, honest spec: {report}"
+    );
+    assert_eq!(report["runnable"], true);
+    assert_eq!(report["errors"].as_array().unwrap().len(), 0);
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    read_jsonrpc(&mut stdout);
     drop(stdin);
     let status = child.wait().expect("MCP process exits");
     assert!(status.success(), "MCP process exits cleanly");
@@ -1432,5 +1500,104 @@ fn exit_codes_are_stable_across_success_load_error_and_usage_error() {
         usage_error.status.code(),
         Some(2),
         "a usage error is exit 2"
+    );
+}
+
+/// `crucible validate` over the real committed specs (backlog 014): every
+/// fixture spec must be honest about what the runner actually enforces.
+#[test]
+fn validate_reports_the_real_flagship_specs_as_valid_with_expected_warnings() {
+    for (spec, expect_warnings) in [
+        (repo_fixture("evals/agentic-judge-smoke-v0.json"), false),
+        (repo_fixture("evals/prompt-smoke-v0.json"), false),
+        (repo_fixture("evals/pr-review-key-recall-v0.json"), true),
+        (repo_fixture("evals/cerberus-review-quality-v0.json"), true),
+    ] {
+        let out = crucible()
+            .arg("validate")
+            .arg(&spec)
+            .arg("--json")
+            .output()
+            .expect("crucible binary runs");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "validate always exits 0 for a spec that loads; verdict is in the body: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let report: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("validate --json emits JSON");
+        assert_eq!(report["schema_version"], "crucible.validate_report.v1");
+        assert_eq!(
+            report["valid"], true,
+            "{spec:?} should be a valid, honest spec: {report}"
+        );
+        assert_eq!(
+            report["runnable"], true,
+            "{spec:?} declares a runner and passes every preflight check: {report}"
+        );
+        assert_eq!(report["errors"].as_array().unwrap().len(), 0);
+        let has_warnings = !report["warnings"].as_array().unwrap().is_empty();
+        assert_eq!(
+            has_warnings, expect_warnings,
+            "{spec:?} warning expectation: {report}"
+        );
+    }
+}
+
+/// A negative fixture: a spec declaring `uncertainty.confidence` the runner
+/// does not honor must fail validation with a named field and an unambiguous
+/// message, without needing any runnable corpus (no sibling checkout, no
+/// trials file, no API key) — the whole point of validating before running.
+#[test]
+fn validate_refuses_a_spec_that_declares_an_unhonored_confidence() {
+    let root = temp_root("validate-bad-confidence");
+    let spec_text = std::fs::read_to_string(repo_fixture("evals/prompt-smoke-v0.json"))
+        .expect("read prompt-smoke-v0.json");
+    let mut spec: serde_json::Value = serde_json::from_str(&spec_text).unwrap();
+    spec["uncertainty"]["confidence"] = json!(0.99);
+    let spec_path = root.join("bad-confidence.json");
+    std::fs::write(&spec_path, serde_json::to_string_pretty(&spec).unwrap())
+        .expect("write bad-confidence spec");
+
+    let out = crucible()
+        .arg("validate")
+        .arg(&spec_path)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    assert_eq!(out.status.code(), Some(0));
+    let report: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("validate --json emits JSON");
+    assert_eq!(report["valid"], false);
+    assert_eq!(report["runnable"], false);
+    let errors = report["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["field"], "runner");
+    assert!(
+        errors[0]["message"].as_str().unwrap().contains("0.99"),
+        "{report}"
+    );
+}
+
+/// `validate` distinguishes a load error (unknown schema/malformed JSON —
+/// exit 1) from a validation finding (exit 0, verdict in the body) — the
+/// same exit-code discipline every other subcommand uses.
+#[test]
+fn validate_exits_1_on_a_load_error_not_0_with_a_finding() {
+    let root = temp_root("validate-load-error");
+    let spec_path = root.join("not-json.json");
+    std::fs::write(&spec_path, "not valid json").expect("write malformed spec");
+
+    let out = crucible()
+        .arg("validate")
+        .arg(&spec_path)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a spec that fails to parse is a load error, not a validation finding"
     );
 }
