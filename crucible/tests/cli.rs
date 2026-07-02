@@ -1549,6 +1549,130 @@ fn mcp_crucible_validate_confirms_a_real_fixture_spec_is_valid_and_runnable() {
     assert!(status.success(), "MCP process exits cleanly");
 }
 
+/// Backlog 021: `crucible_grade`/`crucible_adjudicate`/`crucible_export` over
+/// MCP are the same computations the CLI subcommands run, not a second
+/// implementation — this drives all three end to end over one real stdio
+/// JSON-RPC session, chaining adjudicate's queue into export's --labels the
+/// way an agent lane actually would.
+#[test]
+fn mcp_exposes_grade_adjudicate_and_export_as_the_same_cli_computations() {
+    let artifact = fixture("cerberus-artifact.json");
+    let key = fixture("key.json");
+    let mut child = crucible()
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn crucible mcp");
+    let mut stdin = child.stdin.take().expect("MCP stdin");
+    let stdout = child.stdout.take().expect("MCP stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "protocolVersion": "2025-11-25" }
+        }),
+    );
+    read_jsonrpc(&mut stdout);
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "crucible_grade",
+                "arguments": { "artifact": artifact, "key": key }
+            }
+        }),
+    );
+    let graded = read_jsonrpc(&mut stdout);
+    assert!(
+        graded.get("error").is_none(),
+        "crucible_grade tool call succeeds: {graded}"
+    );
+    let grade_report = &graded["result"]["structuredContent"];
+    assert_eq!(grade_report["schema_version"], "crucible.grade_report.v1");
+    assert_eq!(grade_report["matched"], 1);
+    assert_eq!(grade_report["missed"], 1);
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "crucible_adjudicate",
+                "arguments": { "artifact": artifact, "key": key }
+            }
+        }),
+    );
+    let adjudicated = read_jsonrpc(&mut stdout);
+    assert!(
+        adjudicated.get("error").is_none(),
+        "crucible_adjudicate tool call succeeds: {adjudicated}"
+    );
+    let queue = &adjudicated["result"]["structuredContent"];
+    assert_eq!(queue["summary"]["matched"], 1);
+
+    let export_labels = fixture("export-queue.json");
+    let export_out = temp_root("mcp-export");
+    let export_key = fixture("export-original-key.json");
+    write_jsonrpc(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "crucible_export",
+                "arguments": {
+                    "labels": export_labels,
+                    "out": export_out,
+                    "arena": "pr-review-v0",
+                    "task": "py-file-cache",
+                    "base_version": "0.2.0",
+                    "date": "2026-06-29",
+                    "key": export_key
+                }
+            }
+        }),
+    );
+    let exported = read_jsonrpc(&mut stdout);
+    assert!(
+        exported.get("error").is_none(),
+        "crucible_export tool call succeeds: {exported}"
+    );
+    let export_report = &exported["result"]["structuredContent"];
+    assert_eq!(export_report["schema_version"], "crucible.export_report.v1");
+    assert_eq!(export_report["arena"], "pr-review-v0");
+    assert_eq!(export_report["adjudications"], 3);
+    assert_eq!(export_report["accepts"], 1);
+    assert!(
+        export_report["oracle_key"].is_string(),
+        "a --key was given, so the report names the written oracle key: {export_report}"
+    );
+    assert!(
+        std::fs::metadata(export_out.join("adjudications.md")).is_ok(),
+        "the MCP tool actually wrote adjudications.md, not just a structured report"
+    );
+
+    write_jsonrpc(
+        &mut stdin,
+        json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
+    );
+    read_jsonrpc(&mut stdout);
+    drop(stdin);
+    let status = child.wait().expect("MCP process exits");
+    assert!(status.success(), "MCP process exits cleanly");
+}
+
 /// The same declared runner must also consume fresh Cerberus producer handoffs:
 /// a `ReviewArtifact` bound to a `ReviewReceiptBundle.v1`, then scored by
 /// Crucible against the Harbor key.

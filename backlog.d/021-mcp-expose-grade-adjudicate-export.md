@@ -1,6 +1,6 @@
 # Expose grade/adjudicate/export as MCP tools
 
-Priority: P2 · Status: ready · Estimate: M
+Priority: P2 · Status: done · Estimate: M
 
 ## Goal
 
@@ -18,20 +18,20 @@ extract/share the function `main.rs`'s CLI handlers already call).
 
 ## Oracle
 
-- [ ] Three new tools appear in the MCP `tools/list` response
+- [x] Three new tools appear in the MCP `tools/list` response
   (`crucible/src/mcp.rs:90-231` region) with JSON schemas mirroring their CLI
   flag equivalents (`--artifact`, `--key`, `--apply`, `--labels`, `--out`,
   `--arena`, `--task`, `--base-version`, etc., per the `Grade`/`Adjudicate`/
   `Export` clap variants in `main.rs:128-186`).
-- [ ] Each tool's handler calls the same underlying function the CLI
+- [x] Each tool's handler calls the same underlying function the CLI
   subcommand calls (no re-implementation) and returns the same stable JSON
   shape the CLI's `--json` flag produces.
-- [ ] At least one new test per tool follows the existing pattern
+- [x] At least one new test per tool follows the existing pattern
   (`mcp_exposes_run_as_an_agent_intent`-style, or the `--json` round-trip
   test already used for `crucible_validate` in `crucible/tests/cli.rs`)
   invoking the tool over a real stdio JSON-RPC exchange against a fixture
   artifact/key.
-- [ ] `cargo test --all` and `cargo clippy --all-targets -- -D warnings` pass.
+- [x] `cargo test --all` and `cargo clippy --all-targets -- -D warnings` pass.
 
 ## Notes
 
@@ -51,3 +51,28 @@ surface, no taste call, purely wiring the existing 3-tool pattern.
 surface bucket and a groom-report finding that is still live in the current
 tree; low risk because it reuses the exact tool-registration pattern already
 proven 5 times in this file tonight.
+
+**Progress 2026-07-02 (overnight):** landed. `main.rs`'s three CLI handlers
+(`run_grade`, `run_adjudicate`, `run_export`) were each split into a thin
+print-only wrapper plus a shared, non-printing computation function
+(`build_grade_report`, `build_judgment_queue`, `build_export`) — MCP cannot
+reuse a function that `println!`s (stdout is the JSON-RPC protocol channel),
+so the split was structurally required, not optional, to satisfy "no
+re-implementation." `export` gained a stable `ExportReport` struct
+(`crucible.export_report.v1`) — it previously had no `--json`/structured
+output at all, only human `println!`s — assembled once by `build_export` and
+consumed by both the CLI's print path and the new MCP tool. `print_grade_summary`
+was simplified to take `&GradeReport` directly instead of five separate
+scalar/struct params, since every field it needs was already on the report.
+All three refactors are behavior-preserving: the full existing test suite
+(including the untouched golden `crucible/tests/export.rs` round-trip
+tests) passes unchanged, and CLI text/JSON output was live-verified via the
+real binary before and after.
+
+New MCP tools `crucible_grade`, `crucible_adjudicate`, `crucible_export`
+registered in `mcp.rs` with JSON schemas mirroring their CLI flags. One new
+end-to-end test drives all three over a single real stdio JSON-RPC session,
+chaining `adjudicate`'s queue into `export`'s `--labels` the way an agent
+lane actually would, and asserts `export` actually wrote `adjudications.md`
+to disk (not just a structured report). `mcp_exposes_run_as_an_agent_intent`'s
+exhaustive tool-name-order assertion updated for the 8-tool list.

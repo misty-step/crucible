@@ -105,6 +105,9 @@ const EXIT_LOAD_ERROR: u8 = 1;
 const GRADE_REPORT_SCHEMA: &str = "crucible.grade_report.v1";
 /// Stable schema id for the `adapt --json` object ([`AdaptReport`]).
 const ADAPT_REPORT_SCHEMA: &str = "crucible.adapt_report.v1";
+/// Stable schema id for the `export`/MCP `crucible_export` report
+/// ([`ExportReport`]).
+const EXPORT_REPORT_SCHEMA: &str = "crucible.export_report.v1";
 
 /// Score a Cerberus review run against a Daedalus answer key.
 #[derive(Debug, Parser)]
@@ -708,6 +711,19 @@ fn run_adapt(artifact: &Path, json: bool) -> anyhow::Result<()> {
 
 /// `crucible grade`: run the deterministic pre-grader and report the result.
 fn run_grade(artifact: &Path, key_path: &Path, json: bool) -> anyhow::Result<()> {
+    let report = build_grade_report(artifact, key_path)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_grade_summary(&report);
+    }
+    Ok(())
+}
+
+/// Run the deterministic pre-grader and assemble the stable [`GradeReport`] —
+/// the one computation both `crucible grade` and MCP `crucible_grade` call, so
+/// neither re-implements the other.
+fn build_grade_report(artifact: &Path, key_path: &Path) -> anyhow::Result<GradeReport> {
     let (candidates, dropped_invalid) = candidate_rows(artifact)?;
     let key_rows = load_key_rows(key_path)?;
 
@@ -715,30 +731,17 @@ fn run_grade(artifact: &Path, key_path: &Path, json: bool) -> anyhow::Result<()>
     let match_rate = MatchRate::from_grade(&result);
     let recoverable = recoverable_misses(&result);
 
-    if json {
-        let report = GradeReport {
-            schema_version: GRADE_REPORT_SCHEMA,
-            artifact: artifact.display().to_string(),
-            key: key_path.display().to_string(),
-            matched: result.matched.len(),
-            disputed: result.disputed.len(),
-            missed: result.missed.len(),
-            dropped_invalid,
-            recoverable_misses: recoverable,
-            match_rate,
-        };
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print_grade_summary(
-            artifact,
-            key_path,
-            &result,
-            dropped_invalid,
-            &match_rate,
-            recoverable,
-        );
-    }
-    Ok(())
+    Ok(GradeReport {
+        schema_version: GRADE_REPORT_SCHEMA,
+        artifact: artifact.display().to_string(),
+        key: key_path.display().to_string(),
+        matched: result.matched.len(),
+        disputed: result.disputed.len(),
+        missed: result.missed.len(),
+        dropped_invalid,
+        recoverable_misses: recoverable,
+        match_rate,
+    })
 }
 
 /// `crucible adjudicate`: grade, build the queue, optionally apply labels, emit.
@@ -748,6 +751,22 @@ fn run_adjudicate(
     apply: Option<&Path>,
     json: bool,
 ) -> anyhow::Result<()> {
+    let queue = build_judgment_queue(artifact, key_path, apply)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&queue)?);
+    } else {
+        print_queue(artifact, key_path, &queue);
+    }
+    Ok(())
+}
+
+/// Grade, build the adjudication queue, and optionally apply labels — the one
+/// computation both `crucible adjudicate` and MCP `crucible_adjudicate` call.
+fn build_judgment_queue(
+    artifact: &Path,
+    key_path: &Path,
+    apply: Option<&Path>,
+) -> anyhow::Result<JudgmentQueue> {
     let (candidates, _dropped) = candidate_rows(artifact)?;
     let key_rows = load_key_rows(key_path)?;
     let result = grade(&candidates, &key_rows);
@@ -756,13 +775,7 @@ fn run_adjudicate(
     if let Some(apply_path) = apply {
         queue.labels = mint_labels(&queue, &load_decisions(apply_path)?)?;
     }
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&queue)?);
-    } else {
-        print_queue(artifact, key_path, &queue);
-    }
-    Ok(())
+    Ok(queue)
 }
 
 /// The inputs `crucible export` works from: the labeled queue, the output dir,
@@ -791,6 +804,28 @@ struct ExportRequest<'a> {
 /// of a false positive. The version bump for each ACCEPT walks forward from
 /// `--base-version`.
 fn run_export(req: &ExportRequest<'_>) -> anyhow::Result<()> {
+    let report = build_export(req)?;
+    println!("crucible export");
+    println!("  arena         {}", report.arena);
+    println!("  task          {}", report.task);
+    println!(
+        "  adjudications {}  ({} accept, {} out-of-scope)",
+        report.adjudications, report.accepts, report.out_of_scope,
+    );
+    println!("  wrote         {}", report.adjudications_md);
+    if let Some(p) = &report.oracle_key {
+        println!("  oracle key    {p}");
+    }
+    if let Some(p) = &report.scorer_key {
+        println!("  scorer key    {p}");
+    }
+    Ok(())
+}
+
+/// Turn a labeled judgment queue into the Daedalus key-extension artifacts and
+/// assemble the stable [`ExportReport`] — the one computation both
+/// `crucible export` and MCP `crucible_export` call, writes and all.
+fn build_export(req: &ExportRequest<'_>) -> anyhow::Result<ExportReport> {
     let &ExportRequest {
         labels,
         out,
@@ -869,22 +904,33 @@ fn run_export(req: &ExportRequest<'_>) -> anyhow::Result<()> {
     }
 
     let accepts = adjudications.iter().filter(|a| a.is_accept()).count();
-    println!("crucible export");
-    println!("  arena         {arena}");
-    println!("  task          {task}");
-    println!(
-        "  adjudications {}  ({accepts} accept, {} out-of-scope)",
-        adjudications.len(),
-        adjudications.len() - accepts,
-    );
-    println!("  wrote         {}", md_path.display());
-    if let Some(p) = key_path {
-        println!("  oracle key    {}", p.display());
-    }
-    if let Some(p) = expected_path {
-        println!("  scorer key    {}", p.display());
-    }
-    Ok(())
+    Ok(ExportReport {
+        schema_version: EXPORT_REPORT_SCHEMA,
+        arena: arena.to_string(),
+        task: task.to_string(),
+        adjudications: adjudications.len(),
+        accepts,
+        out_of_scope: adjudications.len() - accepts,
+        adjudications_md: md_path.display().to_string(),
+        oracle_key: key_path.map(|p| p.display().to_string()),
+        scorer_key: expected_path.map(|p| p.display().to_string()),
+    })
+}
+
+/// Stable report for `crucible export --json` and MCP `crucible_export`.
+#[derive(Debug, Serialize)]
+struct ExportReport {
+    schema_version: &'static str,
+    arena: String,
+    task: String,
+    adjudications: usize,
+    accepts: usize,
+    out_of_scope: usize,
+    adjudications_md: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oracle_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scorer_key: Option<String>,
 }
 
 /// `crucible dashboard`: ingest the real arenas + runs, measure them, and write
@@ -1194,22 +1240,19 @@ fn print_adapt_table(artifact: &Path, rows: &[KeyFinding]) {
 }
 
 /// Render the grade partition and the match-rate interval.
-fn print_grade_summary(
-    artifact: &Path,
-    key: &Path,
-    result: &GradeResult,
-    dropped_invalid: usize,
-    rate: &MatchRate,
-    recoverable: usize,
-) {
+fn print_grade_summary(report: &GradeReport) {
     println!("crucible grade");
-    println!("  artifact   {}", artifact.display());
-    println!("  key        {}\n", key.display());
-    println!("  matched    {}", result.matched.len());
-    println!("  disputed   {}", result.disputed.len());
-    println!("  missed     {}", result.missed.len());
-    println!("  dropped    {dropped_invalid}  (schema-invalid findings)\n");
+    println!("  artifact   {}", report.artifact);
+    println!("  key        {}\n", report.key);
+    println!("  matched    {}", report.matched);
+    println!("  disputed   {}", report.disputed);
+    println!("  missed     {}", report.missed);
+    println!(
+        "  dropped    {}  (schema-invalid findings)\n",
+        report.dropped_invalid
+    );
 
+    let rate = &report.match_rate;
     match rate.point {
         None => println!("  match rate  n/a — no key rows to match"),
         Some(point) => println!(
@@ -1223,9 +1266,10 @@ fn print_grade_summary(
         ),
     }
 
-    if recoverable > 0 {
+    if report.recoverable_misses > 0 {
         println!(
-            "\n  note  {recoverable} missed key row(s) share a location with a disputed finding (category vocabulary mismatch); this recall is a category-strict pre-adjudication floor, not a final rate"
+            "\n  note  {} missed key row(s) share a location with a disputed finding (category vocabulary mismatch); this recall is a category-strict pre-adjudication floor, not a final rate",
+            report.recoverable_misses
         );
     }
 }
