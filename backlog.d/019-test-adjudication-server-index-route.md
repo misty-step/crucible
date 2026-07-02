@@ -1,6 +1,6 @@
 # Test coverage: adjudication server's GET / live HTML render
 
-Priority: P2 · Status: ready · Estimate: S
+Priority: P2 · Status: done · Estimate: S
 
 ## Goal
 
@@ -11,17 +11,17 @@ browser) or confirm it reflects labels already applied this session.
 
 ## Oracle
 
-- [ ] A new test drives the real `accept_loop` (same pattern as
+- [x] A new test drives the real `accept_loop` (same pattern as
   `live_server_serves_the_panel_and_accepts_a_real_http_label_post`, line
   432) issuing `GET / HTTP/1.1`, and asserts the response is `200`,
   `Content-Type: text/html...`, and the body contains the queue item's
   `finding_id`.
-- [ ] A second assertion (same test or a follow-up one) applies a label via
+- [x] A second assertion (same test or a follow-up one) applies a label via
   `POST /label` first, then re-requests `GET /`, and asserts the rendered HTML
   reflects the applied label (e.g. contains the labeled verdict or an
   updated progress count) — proving `render_live` is actually re-invoked with
   current `labels`, not a stale snapshot.
-- [ ] `cargo test --all` passes.
+- [x] `cargo test --all` passes.
 
 ## Notes
 
@@ -37,3 +37,14 @@ its JSON sibling.
 **Why:** matches OVERNIGHT.md's "test coverage on the new validate/
 adjudication paths (they merged TONIGHT — fresh code, thin tests likely)"
 category precisely; this module shipped hours ago in PR #68.
+
+**Progress 2026-07-02 (overnight):** landed as
+`live_server_serves_the_panel_html_and_reflects_an_applied_label`, same
+real-socket/background-thread pattern as the existing `/label` test. Asserts,
+in order: `GET /` before any label returns 200/`text/html`/the queue item's
+`finding_id`, and does *not* yet contain `"Label: Keep"`; a `POST /label`
+applies a `keep` verdict; `GET /` afterward now contains `"Label: Keep"`
+(server-side `render_item` reflection, not the client-side JS — proves
+`render_live` is re-invoked per request with current `labels`, not a
+snapshot taken once at server start); and `GET /index.html` returns the same
+reflected content, confirming the documented alias behaves identically.

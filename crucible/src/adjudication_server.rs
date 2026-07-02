@@ -485,6 +485,72 @@ mod tests {
         assert_eq!(persisted[0].verdict, Verdict::Nit);
     }
 
+    /// `GET /` is the actual panel a judge's browser opens — the human-facing
+    /// route backlog 005 was blocked on — not just its `/queue.json` sibling.
+    /// Proves the served HTML both renders the queue and reflects a label
+    /// applied earlier in the same session, over a real socket: the render
+    /// path is re-invoked with current `labels` on every request, not a
+    /// stale snapshot taken once at server start.
+    #[test]
+    fn live_server_serves_the_panel_html_and_reflects_an_applied_label() {
+        let dir = temp_dir("live-index");
+        let labels_path = dir.join("labels.json");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().unwrap().port();
+        let queue_for_thread = queue(&["F1"]);
+        let labels_path_for_thread = labels_path.clone();
+        std::thread::spawn(move || {
+            let mut labels = Vec::new();
+            accept_loop(
+                listener,
+                &queue_for_thread,
+                &mut labels,
+                &labels_path_for_thread,
+            );
+        });
+
+        let before = http_request(port, "GET / HTTP/1.1\r\nHost: local\r\n\r\n");
+        assert!(before.starts_with("HTTP/1.1 200 OK"), "{before}");
+        assert!(
+            before.to_lowercase().contains("content-type: text/html"),
+            "{before}"
+        );
+        assert!(before.contains("F1"), "{before}");
+        assert!(
+            !before.contains("Label: Keep"),
+            "no label applied yet: {before}"
+        );
+
+        let label_body = serde_json::to_string(&serde_json::json!({
+            "finding_id": "F1",
+            "verdict": "keep",
+            "in_scope": true,
+            "latency_ms": 900
+        }))
+        .unwrap();
+        let post_request = format!(
+            "POST /label HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{label_body}",
+            label_body.len()
+        );
+        let post_response = http_request(port, &post_request);
+        assert!(
+            post_response.starts_with("HTTP/1.1 200 OK"),
+            "{post_response}"
+        );
+
+        let after = http_request(port, "GET / HTTP/1.1\r\nHost: local\r\n\r\n");
+        assert!(after.starts_with("HTTP/1.1 200 OK"), "{after}");
+        assert!(
+            after.contains("Label: Keep"),
+            "GET / after the label must reflect it, not a stale pre-label snapshot: {after}"
+        );
+
+        // /index.html is documented as an alias for the same render.
+        let alias = http_request(port, "GET /index.html HTTP/1.1\r\nHost: local\r\n\r\n");
+        assert!(alias.starts_with("HTTP/1.1 200 OK"), "{alias}");
+        assert!(alias.contains("Label: Keep"), "{alias}");
+    }
+
     fn http_request(port: u16, request: &str) -> String {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to live server");
         stream.write_all(request.as_bytes()).expect("write request");
