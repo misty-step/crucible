@@ -69,24 +69,22 @@ Run the deterministic tracer benchmark across real OpenRouter models with one
 committed spec and no judge calls:
 
 ```sh
-cargo run -p crucible -- run evals/tracer-exact-v0.json \
-  --model deepseek/deepseek-v4-flash \
-  --out runs/local/tracer-exact/deepseek-v4-flash \
-  --json
-
-cargo run -p crucible -- run evals/tracer-exact-v0.json \
-  --model z-ai/glm-5.2 \
-  --out runs/local/tracer-exact/glm-5-2 \
+cargo run -p crucible -- run evals/tracer-exact-v1.json \
+  --models deepseek/deepseek-v4-flash,z-ai/glm-5.2,moonshotai/kimi-k2.7-code \
+  --out runs/local/tracer-exact-v1 \
   --json
 
 cargo run -p crucible -- runs compare \
-  --benchmark tracer-exact-v0 \
+  --benchmark tracer-exact-v1 \
   --left deepseek/deepseek-v4-flash \
   --right z-ai/glm-5.2
 ```
 
 `--model` is only a run-time override for declared `prompt_benchmark` specs; it
 keeps the authored eval stable while comparing selected model slugs.
+`--models` is the fan-out form for the same surface: comma-separated model slugs
+run one at a time, each under its own output child directory and each persisted
+as a normal run row with its own config/model identity.
 
 Use an isolated ledger for tests or one-off proof:
 

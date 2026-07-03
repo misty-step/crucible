@@ -1388,6 +1388,60 @@ fn run_prompt_benchmark_model_override_is_a_runtime_option_not_usage_error() {
     );
 }
 
+#[test]
+fn run_prompt_benchmark_models_fanout_is_a_runtime_option_not_usage_error() {
+    let out_dir = temp_root("prompt-models-fanout-no-key");
+    let out = crucible()
+        .arg("run")
+        .arg(repo_fixture("evals/prompt-smoke-v0.json"))
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--models")
+        .arg("deepseek/deepseek-v4-flash,z-ai/glm-5.2")
+        .arg("--json")
+        .env_remove("OPENROUTER_API_KEY")
+        .output()
+        .expect("crucible binary runs");
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "--models should parse and reach the runner; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("OPENROUTER_API_KEY"),
+        "runtime still names the missing BYOK key: {stderr}"
+    );
+}
+
+#[test]
+fn run_prompt_benchmark_model_and_models_are_mutually_exclusive() {
+    let out = crucible()
+        .arg("run")
+        .arg(repo_fixture("evals/prompt-smoke-v0.json"))
+        .arg("--model")
+        .arg("deepseek/deepseek-v4-flash")
+        .arg("--models")
+        .arg("z-ai/glm-5.2")
+        .arg("--json")
+        .env_remove("OPENROUTER_API_KEY")
+        .output()
+        .expect("crucible binary runs");
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "conflicting model flags are a Crucible runtime/config error"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("mutually exclusive"),
+        "error should name the conflict: {stderr}"
+    );
+}
+
 /// Backlog 017: the broadened deterministic grader library (`Regex`,
 /// `CaseInsensitiveContains`) is real, not just a schema addition — a spec
 /// declaring both variants validates clean and routes through the same
@@ -2036,6 +2090,7 @@ fn validate_reports_the_real_flagship_specs_as_valid_with_expected_warnings() {
     for (spec, expect_warnings) in [
         (repo_fixture("evals/agentic-judge-smoke-v0.json"), false),
         (repo_fixture("evals/prompt-smoke-v0.json"), false),
+        (repo_fixture("evals/tracer-exact-v1.json"), false),
         (repo_fixture("evals/pr-review-key-recall-v0.json"), true),
         (repo_fixture("evals/cerberus-review-quality-v0.json"), true),
     ] {

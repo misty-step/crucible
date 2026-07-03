@@ -7,6 +7,7 @@ coverage/
 .env.*
 !.env.example
 .evidence/
+.pi/
 
 # Eval run records embed real PR diffs and raw model outputs (potentially
 # proprietary) and the API-keyed transcripts that produced them — never commit

@@ -47,7 +47,9 @@
 //!   path is supplied (key-recall or prompt benchmark), or runs the three
 //!   built-in committed receipt checks when no spec is supplied. Every score
 //!   carries a Wilson interval. The run is persisted into Crucible's SQLite run
-//!   ledger unless `--db` points at a different ledger.
+//!   ledger unless `--db` points at a different ledger. Prompt benchmark specs
+//!   can fan out across selected models with `--models a,b,c`; each model is a
+//!   normal persisted run with its own config identity.
 //! - `crucible runs list|show|compare` queries the SQLite run ledger by
 //!   benchmark, run id, or latest config/model pair.
 //! - `crucible serve` exposes the same spec validation and run ledger surfaces
@@ -88,6 +90,7 @@ mod adjudication_server;
 mod dashboard_html;
 mod eval_run;
 mod mcp;
+mod run_fanout;
 mod run_store;
 mod serve;
 mod spec_run;
@@ -234,6 +237,11 @@ enum Command {
         /// OpenRouter models without committing model-specific spec copies.
         #[arg(long, value_name = "SLUG")]
         model: Option<String>,
+        /// Run a prompt_benchmark spec once per comma-separated model slug.
+        /// Each model writes under a model-specific child directory and persists
+        /// as its own run row with its own config identity.
+        #[arg(long, value_name = "SLUG,SLUG")]
+        models: Option<String>,
         /// SQLite run ledger path. Defaults to the local gitignored run store.
         #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
         db: PathBuf,
@@ -403,6 +411,7 @@ fn main() -> ExitCode {
             out,
             json,
             model,
+            models,
             db,
         } => run_eval(
             spec.as_deref(),
@@ -410,6 +419,7 @@ fn main() -> ExitCode {
             out.as_deref(),
             json,
             model.as_deref(),
+            models.as_deref(),
             &db,
         ),
         Command::Runs { command } => run_runs(command),
@@ -445,8 +455,15 @@ fn run_eval(
     out: Option<&Path>,
     json: bool,
     model: Option<&str>,
+    models: Option<&str>,
     db: &Path,
 ) -> anyhow::Result<()> {
+    if model.is_some() && models.is_some() {
+        anyhow::bail!("--model and --models are mutually exclusive");
+    }
+    if let Some(models) = models {
+        return run_fanout::run(spec, eval, out, json, models, db);
+    }
     let report = if let Some(spec_path) = spec {
         if eval != eval_run::RunEval::All {
             anyhow::bail!(
