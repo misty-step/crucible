@@ -27,6 +27,7 @@
 //! flow through the same [`AggregationMethod`] and [`UncertaintyRule`] fields.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::DeltaVerdict;
 
@@ -233,6 +234,17 @@ fn default_openrouter_credential_env() -> String {
 pub struct PromptBenchmarkTask {
     /// Stable task id in the benchmark.
     pub task_id: String,
+    /// Optional reporting stratum for class-balanced batteries, e.g.
+    /// `code_output` or `long_context_extraction`. Older prompt benchmarks leave
+    /// this empty and still deserialize normally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    /// Optional prompt context file, absolute or relative to the spec file. The
+    /// runner prepends its content to `prompt` before the model call. This keeps
+    /// long-context fixtures committed as readable files instead of huge escaped
+    /// JSON strings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_file: Option<String>,
     /// User prompt for this task.
     pub prompt: String,
     /// Deterministic rubric applied to the model response.
@@ -256,6 +268,18 @@ pub enum PromptExpectation {
     /// grading-time panic; the runner checks this before it makes any model
     /// call.
     Regex { pattern: String },
+    /// The trimmed model response must parse as JSON and exactly equal `value`.
+    /// This is stricter than text containment: prose around the JSON fails.
+    StrictJson { value: Value },
+    /// The model response is written to `solution.py` and graded by executing
+    /// `test_source` as a committed Python test in an isolated temporary
+    /// directory. The runner uses `python3 -I`, clears the environment, and
+    /// kills the child after `timeout_ms` (default 3000).
+    PythonUnitTest {
+        test_source: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
 }
 
 /// Model config for an agentic judge runner (backlog 012).
@@ -658,6 +682,8 @@ mod tests {
             },
             tasks: vec![PromptBenchmarkTask {
                 task_id: "exact-word".to_string(),
+                class: Some("format_adherence".to_string()),
+                context_file: None,
                 prompt: "Reply with exactly: crucible-smoke".to_string(),
                 expectation: PromptExpectation::Exact {
                     value: "crucible-smoke".to_string(),

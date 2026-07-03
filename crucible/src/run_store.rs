@@ -6,7 +6,7 @@
 //! `RunRecord`/`EvaluationCard` materialization can migrate forward without
 //! reparsing chat or relying on a loose artifact still existing.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -117,6 +117,8 @@ pub struct StoredArtifact {
 #[derive(Debug, Serialize)]
 pub struct StoredPromptTask {
     pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
     pub passed: bool,
     pub latency_ms: Option<u64>,
     pub response_id: Option<String>,
@@ -154,8 +156,24 @@ pub struct ConfigComparison {
     /// `common_tasks > 0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paired: Option<McnemarOutcome>,
+    pub class_breakdowns: Vec<ClassComparison>,
     pub comparison_kind: &'static str,
     pub note: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClassComparison {
+    pub class: String,
+    pub left_successes: u64,
+    pub left_n: u64,
+    pub left_point: Option<f64>,
+    pub right_successes: u64,
+    pub right_n: u64,
+    pub right_point: Option<f64>,
+    pub delta_point: Option<f64>,
+    pub common_tasks: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paired: Option<McnemarOutcome>,
 }
 
 #[derive(Debug, Default)]
@@ -174,6 +192,7 @@ struct EvidenceMetadata {
 #[derive(Debug, Clone)]
 struct PromptTaskInsert {
     task_id: String,
+    class: Option<String>,
     passed: bool,
     latency_ms: Option<u64>,
     response_id: Option<String>,
@@ -313,17 +332,18 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
         for task in metadata.prompt_tasks {
             tx.execute(
                 "INSERT INTO prompt_task_results (
-                    run_id, task_id, passed, latency_ms, response_id,
+                    run_id, task_id, task_class, passed, latency_ms, response_id,
                     requested_model, response_model, prompt_hash, rubric_hash,
                     prompt_tokens, completion_tokens, total_tokens, cost_usd,
                     output_text, evidence_json
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                    ?14, ?15
+                    ?14, ?15, ?16
                 )",
                 params![
                     run_id,
                     task.task_id,
+                    task.class,
                     if task.passed { 1i64 } else { 0i64 },
                     opt_i64(task.latency_ms)?,
                     task.response_id,
@@ -509,6 +529,7 @@ pub fn compare_configs(
         Some((outcome, n)) => (Some(outcome), n),
         None => (None, 0),
     };
+    let class_breakdowns = compare_by_class(&left_tasks, &right_tasks, alpha);
 
     let (comparison_kind, note): (&'static str, &'static str) = if paired.is_some() {
         (
@@ -533,6 +554,7 @@ pub fn compare_configs(
         delta_point,
         common_tasks,
         paired,
+        class_breakdowns,
         comparison_kind,
         note,
     })
@@ -555,6 +577,118 @@ fn paired_mcnemar(
 
     let mut b: u64 = 0; // left passed, right failed
     let mut c: u64 = 0; // left failed, right passed
+    let mut common = 0usize;
+    for task in left {
+        let Some(&right_passed) = right_by_task.get(task.task_id.as_str()) else {
+            continue;
+        };
+        common += 1;
+        match (task.passed, right_passed) {
+            (true, false) => b += 1,
+            (false, true) => c += 1,
+            _ => {}
+        }
+    }
+    if common == 0 {
+        return None;
+    }
+
+    let cmp = PairedComparison::mcnemar(b, c);
+    Some((
+        McnemarOutcome {
+            b: cmp.b,
+            c: cmp.c,
+            statistic: cmp.statistic,
+            p_value: cmp.p_value,
+            verdict: cmp.verdict(alpha),
+        },
+        common,
+    ))
+}
+
+fn compare_by_class(
+    left: &[StoredPromptTask],
+    right: &[StoredPromptTask],
+    alpha: f64,
+) -> Vec<ClassComparison> {
+    let mut classes: BTreeMap<String, (Vec<&StoredPromptTask>, Vec<&StoredPromptTask>)> =
+        BTreeMap::new();
+    for task in left {
+        classes
+            .entry(task_class(task).to_string())
+            .or_default()
+            .0
+            .push(task);
+    }
+    for task in right {
+        classes
+            .entry(task_class(task).to_string())
+            .or_default()
+            .1
+            .push(task);
+    }
+
+    classes
+        .into_iter()
+        .map(|(class, (left_tasks, right_tasks))| {
+            let left_successes = left_tasks.iter().filter(|task| task.passed).count() as u64;
+            let right_successes = right_tasks.iter().filter(|task| task.passed).count() as u64;
+            let left_n = left_tasks.len() as u64;
+            let right_n = right_tasks.len() as u64;
+            let left_point = proportion_point(left_successes, left_n);
+            let right_point = proportion_point(right_successes, right_n);
+            let delta_point = match (left_point, right_point) {
+                (Some(left), Some(right)) => Some(right - left),
+                _ => None,
+            };
+            let (paired, common_tasks) = match paired_mcnemar_refs(&left_tasks, &right_tasks, alpha)
+            {
+                Some((outcome, n)) => (Some(outcome), n),
+                None => (None, 0),
+            };
+            ClassComparison {
+                class,
+                left_successes,
+                left_n,
+                left_point,
+                right_successes,
+                right_n,
+                right_point,
+                delta_point,
+                common_tasks,
+                paired,
+            }
+        })
+        .collect()
+}
+
+fn task_class(task: &StoredPromptTask) -> &str {
+    task.class.as_deref().unwrap_or("unclassified")
+}
+
+fn proportion_point(successes: u64, n: u64) -> Option<f64> {
+    if n == 0 {
+        None
+    } else {
+        Some(successes as f64 / n as f64)
+    }
+}
+
+fn paired_mcnemar_refs(
+    left: &[&StoredPromptTask],
+    right: &[&StoredPromptTask],
+    alpha: f64,
+) -> Option<(McnemarOutcome, usize)> {
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
+    let right_by_task: HashMap<&str, bool> = right
+        .iter()
+        .map(|task| (task.task_id.as_str(), task.passed))
+        .collect();
+
+    let mut b: u64 = 0;
+    let mut c: u64 = 0;
     let mut common = 0usize;
     for task in left {
         let Some(&right_passed) = right_by_task.get(task.task_id.as_str()) else {
@@ -683,7 +817,27 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         ",
     )
-    .context("initializing run-store schema")
+    .context("initializing run-store schema")?;
+    ensure_prompt_task_class_column(conn)
+}
+
+fn ensure_prompt_task_class_column(conn: &Connection) -> Result<()> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(prompt_task_results)")
+        .context("preparing prompt_task_results schema inspection")?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .context("querying prompt_task_results schema")?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("reading prompt_task_results schema")?;
+    if !columns.iter().any(|column| column == "task_class") {
+        conn.execute(
+            "ALTER TABLE prompt_task_results ADD COLUMN task_class TEXT",
+            [],
+        )
+        .context("adding prompt_task_results.task_class column")?;
+    }
+    Ok(())
 }
 
 struct MaterializedRecord {
@@ -857,6 +1011,7 @@ fn merge_prompt_metadata(
             .with_context(|| format!("{artifact} prompt task {task_id:?} is missing passed"))?;
         metadata.prompt_tasks.push(PromptTaskInsert {
             task_id: task_id.to_string(),
+            class: opt_string(task.get("class")),
             passed,
             latency_ms: opt_u64(task.get("latency_ms")),
             response_id: opt_string(task.get("response_id")),
@@ -952,7 +1107,7 @@ fn query_artifacts(conn: &Connection, run_id: &str) -> Result<Vec<StoredArtifact
 fn query_prompt_tasks(conn: &Connection, run_id: &str) -> Result<Vec<StoredPromptTask>> {
     let mut stmt = conn
         .prepare(
-            "SELECT task_id, passed, latency_ms, response_id, requested_model,
+            "SELECT task_id, task_class, passed, latency_ms, response_id, requested_model,
                 response_model, prompt_hash, rubric_hash, prompt_tokens,
                 completion_tokens, total_tokens, cost_usd, output_text, evidence_json
              FROM prompt_task_results
@@ -962,21 +1117,22 @@ fn query_prompt_tasks(conn: &Connection, run_id: &str) -> Result<Vec<StoredPromp
         .context("preparing prompt task query")?;
     let tasks = stmt
         .query_map(params![run_id], |row| {
-            let evidence_json: String = row.get(13)?;
+            let evidence_json: String = row.get(14)?;
             Ok(StoredPromptTask {
                 task_id: row.get(0)?,
-                passed: row.get::<_, i64>(1)? != 0,
-                latency_ms: opt_i64_to_u64(row.get(2)?),
-                response_id: row.get(3)?,
-                requested_model: row.get(4)?,
-                response_model: row.get(5)?,
-                prompt_hash: row.get(6)?,
-                rubric_hash: row.get(7)?,
-                input_units: opt_i64_to_u64(row.get(8)?),
-                output_units: opt_i64_to_u64(row.get(9)?),
-                total_units: opt_i64_to_u64(row.get(10)?),
-                cost_usd: row.get(11)?,
-                output_text: row.get(12)?,
+                class: row.get(1)?,
+                passed: row.get::<_, i64>(2)? != 0,
+                latency_ms: opt_i64_to_u64(row.get(3)?),
+                response_id: row.get(4)?,
+                requested_model: row.get(5)?,
+                response_model: row.get(6)?,
+                prompt_hash: row.get(7)?,
+                rubric_hash: row.get(8)?,
+                input_units: opt_i64_to_u64(row.get(9)?),
+                output_units: opt_i64_to_u64(row.get(10)?),
+                total_units: opt_i64_to_u64(row.get(11)?),
+                cost_usd: row.get(12)?,
+                output_text: row.get(13)?,
                 evidence_json: serde_json::from_str(&evidence_json)
                     .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,
             })
@@ -1241,6 +1397,7 @@ mod tests {
             },
             "tasks": [{
                 "task_id": "exact",
+                "class": "format_adherence",
                 "prompt_hash": "fnv1a64:prompt",
                 "rubric_hash": "fnv1a64:rubric",
                 "passed": success,
@@ -1448,6 +1605,10 @@ mod tests {
         assert_eq!(detail.artifacts.len(), 2);
         assert_eq!(detail.prompt_tasks.len(), 1);
         assert_eq!(detail.prompt_tasks[0].task_id, "exact");
+        assert_eq!(
+            detail.prompt_tasks[0].class.as_deref(),
+            Some("format_adherence")
+        );
         assert_eq!(detail.prompt_tasks[0].input_units, Some(7));
         assert_eq!(
             detail.prompt_tasks[0].output_text.as_deref(),
@@ -1621,6 +1782,87 @@ mod tests {
             crucible_core::DeltaVerdict::InsideNoiseFloor,
             "a single discordant pair cannot clear any reasonable noise floor"
         );
+        assert_eq!(comparison.class_breakdowns.len(), 1);
+        let class = &comparison.class_breakdowns[0];
+        assert_eq!(class.class, "format_adherence");
+        assert_eq!(class.left_successes, 0);
+        assert_eq!(class.left_n, 1);
+        assert_eq!(class.right_successes, 1);
+        assert_eq!(class.right_n, 1);
+        assert!(class.paired.is_some());
+    }
+
+    #[test]
+    fn compares_prompt_runs_by_class_breakdown() {
+        let root = temp_dir("compare-by-class");
+        let db = root.join("runs.sqlite");
+
+        let left = prompt_report(&root, "test/model-a", false);
+        let right = prompt_report(&root, "test/model-b", true);
+        let left_path = Path::new(&left.evals[0].artifacts[1]);
+        let right_path = Path::new(&right.evals[0].artifacts[1]);
+        for (path, code_passed, logic_passed) in
+            [(left_path, false, true), (right_path, true, true)]
+        {
+            let mut evidence: Value =
+                serde_json::from_str(&std::fs::read_to_string(path).expect("read evidence"))
+                    .expect("evidence is JSON");
+            evidence["tasks"] = serde_json::json!([
+                {
+                    "task_id": "code-1",
+                    "class": "code_output",
+                    "prompt_hash": "fnv1a64:code-prompt",
+                    "rubric_hash": "fnv1a64:code-rubric",
+                    "passed": code_passed,
+                    "output": "code",
+                    "latency_ms": 1,
+                    "requested_model": "test/model",
+                    "response_model": "test/model"
+                },
+                {
+                    "task_id": "logic-1",
+                    "class": "arithmetic_logic",
+                    "prompt_hash": "fnv1a64:logic-prompt",
+                    "rubric_hash": "fnv1a64:logic-rubric",
+                    "passed": logic_passed,
+                    "output": "42",
+                    "latency_ms": 1,
+                    "requested_model": "test/model",
+                    "response_model": "test/model"
+                }
+            ]);
+            std::fs::write(
+                path,
+                format!("{}\n", serde_json::to_string_pretty(&evidence).unwrap()),
+            )
+            .expect("rewrite evidence");
+        }
+
+        persist_report(&db, &left).expect("persist left");
+        persist_report(&db, &right).expect("persist right");
+        let comparison =
+            compare_configs(&db, "prompt-smoke-v0", "test/model-a", "test/model-b", 0.05)
+                .expect("compare configs");
+
+        assert_eq!(comparison.class_breakdowns.len(), 2);
+        let by_class: HashMap<&str, &ClassComparison> = comparison
+            .class_breakdowns
+            .iter()
+            .map(|row| (row.class.as_str(), row))
+            .collect();
+        let code = by_class["code_output"];
+        assert_eq!(code.left_successes, 0);
+        assert_eq!(code.left_n, 1);
+        assert_eq!(code.right_successes, 1);
+        assert_eq!(code.right_n, 1);
+        assert_eq!(code.delta_point, Some(1.0));
+        assert_eq!(code.common_tasks, 1);
+        assert!(code.paired.is_some());
+
+        let logic = by_class["arithmetic_logic"];
+        assert_eq!(logic.left_successes, 1);
+        assert_eq!(logic.right_successes, 1);
+        assert_eq!(logic.delta_point, Some(0.0));
     }
 
     #[test]

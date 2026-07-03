@@ -413,6 +413,8 @@ mod tests {
                 },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "broken".to_string(),
+                    class: None,
+                    context_file: None,
                     prompt: "irrelevant".to_string(),
                     expectation: PromptExpectation::Regex {
                         pattern: "(unclosed".to_string(),

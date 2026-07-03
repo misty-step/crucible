@@ -619,6 +619,8 @@ fn expectation_kinds(tasks: &[crucible_core::PromptBenchmarkTask]) -> Vec<String
                 "case-insensitive contains check"
             }
             crucible_core::PromptExpectation::Regex { .. } => "regex match",
+            crucible_core::PromptExpectation::StrictJson { .. } => "strict JSON",
+            crucible_core::PromptExpectation::PythonUnitTest { .. } => "Python unit test",
         };
         if !kinds.iter().any(|existing| existing == kind) {
             kinds.push(kind.to_string());

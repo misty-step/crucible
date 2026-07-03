@@ -80,11 +80,36 @@ cargo run -p crucible -- runs compare \
   --right z-ai/glm-5.2
 ```
 
+Run the class-stratified discriminator battery (`tracer-exact-v2`): 60
+deterministic tasks, 15 each for `code_output`, `long_context_extraction`,
+`format_adherence`, and `arithmetic_logic`. It uses no judge models; code
+outputs are graded by executing committed Python unit tests in a temporary
+directory, format tasks by strict JSON parsing/equality, and the other classes
+by exact match.
+
+```sh
+cargo run -p crucible -- run evals/tracer-exact-v2.json \
+  --models deepseek/deepseek-v4-flash,z-ai/glm-5.2,moonshotai/kimi-k2.7-code,google/gemini-2.5-flash-lite \
+  --out runs/local/tracer-exact-v2/full \
+  --db runs/local/tracer-exact-v2/crucible-runs.sqlite \
+  --json
+
+cargo run -p crucible -- runs compare \
+  --benchmark tracer-exact-v2 \
+  --left deepseek/deepseek-v4-flash \
+  --right google/gemini-2.5-flash-lite \
+  --db runs/local/tracer-exact-v2/crucible-runs.sqlite \
+  --json
+```
+
 `--model` is only a run-time override for declared `prompt_benchmark` specs; it
 keeps the authored eval stable while comparing selected model slugs.
 `--models` is the fan-out form for the same surface: comma-separated model slugs
 run one at a time, each under its own output child directory and each persisted
 as a normal run row with its own config/model identity.
+For prompt benchmarks that declare per-task `class`, `runs compare` emits
+`class_breakdowns` rows with per-class pass counts, deltas, paired task counts,
+and McNemar noise-floor verdicts in addition to the overall comparison.
 
 Use an isolated ledger for tests or one-off proof:
 
