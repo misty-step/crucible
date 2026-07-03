@@ -16,7 +16,9 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::spec_run::{check_prompt_regexes, load_spec, preflight_spec};
+use crate::spec_run::{
+    check_prompt_regexes, load_spec, preflight_spec, resolve_spec_path_with_alias,
+};
 use crucible_core::{CorpusSpec, EvalSpec, RunnerKind};
 
 /// Schema identifier for a persisted [`ValidationReport`].
@@ -91,7 +93,7 @@ pub fn validate(spec_path: &Path) -> anyhow::Result<ValidationReport> {
     }
 
     check_baselines(&spec, &mut warnings);
-    check_portability(&spec, &mut warnings);
+    check_portability(spec_path, &spec, &mut warnings);
 
     Ok(ValidationReport {
         schema_version: VALIDATE_REPORT_SCHEMA,
@@ -124,7 +126,7 @@ fn check_baselines(spec: &EvalSpec, warnings: &mut Vec<ValidationIssue>) {
 /// (`..` in `arena_dir`/`trials_jsonl`) only runs on a machine with the exact
 /// sibling checkout at that relative path — not portable, not CI-runnable.
 /// Informational, not an error: it is how the real flagship specs work today.
-fn check_portability(spec: &EvalSpec, warnings: &mut Vec<ValidationIssue>) {
+fn check_portability(spec_path: &Path, spec: &EvalSpec, warnings: &mut Vec<ValidationIssue>) {
     let Some(runner) = &spec.runner else {
         return;
     };
@@ -141,6 +143,17 @@ fn check_portability(spec: &EvalSpec, warnings: &mut Vec<ValidationIssue>) {
         ("runner.corpus.trials_jsonl", trials_jsonl),
     ] {
         if Path::new(value).components().any(|c| c.as_os_str() == "..") {
+            let resolved = resolve_spec_path_with_alias(spec_path, value);
+            if let Some(alias) = resolved.alias {
+                warnings.push(ValidationIssue {
+                    field: field.to_string(),
+                    message: format!(
+                        "{value:?} escapes the spec's own directory tree and is not portable, but resolved here via {alias} to {}",
+                        resolved.path.display()
+                    ),
+                });
+                continue;
+            }
             warnings.push(ValidationIssue {
                 field: field.to_string(),
                 message: format!(
@@ -329,6 +342,52 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.field == "runner.corpus.trials_jsonl"));
+    }
+
+    #[test]
+    fn resolvable_legacy_daedalus_alias_is_a_distinct_warning() {
+        let root = temp_dir("threshold-alias");
+        let spec_dir = root.join("crucible/evals");
+        let arena = root.join("threshold/arenas/pr-review-v0");
+        let trials = root.join("threshold/runs/freeze/trials.jsonl");
+        std::fs::create_dir_all(&arena).unwrap();
+        std::fs::create_dir_all(trials.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(&trials, "").unwrap();
+
+        let mut spec = base_spec();
+        spec.graders = GraderManifest {
+            graders: vec![Grader {
+                id: "expected_key_match".to_string(),
+                kind: GraderKind::Deterministic,
+            }],
+        };
+        spec.runner = Some(RunnerSpec {
+            kind: RunnerKind::KeyRecall,
+            corpus: CorpusSpec::DaedalusTrials {
+                arena_dir: "../../daedalus/arenas/pr-review-v0".to_string(),
+                trials_jsonl: "../../daedalus/runs/freeze/trials.jsonl".to_string(),
+                candidate_id: "probe".to_string(),
+                tasks: Vec::new(),
+            },
+        });
+        let path = write_spec(&spec_dir, "spec.json", &spec);
+        let report = validate(&path).unwrap();
+
+        assert!(report.valid, "{:?}", report.errors);
+        assert!(report.runnable, "{:?}", report.errors);
+        assert!(report.warnings.iter().any(|w| {
+            w.field == "runner.corpus.arena_dir"
+                && w.message
+                    .contains("resolved here via daedalus_to_threshold")
+                && w.message.contains("not portable")
+        }));
+        assert!(report.warnings.iter().any(|w| {
+            w.field == "runner.corpus.trials_jsonl"
+                && w.message
+                    .contains("resolved here via daedalus_to_threshold")
+                && w.message.contains("not portable")
+        }));
     }
 
     #[test]
