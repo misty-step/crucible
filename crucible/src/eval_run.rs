@@ -271,7 +271,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
 }
 
 /// Top-level report for one `crucible run` invocation.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RunReport {
     pub schema_version: &'static str,
     pub output_dir: String,
@@ -279,7 +279,7 @@ pub struct RunReport {
 }
 
 /// One concrete eval result.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EvalReport {
     pub id: String,
     pub title: String,

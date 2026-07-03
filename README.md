@@ -28,11 +28,13 @@ code-review quality. The shipped wedge can:
 - adapt Cerberus review artifacts into Threshold/Daedalus answer-key rows;
 - grade findings against either `solution/findings.json` or
   `tests/expected.json`;
-- build and label a `crucible.judgment_queue.v1` adjudication queue;
+- build and label verifier-authoring review queues (the legacy artifact schema
+  is `crucible.judgment_queue.v1`);
 - export accepted findings back into Harbor scorer artifacts;
 - render a phone-first eval dashboard over Threshold/Daedalus arenas/runs;
 - run three committed eval receipts with defensible Wilson intervals;
-- render a static phone-first adjudication panel from an existing queue artifact.
+- render a static phone-first verifier-review panel from an existing queue
+  artifact.
 
 Raw eval run records belong under `runs/`, which is gitignored because real runs
 can embed proprietary diffs, raw model outputs, and API-keyed transcripts.
@@ -220,10 +222,30 @@ cargo run -p crucible -- serve \
 ```
 
 The server binds `127.0.0.1` only and prints the bound URL. It serves the
-benchmark library, validation results, run ledger list/detail views, trends,
-artifact readback, and `POST /api/run` over the same declared-spec runner used
-by the CLI and MCP. Model-backed prompt runs require `OPENROUTER_API_KEY` in the
-process environment; deterministic read paths do not.
+benchmark library, validation results, controlled runner setup, live run
+visibility, side-by-side comparisons, run ledger receipt/detail views, artifact
+readback, and `POST /api/run` over the same declared-spec runner used by the CLI
+and MCP. Model-backed prompt runs require `OPENROUTER_API_KEY` in the process
+environment; deterministic read paths do not.
+
+The first browser workflow is deliberately benchmark-first:
+
+- a benchmark card explains what is tested, how many tasks are in the declared
+  corpus, how the tasks are verified, and the last stored result in plain
+  language;
+- run setup composes runner bundles (`model`, system prompt, temperature, output
+  cap, and the locked text-only tool policy) and labels whether the comparison
+  changes one variable or several;
+- launching a comparison inserts a live run view immediately, then stores one
+  run receipt per runner and opens the paired comparison when the receipts are
+  available;
+- comparison language spells out the uncertainty range and noise-floor verdict
+  before the raw receipt JSON.
+
+Only deterministic `prompt_benchmark` specs are currently eligible for the
+controlled-comparison launch path. Key-recall specs and agentic-judge specs stay
+inspectable as benchmark/verifier artifacts, but the primary UI does not present
+judge models or human queues as run-time benchmark grading.
 
 Sanctum prepare-only posture:
 
@@ -282,7 +304,7 @@ the browser.
   calibration still needs human labels)
 - `003` — measurement rigor core
 - `004` — eval object and per-eval grader-mix model
-- `005` — phone-first adjudication queue
+- `005` — phone-first verifier-review queue
 - `006` — agent-readiness and machine surface
 - `007` — extract eval-authoring from Threshold
 - `009` — live eval dashboard
