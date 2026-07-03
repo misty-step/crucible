@@ -51,7 +51,7 @@ pub fn run_with_options(
     let spec = load_spec(spec_path)?;
     let out = out
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| Path::new("runs/local").join(spec_id(&spec, spec_path)));
+        .unwrap_or_else(|| default_output_dir_for_spec(&spec, spec_path));
     std::fs::create_dir_all(&out)
         .with_context(|| format!("creating run output directory {}", out.display()))?;
 
@@ -71,11 +71,20 @@ pub fn run_with_options(
     Ok(report)
 }
 
+pub(crate) fn default_output_dir(spec_path: &Path) -> anyhow::Result<PathBuf> {
+    let spec = load_spec(spec_path)?;
+    Ok(default_output_dir_for_spec(&spec, spec_path))
+}
+
 pub(crate) fn load_spec(spec_path: &Path) -> anyhow::Result<EvalSpec> {
     let bytes = std::fs::read(spec_path)
         .with_context(|| format!("reading eval spec {}", spec_path.display()))?;
     serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing {} as a Crucible EvalSpec", spec_path.display()))
+}
+
+fn default_output_dir_for_spec(spec: &EvalSpec, spec_path: &Path) -> PathBuf {
+    Path::new("runs/local").join(spec_id(spec, spec_path))
 }
 
 /// The grader kind a runner requires declared in `graders.graders` before it
@@ -1279,6 +1288,7 @@ struct ChatUsage {
 fn chat_content_to_string(content: serde_json::Value) -> Option<String> {
     match content {
         serde_json::Value::String(text) => Some(text),
+        serde_json::Value::Null => Some(String::new()),
         serde_json::Value::Array(parts) => {
             let mut out = String::new();
             for part in parts {
@@ -1286,11 +1296,7 @@ fn chat_content_to_string(content: serde_json::Value) -> Option<String> {
                     out.push_str(text);
                 }
             }
-            if out.is_empty() {
-                None
-            } else {
-                Some(out)
-            }
+            Some(out)
         }
         _ => None,
     }
@@ -1871,6 +1877,15 @@ mod tests {
         assert!(
             err.to_string().contains("prompt_benchmark"),
             "error names the constrained runner kind: {err}"
+        );
+    }
+
+    #[test]
+    fn null_chat_content_is_an_empty_answer_not_a_run_abort() {
+        assert_eq!(
+            chat_content_to_string(serde_json::Value::Null),
+            Some(String::new()),
+            "a model that returns no final content should fail the exact task, not abort the run"
         );
     }
 

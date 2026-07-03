@@ -1,0 +1,333 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "tracer-exact-v1",
+  "task": "tracer-exact",
+  "inputs": "A 37-task deterministic exact-match battery with structured extraction, format transformation, checksum extraction, and small code outputs.",
+  "outputs": "Model text graded by exact-match rubrics only. No judge model is called.",
+  "graders": {
+    "graders": [
+      {
+        "id": "exact_match",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "decision": "A larger deterministic tracer battery for comparing selected OpenRouter models with paired run-store comparisons and visible uncertainty.",
+  "runner": {
+    "kind": "prompt_benchmark",
+    "corpus": {
+      "source": "prompt_benchmark",
+      "config": {
+        "provider": "open_router",
+        "model": "deepseek/deepseek-v4-flash",
+        "system_prompt": "You are running an exact-match benchmark. Output exactly the requested answer and nothing else. No markdown fences, no quotes unless they are part of the requested answer, no explanation.",
+        "credential_env": "OPENROUTER_API_KEY",
+        "max_tokens": 512,
+        "temperature": 0
+      },
+      "tasks": [
+        {
+          "task_id": "extract-bracketed-id",
+          "prompt": "Fixed input: alpha [ID: CRU-4187] omega. Return exactly the ID value.",
+          "expectation": {
+            "kind": "exact",
+            "value": "CRU-4187"
+          }
+        },
+        {
+          "task_id": "json-nested-field",
+          "prompt": "From this JSON, return exactly profile.preferences.theme: {\"profile\":{\"name\":\"Iris\",\"preferences\":{\"theme\":\"maple\",\"density\":\"compact\"}}}",
+          "expectation": {
+            "kind": "exact",
+            "value": "maple"
+          }
+        },
+        {
+          "task_id": "csv-max-sku",
+          "prompt": "Given CSV rows sku,qty\\nA-17,9\\nB-04,13\\nC-22,11\\nReturn exactly the sku with the highest qty.",
+          "expectation": {
+            "kind": "exact",
+            "value": "B-04"
+          }
+        },
+        {
+          "task_id": "yaml-second-owner-email",
+          "prompt": "Given YAML: owners:\\n  - name: Ada\\n    email: ada@example.test\\n  - name: Ben\\n    email: ben@example.test\\nReturn exactly the second owner's email.",
+          "expectation": {
+            "kind": "exact",
+            "value": "ben@example.test"
+          }
+        },
+        {
+          "task_id": "logs-unique-errors",
+          "prompt": "Given logs: INFO boot | ERROR E42 disk | WARN retry | ERROR E17 net | ERROR E42 disk | ERROR E99 auth. Return unique error codes sorted ascending, comma-separated.",
+          "expectation": {
+            "kind": "exact",
+            "value": "E17,E42,E99"
+          }
+        },
+        {
+          "task_id": "date-reformat",
+          "prompt": "Reformat exactly this date from July 3, 2026 to ISO YYYY-MM-DD.",
+          "expectation": {
+            "kind": "exact",
+            "value": "2026-07-03"
+          }
+        },
+        {
+          "task_id": "unit-conversion-mm",
+          "prompt": "Return exactly the number of millimeters in 127 centimeters. Digits only.",
+          "expectation": {
+            "kind": "exact",
+            "value": "1270"
+          }
+        },
+        {
+          "task_id": "sum-by-category",
+          "prompt": "Rows: A 4, B 7, A 13, B 2. Sum by category and return exactly A=<sum>;B=<sum> with categories alphabetical.",
+          "expectation": {
+            "kind": "exact",
+            "value": "A=17;B=9"
+          }
+        },
+        {
+          "task_id": "dedupe-preserve-first",
+          "prompt": "Remove duplicates while preserving first occurrence: delta,alpha,delta,gamma,alpha,beta. Return values joined by |.",
+          "expectation": {
+            "kind": "exact",
+            "value": "delta|alpha|gamma|beta"
+          }
+        },
+        {
+          "task_id": "json-minify-selected",
+          "prompt": "Input object: { beta: 5, gamma: 8, alpha: 3 }. Return a valid minified JSON object with only alpha and beta keys in alphabetical order.",
+          "expectation": {
+            "kind": "exact",
+            "value": "{\"alpha\":3,\"beta\":5}"
+          }
+        },
+        {
+          "task_id": "alphabetize-words",
+          "prompt": "Alphabetize these lowercase words and join with one space: violet amber indigo cerulean.",
+          "expectation": {
+            "kind": "exact",
+            "value": "amber cerulean indigo violet"
+          }
+        },
+        {
+          "task_id": "toml-port",
+          "prompt": "Given TOML: [server]\\nhost = \"127.0.0.1\"\\nport = 4174\\nReturn exactly the port.",
+          "expectation": {
+            "kind": "exact",
+            "value": "4174"
+          }
+        },
+        {
+          "task_id": "ini-enabled-value",
+          "prompt": "Given INI: [feature]\\nname=adjudication\\nenabled=true\\nReturn exactly yes if enabled is true, otherwise no.",
+          "expectation": {
+            "kind": "exact",
+            "value": "yes"
+          }
+        },
+        {
+          "task_id": "xml-attribute",
+          "prompt": "Given XML: <run id=\"r-019\" score=\"0.875\"><model>glm</model></run>. Return exactly the score attribute.",
+          "expectation": {
+            "kind": "exact",
+            "value": "0.875"
+          }
+        },
+        {
+          "task_id": "markdown-slugs",
+          "prompt": "Create lowercase hyphen slugs for these Markdown headings, in order, joined by commas: ## Model Results\\n## Noise Floor\\n## Run Store.",
+          "expectation": {
+            "kind": "exact",
+            "value": "model-results,noise-floor,run-store"
+          }
+        },
+        {
+          "task_id": "contact-reformat",
+          "prompt": "Reformat exactly: Mina Patel <mina@example.test> into Last, First <email>.",
+          "expectation": {
+            "kind": "exact",
+            "value": "Patel, Mina <mina@example.test>"
+          }
+        },
+        {
+          "task_id": "semver-patch-bump",
+          "prompt": "Bump patch version exactly once: 2.4.9.",
+          "expectation": {
+            "kind": "exact",
+            "value": "2.4.10"
+          }
+        },
+        {
+          "task_id": "base64-decode-fixed",
+          "prompt": "Decode this base64 and return exactly the plaintext: Y3J1Y2libGU=",
+          "expectation": {
+            "kind": "exact",
+            "value": "crucible"
+          }
+        },
+        {
+          "task_id": "rot13-decode-fixed",
+          "prompt": "Decode this ROT13 text and return exactly the plaintext: pehpvoyr.",
+          "expectation": {
+            "kind": "exact",
+            "value": "crucible"
+          }
+        },
+        {
+          "task_id": "python-function-exact",
+          "prompt": "Return exactly this Python function as two lines, no markdown: define add_one(x) and return x + 1.",
+          "expectation": {
+            "kind": "exact",
+            "value": "def add_one(x):\n    return x + 1"
+          }
+        },
+        {
+          "task_id": "sql-select-exact",
+          "prompt": "Return exactly one SQL statement selecting id and score from runs where score is at least 0.8, ordered by score descending.",
+          "expectation": {
+            "kind": "exact",
+            "value": "SELECT id, score FROM runs WHERE score >= 0.8 ORDER BY score DESC;"
+          }
+        },
+        {
+          "task_id": "regex-exact",
+          "prompt": "Return exactly a regex that matches strings beginning with CRU- followed by exactly four digits and nothing else.",
+          "expectation": {
+            "kind": "exact",
+            "value": "^CRU-\\d{4}$"
+          }
+        },
+        {
+          "task_id": "json-patch-exact",
+          "prompt": "Return exactly a minified JSON Patch array that replaces /status with \"ready\".",
+          "expectation": {
+            "kind": "exact",
+            "value": "[{\"op\":\"replace\",\"path\":\"/status\",\"value\":\"ready\"}]"
+          }
+        },
+        {
+          "task_id": "typescript-function-exact",
+          "prompt": "Return exactly this TypeScript function on one line: exported function isEven taking n:number and returning n % 2 === 0.",
+          "expectation": {
+            "kind": "exact",
+            "value": "export function isEven(n: number): boolean { return n % 2 === 0; }"
+          }
+        },
+        {
+          "task_id": "rust-function-exact",
+          "prompt": "Return exactly this Rust function on one line: public function double taking i32 and returning i32 by multiplying by 2.",
+          "expectation": {
+            "kind": "exact",
+            "value": "pub fn double(n: i32) -> i32 { n * 2 }"
+          }
+        },
+        {
+          "task_id": "cli-args-normalize",
+          "prompt": "Normalize these flags into alphabetical long-flag order and preserve their values: --model glm --out runs/x --json. Return exactly the command suffix.",
+          "expectation": {
+            "kind": "exact",
+            "value": "--json --model glm --out runs/x"
+          }
+        },
+        {
+          "task_id": "checksum-extract-sha256",
+          "prompt": "Fixed manifest line: dist/report.html sha256=4d967d7a6d6e9adff0f7cf0c9b60f0a7e9bb75d89f4eab6f8eaa1dbef9a9c551. Return exactly the sha256 value.",
+          "expectation": {
+            "kind": "exact",
+            "value": "4d967d7a6d6e9adff0f7cf0c9b60f0a7e9bb75d89f4eab6f8eaa1dbef9a9c551"
+          }
+        },
+        {
+          "task_id": "checksum-table-select",
+          "prompt": "Table: name,size,sha1\\nalpha,10,1111111111111111111111111111111111111111\\nbeta,25,2222222222222222222222222222222222222222\\ngamma,18,3333333333333333333333333333333333333333\\nReturn exactly the sha1 for the largest size.",
+          "expectation": {
+            "kind": "exact",
+            "value": "2222222222222222222222222222222222222222"
+          }
+        },
+        {
+          "task_id": "parentheses-balance",
+          "prompt": "For this string, return exactly valid or invalid for balanced parentheses only: (()(()))",
+          "expectation": {
+            "kind": "exact",
+            "value": "valid"
+          }
+        },
+        {
+          "task_id": "arithmetic-with-distractors",
+          "prompt": "Ignore the example 5+5=10. Compute exactly 18 + 29 and return digits only.",
+          "expectation": {
+            "kind": "exact",
+            "value": "47"
+          }
+        },
+        {
+          "task_id": "decimal-normalize",
+          "prompt": "Normalize 003.1400 by removing unnecessary leading and trailing zeroes while preserving the decimal value.",
+          "expectation": {
+            "kind": "exact",
+            "value": "3.14"
+          }
+        },
+        {
+          "task_id": "sort-semver",
+          "prompt": "Sort these semantic versions ascending and join with commas: 1.10.0 1.2.10 1.2.9.",
+          "expectation": {
+            "kind": "exact",
+            "value": "1.2.9,1.2.10,1.10.0"
+          }
+        },
+        {
+          "task_id": "csv-to-jsonl-exact",
+          "prompt": "Convert CSV id,name\\n1,Ada\\n2,Bo to JSON Lines with keys id then name, numeric ids, no spaces.",
+          "expectation": {
+            "kind": "exact",
+            "value": "{\"id\":1,\"name\":\"Ada\"}\n{\"id\":2,\"name\":\"Bo\"}"
+          }
+        },
+        {
+          "task_id": "html-escape-exact",
+          "prompt": "Escape exactly this text for HTML text content: 5 < 7 & 8 > 6",
+          "expectation": {
+            "kind": "exact",
+            "value": "5 &lt; 7 &amp; 8 &gt; 6"
+          }
+        },
+        {
+          "task_id": "diff-files-list",
+          "prompt": "Given diff summary: M src/lib.rs\\nA tests/lib.rs\\nD notes.txt. Return exactly the non-deleted .rs paths sorted alphabetically and joined with commas.",
+          "expectation": {
+            "kind": "exact",
+            "value": "src/lib.rs,tests/lib.rs"
+          }
+        },
+        {
+          "task_id": "map-to-query-string",
+          "prompt": "Convert map {page: 2, q: \"rust evals\", sort: \"desc\"} to a query string with keys alphabetical and spaces encoded as %20. Do not include a leading question mark.",
+          "expectation": {
+            "kind": "exact",
+            "value": "page=2&q=rust%20evals&sort=desc"
+          }
+        },
+        {
+          "task_id": "fixed-checksum-after-label",
+          "prompt": "Fixed record: label=winner checksum=6e2c7f4c91a2d7a8c9b0e1f3a5d6c8b4. Return exactly the checksum for label winner.",
+          "expectation": {
+            "kind": "exact",
+            "value": "6e2c7f4c91a2d7a8c9b0e1f3a5d6c8b4"
+          }
+        }
+      ]
+    }
+  }
+}
