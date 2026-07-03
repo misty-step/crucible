@@ -65,6 +65,29 @@ rubric, writes `prompt-run.json` evidence under `runs/`, and persists the run
 plus prompt task rows into the SQLite ledger at
 `runs/local/crucible-runs.sqlite`.
 
+Run the deterministic tracer benchmark across real OpenRouter models with one
+committed spec and no judge calls:
+
+```sh
+cargo run -p crucible -- run evals/tracer-exact-v0.json \
+  --model deepseek/deepseek-v4-flash \
+  --out runs/local/tracer-exact/deepseek-v4-flash \
+  --json
+
+cargo run -p crucible -- run evals/tracer-exact-v0.json \
+  --model z-ai/glm-5.2 \
+  --out runs/local/tracer-exact/glm-5-2 \
+  --json
+
+cargo run -p crucible -- runs compare \
+  --benchmark tracer-exact-v0 \
+  --left deepseek/deepseek-v4-flash \
+  --right z-ai/glm-5.2
+```
+
+`--model` is only a run-time override for declared `prompt_benchmark` specs; it
+keeps the authored eval stable while comparing selected model slugs.
+
 Use an isolated ledger for tests or one-off proof:
 
 ```sh
@@ -243,6 +266,19 @@ The tool returns `content[0].text` as pretty `crucible.run_report.v1` JSON and
 `run-report.json` under the reported output directory and stores the run in the
 SQLite ledger. Use this surface when a human, agent, Threshold loop, or MCP
 client needs to invoke evals directly.
+
+Local browser workbench:
+
+```sh
+cargo run -p crucible -- serve \
+  --db runs/local/crucible-runs.sqlite \
+  --specs evals \
+  --port 4174
+```
+
+`crucible serve` binds `127.0.0.1`, has no app-level auth, and should only be
+exposed through the private Bastion/Sanctum layer or another authenticated local
+proxy.
 
 Query tools:
 

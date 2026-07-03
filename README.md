@@ -112,6 +112,33 @@ with a deterministic contains rubric, and writes
 indexed into the SQLite ledger as task rows plus artifact pointers. Raw model
 output stays under `runs/`.
 
+Run the deterministic tracer benchmark across selected real models:
+
+```sh
+for model in \
+  deepseek/deepseek-v4-flash \
+  z-ai/glm-5.2 \
+  moonshotai/kimi-k2.7-code
+do
+  safe_model=$(printf '%s' "$model" | tr '/:.' '---')
+  cargo run -p crucible -- run evals/tracer-exact-v0.json \
+    --model "$model" \
+    --out "runs/local/tracer-exact/$safe_model" \
+    --json
+done
+
+cargo run -p crucible -- runs compare \
+  --benchmark tracer-exact-v0 \
+  --left deepseek/deepseek-v4-flash \
+  --right z-ai/glm-5.2
+```
+
+`evals/tracer-exact-v0.json` is deliberately tiny: three exact-match prompt
+tasks, deterministic grading only, no Threshold corpus, and no judge-model
+calls. `--model` is a run-time override for declared `prompt_benchmark` specs;
+it lets one committed eval artifact produce comparable run rows for multiple
+OpenRouter model slugs.
+
 Query the run ledger:
 
 ```sh
@@ -180,6 +207,37 @@ Built-in receipt example:
 The MCP result includes the pretty `crucible.run_report.v1` text, structured
 report content, the output directory, the written `run-report.json` path, and a
 `run_store` receipt naming the persisted ledger rows.
+
+## Local Serve
+
+Run the local browser workbench:
+
+```sh
+cargo run -p crucible -- serve \
+  --db runs/local/crucible-runs.sqlite \
+  --specs evals \
+  --port 4174
+```
+
+The server binds `127.0.0.1` only and prints the bound URL. It serves the
+benchmark library, validation results, run ledger list/detail views, trends,
+artifact readback, and `POST /api/run` over the same declared-spec runner used
+by the CLI and MCP. Model-backed prompt runs require `OPENROUTER_API_KEY` in the
+process environment; deterministic read paths do not.
+
+Sanctum prepare-only posture:
+
+- Build artifact: `cargo build --release -p crucible`, then run
+  `target/release/crucible serve`.
+- Process command:
+  `OPENROUTER_API_KEY=<secret> target/release/crucible serve --db /var/lib/crucible/crucible-runs.sqlite --specs /srv/crucible/evals --port 4174`.
+- Storage contract: keep the SQLite ledger and run artifacts on the box outside
+  the git checkout; raw model outputs and diffs are not publishable assets.
+- Network/auth contract: `crucible serve` has no app-level auth and binds
+  localhost. Expose it only through the Bastion/Sanctum private tailnet layer or
+  an authenticated reverse proxy; do not bind it publicly.
+- Readiness probe: `GET /api/specs` should return
+  `crucible.ui.specs.v1` with the mounted spec directory.
 
 ## CLI
 
