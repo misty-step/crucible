@@ -34,7 +34,7 @@ pub const DEFAULT_ALPHA: f64 = 0.05;
 const RUN_STORE_SCHEMA: &str = "crucible.run_store.v1";
 static INVOCATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PersistedReport {
     pub schema_version: &'static str,
     pub db: String,
@@ -167,6 +167,7 @@ struct EvidenceMetadata {
     evidence_path: Option<String>,
     spec_path: Option<String>,
     temperature: Option<f64>,
+    max_output_units: Option<u64>,
     prompt_tasks: Vec<PromptTaskInsert>,
 }
 
@@ -817,16 +818,28 @@ fn merge_prompt_metadata(
         .get("temperature")
         .and_then(Value::as_f64)
         .or(metadata.temperature.take());
+    metadata.max_output_units = value
+        .get("max_output_units")
+        .and_then(Value::as_u64)
+        .or(metadata.max_output_units.take());
     metadata.evidence_path = Some(artifact.to_string());
 
     let provider = metadata.provider.as_deref().unwrap_or("provider");
     let model = metadata.model.as_deref().unwrap_or("model");
+    let temperature = metadata
+        .temperature
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "default".to_string());
+    let max_output_units = metadata
+        .max_output_units
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "default".to_string());
     let system_prompt_hash = value
         .get("system_prompt_hash")
         .and_then(Value::as_str)
         .unwrap_or("prompt");
     metadata.config_id = Some(format!(
-        "{config_prefix}:{provider}:{model}:{system_prompt_hash}"
+        "{config_prefix}:{provider}:{model}:temp={temperature}:max={max_output_units}:prompt={system_prompt_hash}"
     ));
 
     let tasks = value
@@ -1210,6 +1223,7 @@ mod tests {
             "provider": "open_router",
             "model": model,
             "system_prompt_hash": "fnv1a64:test",
+            "max_output_units": 8,
             "score": {
                 "metric": "prompt_rubric_pass_rate",
                 "successes": if success { 1 } else { 0 },
@@ -1424,6 +1438,11 @@ mod tests {
         assert_eq!(list.runs[0].benchmark_id, "prompt-smoke-v0");
         assert_eq!(list.runs[0].model.as_deref(), Some("test/model-a"));
         assert_eq!(list.runs[0].score_metric, "prompt_rubric_pass_rate");
+        assert!(
+            list.runs[0].config_id.contains("temp=0") && list.runs[0].config_id.contains("max=8"),
+            "prompt config id preserves runner params: {}",
+            list.runs[0].config_id
+        );
 
         let detail = show_run(&db, &list.runs[0].run_id).expect("show run");
         assert_eq!(detail.artifacts.len(), 2);

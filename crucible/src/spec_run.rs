@@ -27,12 +27,16 @@ use crate::wilson_score;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct RunOptions {
     pub prompt_model: Option<String>,
+    pub prompt_system_prompt: Option<String>,
+    pub prompt_max_output_units: Option<u32>,
+    pub prompt_temperature: Option<u32>,
 }
 
 impl RunOptions {
     pub(crate) fn with_prompt_model(model: impl Into<String>) -> Self {
         Self {
             prompt_model: Some(model.into()),
+            ..Self::default()
         }
     }
 }
@@ -586,6 +590,20 @@ fn prompt_config_with_overrides(
     {
         config.model = model.to_string();
     }
+    if let Some(system_prompt) = options
+        .prompt_system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|system_prompt| !system_prompt.is_empty())
+    {
+        config.system_prompt = system_prompt.to_string();
+    }
+    if let Some(max_output_units) = options.prompt_max_output_units {
+        config.max_output_units = Some(max_output_units);
+    }
+    if let Some(temperature) = options.prompt_temperature {
+        config.temperature = Some(temperature);
+    }
     config
 }
 
@@ -675,6 +693,7 @@ fn run_prompt_benchmark_with_client(
             provider: config.provider,
             model: config.model.clone(),
             temperature: config.temperature,
+            max_output_units: config.max_output_units,
             system_prompt_hash: stable_hash(&[&config.system_prompt]),
             score: &score,
             totals: PromptTotals {
@@ -1536,6 +1555,8 @@ struct PromptRunEvidence<'a> {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_units: Option<u32>,
     system_prompt_hash: String,
     score: &'a Score,
     totals: PromptTotals,
@@ -1995,6 +2016,32 @@ mod tests {
         assert_eq!(evidence["tasks"][0]["output"], "crucible-smoke");
         assert_eq!(evidence["tasks"][0]["passed"], true);
         assert_eq!(evidence["tasks"][0]["total_tokens"], 10);
+        assert_eq!(evidence["max_output_units"], 8);
+    }
+
+    #[test]
+    fn prompt_run_options_override_the_runner_bundle_fields() {
+        let config = PromptModelConfig {
+            provider: ModelProvider::OpenRouter,
+            model: "test/model-a".to_string(),
+            system_prompt: "Answer exactly.".to_string(),
+            credential_env: "OPENROUTER_API_KEY".to_string(),
+            max_output_units: Some(8),
+            temperature: Some(0),
+        };
+        let options = RunOptions {
+            prompt_model: Some("test/model-b".to_string()),
+            prompt_system_prompt: Some("Use terse answers.".to_string()),
+            prompt_max_output_units: Some(32),
+            prompt_temperature: Some(1),
+        };
+
+        let effective = prompt_config_with_overrides(&config, &options);
+
+        assert_eq!(effective.model, "test/model-b");
+        assert_eq!(effective.system_prompt, "Use terse answers.");
+        assert_eq!(effective.max_output_units, Some(32));
+        assert_eq!(effective.temperature, Some(1));
     }
 
     #[test]

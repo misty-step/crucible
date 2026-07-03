@@ -1291,6 +1291,14 @@ fn serve_exposes_specs_runs_trends_and_run_detail_over_http() {
     let shell = http_get(port, "/");
     assert!(shell.contains("Crucible"));
     assert!(
+        shell.contains("Benchmark library") && shell.contains("Run setup"),
+        "UI shell leads with benchmark/setup language: {shell}"
+    );
+    assert!(
+        shell.contains("uncertainty range") && shell.contains("noise floor"),
+        "UI explains statistical chips in operator language: {shell}"
+    );
+    assert!(
         shell.contains("ae-shell"),
         "UI shell composes the aesthetic app shell"
     );
@@ -1309,6 +1317,24 @@ fn serve_exposes_specs_runs_trends_and_run_detail_over_http() {
                 && spec["validation"]["valid"] == true
                 && spec["confidence"] == 0.95),
         "spec library includes real eval specs with validation and confidence: {specs}"
+    );
+    let tracer = specs_array
+        .iter()
+        .find(|spec| spec["id"] == "tracer-exact-v1")
+        .expect("tracer benchmark is listed");
+    assert_eq!(tracer["object_label"], "benchmark");
+    assert_eq!(tracer["task_count"], 37);
+    assert_eq!(tracer["supports_controlled_comparison"], true);
+    assert!(
+        tracer["verifier_summary"]
+            .as_str()
+            .expect("verifier summary")
+            .contains("Deterministic text verifier"),
+        "benchmark card explains the verifier plainly: {tracer}"
+    );
+    assert_eq!(
+        tracer["runner_defaults"]["tool_policy"],
+        "No tools. The runner sends one text prompt to the model and grades the final text with deterministic verifiers."
     );
 
     let runs = http_get_json(port, "/api/runs");
