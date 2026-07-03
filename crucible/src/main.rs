@@ -683,6 +683,31 @@ fn print_config_comparison(comparison: &run_store::ConfigComparison) {
             paired.verdict.label()
         );
     }
+    if !comparison.class_breakdowns.is_empty() {
+        println!("  classes");
+        for row in &comparison.class_breakdowns {
+            let delta = row
+                .delta_point
+                .map(|delta| format!("{delta:+.4}"))
+                .unwrap_or_else(|| "n/a".to_string());
+            let verdict = row
+                .paired
+                .as_ref()
+                .map(|paired| paired.verdict.label().to_string())
+                .unwrap_or_else(|| "unpaired".to_string());
+            println!(
+                "    {:<26} left={}/{} right={}/{} delta={} paired_n={} {}",
+                row.class,
+                row.left_successes,
+                row.left_n,
+                row.right_successes,
+                row.right_n,
+                delta,
+                row.common_tasks,
+                verdict
+            );
+        }
+    }
     println!("  note      {}", comparison.note);
 }
 

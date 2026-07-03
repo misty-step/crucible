@@ -9,7 +9,9 @@
 use std::collections::HashSet;
 use std::io::BufRead;
 use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use crucible_core::{
@@ -645,11 +647,12 @@ fn run_prompt_benchmark_with_client(
     let mut passed = 0u64;
 
     for task in tasks {
+        let user_prompt = prompt_text_for_task(spec_path, task)?;
         let started = Instant::now();
         let response = model_client.complete(ModelRequest {
             model: &config.model,
             system_prompt: &config.system_prompt,
-            user_prompt: &task.prompt,
+            user_prompt: &user_prompt,
             max_output_units: config.max_output_units,
             temperature: config.temperature,
         })?;
@@ -660,13 +663,13 @@ fn run_prompt_benchmark_with_client(
             passed += 1;
         }
 
+        let expectation_value = expectation_value(&task.expectation);
         task_results.push(PromptTaskResult {
             task_id: task.task_id.clone(),
-            prompt_hash: stable_hash(&[&config.system_prompt, &task.prompt]),
-            rubric_hash: stable_hash(&[
-                expectation_kind(&task.expectation),
-                expectation_value(&task.expectation),
-            ]),
+            class: task.class.clone(),
+            context_file: task.context_file.clone(),
+            prompt_hash: stable_hash(&[&config.system_prompt, &user_prompt]),
+            rubric_hash: stable_hash(&[expectation_kind(&task.expectation), &expectation_value]),
             expectation: task.expectation.clone(),
             passed: task_passed,
             output: response.output,
@@ -723,6 +726,19 @@ fn run_prompt_benchmark_with_client(
             ),
         ],
     })
+}
+
+fn prompt_text_for_task(spec_path: &Path, task: &PromptBenchmarkTask) -> anyhow::Result<String> {
+    let Some(context_file) = task.context_file.as_deref() else {
+        return Ok(task.prompt.clone());
+    };
+    let context_path = resolve_spec_path(spec_path, context_file);
+    let context = std::fs::read_to_string(&context_path)
+        .with_context(|| format!("reading prompt context file {}", context_path.display()))?;
+    Ok(format!(
+        "Context document:\n{context}\n\nTask:\n{}",
+        task.prompt
+    ))
 }
 
 /// Judge protocol suffix appended to every judge call's system prompt so the
@@ -1339,7 +1355,96 @@ fn prompt_expectation_passes(
         PromptExpectation::Regex { pattern } => {
             compile_expectation_regex(pattern)?.is_match(output)
         }
+        PromptExpectation::StrictJson { value } => {
+            match serde_json::from_str::<serde_json::Value>(output.trim()) {
+                Ok(parsed) => parsed == *value,
+                Err(_) => false,
+            }
+        }
+        PromptExpectation::PythonUnitTest {
+            test_source,
+            timeout_ms,
+        } => python_unit_test_passes(output, test_source, *timeout_ms)?,
     })
+}
+
+fn python_unit_test_passes(
+    solution_source: &str,
+    test_source: &str,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<bool> {
+    let root = unique_temp_dir("crucible-python-unit")?;
+    let result = run_python_unit_test_in(&root, solution_source, test_source, timeout_ms);
+    let _ = std::fs::remove_dir_all(&root);
+    result
+}
+
+fn run_python_unit_test_in(
+    root: &Path,
+    solution_source: &str,
+    test_source: &str,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<bool> {
+    std::fs::create_dir_all(root)
+        .with_context(|| format!("creating python unit test directory {}", root.display()))?;
+    std::fs::write(root.join("solution.py"), solution_source)
+        .with_context(|| format!("writing {}", root.join("solution.py").display()))?;
+    std::fs::write(root.join("test_solution.py"), test_source)
+        .with_context(|| format!("writing {}", root.join("test_solution.py").display()))?;
+
+    let mut child = Command::new("python3")
+        .arg("-I")
+        .arg("-c")
+        .arg("import sys; sys.path.insert(0, '.'); exec(open('test_solution.py', encoding='utf-8').read())")
+        .current_dir(root)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("spawning python3 for python_unit_test expectation")?;
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.unwrap_or(3000));
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("checking python unit test status")?
+        {
+            return Ok(status.success());
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(false);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn unique_temp_dir(prefix: &str) -> anyhow::Result<PathBuf> {
+    let base = std::env::temp_dir();
+    for attempt in 0..100u32 {
+        let path = base.join(format!(
+            "{prefix}-{}-{}-{attempt}",
+            std::process::id(),
+            temp_dir_nonce()?
+        ));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("creating temporary directory {}", path.display()))
+            }
+        }
+    }
+    anyhow::bail!("could not allocate a unique temporary directory for {prefix}")
+}
+
+fn temp_dir_nonce() -> anyhow::Result<u128> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before Unix epoch")?
+        .as_nanos())
 }
 
 /// Compile a `Regex` expectation's pattern, with an error that names the
@@ -1355,15 +1460,22 @@ fn expectation_kind(expectation: &PromptExpectation) -> &'static str {
         PromptExpectation::Contains { .. } => "contains",
         PromptExpectation::CaseInsensitiveContains { .. } => "case_insensitive_contains",
         PromptExpectation::Regex { .. } => "regex",
+        PromptExpectation::StrictJson { .. } => "strict_json",
+        PromptExpectation::PythonUnitTest { .. } => "python_unit_test",
     }
 }
 
-fn expectation_value(expectation: &PromptExpectation) -> &str {
+fn expectation_value(expectation: &PromptExpectation) -> String {
     match expectation {
         PromptExpectation::Exact { value }
         | PromptExpectation::Contains { value }
-        | PromptExpectation::CaseInsensitiveContains { value } => value,
-        PromptExpectation::Regex { pattern } => pattern,
+        | PromptExpectation::CaseInsensitiveContains { value } => value.clone(),
+        PromptExpectation::Regex { pattern } => pattern.clone(),
+        PromptExpectation::StrictJson { value } => value.to_string(),
+        PromptExpectation::PythonUnitTest {
+            test_source,
+            timeout_ms,
+        } => format!("timeout={}:{}", timeout_ms.unwrap_or(3000), test_source),
     }
 }
 
@@ -1573,6 +1685,10 @@ struct PromptTotals {
 #[derive(Debug, Serialize)]
 struct PromptTaskResult {
     task_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_file: Option<String>,
     prompt_hash: String,
     rubric_hash: String,
     expectation: PromptExpectation,
@@ -1976,6 +2092,8 @@ mod tests {
                 },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "exact".to_string(),
+                    class: Some("format_adherence".to_string()),
+                    context_file: None,
                     prompt: "Reply with exactly: crucible-smoke".to_string(),
                     expectation: PromptExpectation::Exact {
                         value: "crucible-smoke".to_string(),
@@ -2015,8 +2133,34 @@ mod tests {
         );
         assert_eq!(evidence["tasks"][0]["output"], "crucible-smoke");
         assert_eq!(evidence["tasks"][0]["passed"], true);
+        assert_eq!(evidence["tasks"][0]["class"], "format_adherence");
         assert_eq!(evidence["tasks"][0]["total_tokens"], 10);
         assert_eq!(evidence["max_output_units"], 8);
+    }
+
+    #[test]
+    fn prompt_benchmark_prepends_context_file_when_declared() {
+        let temp =
+            std::env::temp_dir().join(format!("crucible-prompt-context-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("prompt-context.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+        std::fs::write(temp.join("doc.txt"), "The hidden code is XQ-17.").expect("write context");
+        let task = PromptBenchmarkTask {
+            task_id: "ctx".to_string(),
+            class: Some("long_context_extraction".to_string()),
+            context_file: Some("doc.txt".to_string()),
+            prompt: "Return the hidden code.".to_string(),
+            expectation: PromptExpectation::Exact {
+                value: "XQ-17".to_string(),
+            },
+        };
+
+        let prompt = prompt_text_for_task(&spec_path, &task).expect("context prompt builds");
+
+        assert!(prompt.contains("The hidden code is XQ-17."), "{prompt}");
+        assert!(prompt.contains("Return the hidden code."), "{prompt}");
     }
 
     #[test]
@@ -2074,10 +2218,50 @@ mod tests {
     }
 
     #[test]
+    fn prompt_expectation_strict_json_requires_parseable_exact_json() {
+        let expectation = PromptExpectation::StrictJson {
+            value: serde_json::json!({"answer":"CRU-42","ok":true}),
+        };
+        assert!(
+            prompt_expectation_passes(r#"{"answer":"CRU-42","ok":true}"#, &expectation).unwrap()
+        );
+        assert!(
+            !prompt_expectation_passes(r#"{"ok":true,"answer":"wrong"}"#, &expectation).unwrap()
+        );
+        assert!(!prompt_expectation_passes(
+            r#"Here is JSON: {"answer":"CRU-42","ok":true}"#,
+            &expectation,
+        )
+        .expect("strict_json treats prose-wrapped JSON as a miss"));
+    }
+
+    #[test]
+    fn prompt_expectation_python_unit_test_executes_committed_test_source() {
+        let expectation = PromptExpectation::PythonUnitTest {
+            test_source:
+                "from solution import normalize\nassert normalize(['b', 'a', 'b']) == ['a', 'b']\n"
+                    .to_string(),
+            timeout_ms: Some(1000),
+        };
+        assert!(prompt_expectation_passes(
+            "def normalize(values):\n    return sorted(set(values))\n",
+            &expectation
+        )
+        .expect("passing python unit test runs"));
+        assert!(!prompt_expectation_passes(
+            "def normalize(values):\n    return values\n",
+            &expectation
+        )
+        .expect("failing python unit test runs"));
+    }
+
+    #[test]
     fn check_prompt_regexes_names_the_task_with_the_bad_pattern() {
         let tasks = vec![
             PromptBenchmarkTask {
                 task_id: "fine".to_string(),
+                class: None,
+                context_file: None,
                 prompt: "p".to_string(),
                 expectation: PromptExpectation::Regex {
                     pattern: "ok".to_string(),
@@ -2085,6 +2269,8 @@ mod tests {
             },
             PromptBenchmarkTask {
                 task_id: "broken".to_string(),
+                class: None,
+                context_file: None,
                 prompt: "p".to_string(),
                 expectation: PromptExpectation::Regex {
                     pattern: "[".to_string(),
@@ -2135,6 +2321,8 @@ mod tests {
                 },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "broken".to_string(),
+                    class: None,
+                    context_file: None,
                     prompt: "irrelevant".to_string(),
                     expectation: PromptExpectation::Regex {
                         pattern: "(unclosed".to_string(),
