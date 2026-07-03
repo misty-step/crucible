@@ -118,6 +118,10 @@ fn tool_defs() -> Value {
                         "type": "string",
                         "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
                     },
+                    "model": {
+                        "type": "string",
+                        "description": "Override a declared prompt_benchmark spec's configured OpenRouter model slug for this run."
+                    },
                     "eval": {
                         "type": "string",
                         "enum": [
@@ -344,6 +348,7 @@ struct CrucibleRunArgs {
     out: Option<PathBuf>,
     eval: Option<String>,
     db: Option<PathBuf>,
+    model: Option<String>,
 }
 
 fn crucible_run(arguments: Value) -> Result<Value> {
@@ -354,8 +359,15 @@ fn crucible_run(arguments: Value) -> Result<Value> {
         if eval != RunEval::All.id() {
             anyhow::bail!("eval selects built-in receipts and cannot be combined with spec");
         }
-        spec_run::run(&spec, args.out.as_deref())?
+        let options = match args.model.as_deref() {
+            Some(model) => spec_run::RunOptions::with_prompt_model(model),
+            None => spec_run::RunOptions::default(),
+        };
+        spec_run::run_with_options(&spec, args.out.as_deref(), &options)?
     } else {
+        if args.model.is_some() {
+            anyhow::bail!("model override can only be used with a declared prompt_benchmark spec");
+        }
         let out = args
             .out
             .as_deref()

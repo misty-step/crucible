@@ -8,7 +8,7 @@
 
 use std::collections::HashSet;
 use std::io::BufRead;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -24,9 +24,30 @@ use serde::{Deserialize, Serialize};
 use crate::eval_run::{EvalReport, RunReport, Score, RUN_REPORT_SCHEMA};
 use crate::wilson_score;
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct RunOptions {
+    pub prompt_model: Option<String>,
+}
+
+impl RunOptions {
+    pub(crate) fn with_prompt_model(model: impl Into<String>) -> Self {
+        Self {
+            prompt_model: Some(model.into()),
+        }
+    }
+}
+
 /// Execute a declared eval spec and write a `crucible.run_report.v1` plus
 /// runner-specific evidence under `out`.
 pub fn run(spec_path: &Path, out: Option<&Path>) -> anyhow::Result<RunReport> {
+    run_with_options(spec_path, out, &RunOptions::default())
+}
+
+pub fn run_with_options(
+    spec_path: &Path,
+    out: Option<&Path>,
+    options: &RunOptions,
+) -> anyhow::Result<RunReport> {
     let spec = load_spec(spec_path)?;
     let out = out
         .map(Path::to_path_buf)
@@ -40,7 +61,7 @@ pub fn run(spec_path: &Path, out: Option<&Path>) -> anyhow::Result<RunReport> {
             spec_path.display()
         )
     })?;
-    let eval = run_runner(&spec, runner, spec_path, &out)?;
+    let eval = run_runner(&spec, runner, spec_path, &out, options)?;
     let report = RunReport {
         schema_version: RUN_REPORT_SCHEMA,
         output_dir: out.display().to_string(),
@@ -134,10 +155,14 @@ fn run_runner(
     runner: &RunnerSpec,
     spec_path: &Path,
     out: &Path,
+    options: &RunOptions,
 ) -> anyhow::Result<EvalReport> {
+    if options.prompt_model.is_some() && runner.kind != RunnerKind::PromptBenchmark {
+        anyhow::bail!("model override can only be used with a prompt_benchmark runner");
+    }
     match runner.kind {
         RunnerKind::KeyRecall => run_key_recall(spec, runner, spec_path, out),
-        RunnerKind::PromptBenchmark => run_prompt_benchmark(spec, runner, spec_path, out),
+        RunnerKind::PromptBenchmark => run_prompt_benchmark(spec, runner, spec_path, out, options),
         RunnerKind::AgenticJudge => run_agentic_judge(spec, runner, spec_path, out),
     }
 }
@@ -187,8 +212,10 @@ fn run_key_recall_daedalus(
     candidate_id: &str,
     tasks: &[String],
 ) -> anyhow::Result<EvalReport> {
-    let arena_dir = resolve_spec_path(spec_path, arena_dir);
-    let trials_jsonl = resolve_spec_path(spec_path, trials_jsonl);
+    let arena_dir_resolution = resolve_spec_path_with_alias(spec_path, arena_dir);
+    let trials_jsonl_resolution = resolve_spec_path_with_alias(spec_path, trials_jsonl);
+    let arena_dir = arena_dir_resolution.path;
+    let trials_jsonl = trials_jsonl_resolution.path;
     let selected_tasks: HashSet<&str> = tasks.iter().map(String::as_str).collect();
     let mut seen_tasks: HashSet<String> = HashSet::new();
 
@@ -313,6 +340,10 @@ fn run_key_recall_daedalus(
             corpus: CorpusEvidence::DaedalusTrials {
                 arena_dir: arena_dir.display().to_string(),
                 trials_jsonl: trials_jsonl.display().to_string(),
+                declared_arena_dir: arena_dir_resolution.declared,
+                declared_trials_jsonl: trials_jsonl_resolution.declared,
+                arena_dir_alias: arena_dir_resolution.alias.map(str::to_string),
+                trials_jsonl_alias: trials_jsonl_resolution.alias.map(str::to_string),
                 candidate_id: candidate_id.to_string(),
                 selected_tasks: tasks.to_vec(),
             },
@@ -510,6 +541,7 @@ fn run_prompt_benchmark(
     runner: &RunnerSpec,
     spec_path: &Path,
     out: &Path,
+    options: &RunOptions,
 ) -> anyhow::Result<EvalReport> {
     preflight_spec(spec, RunnerKind::PromptBenchmark)?;
 
@@ -519,8 +551,33 @@ fn run_prompt_benchmark(
     // A malformed Regex expectation fails here, before any model call is
     // made — not mid-grading after tasks have already spent real API calls.
     check_prompt_regexes(tasks)?;
-    let client = OpenRouterClient::from_config(config)?;
-    run_prompt_benchmark_with_client(spec, runner, spec_path, out, config, tasks, &client)
+    let effective_config = prompt_config_with_overrides(config, options);
+    let client = OpenRouterClient::from_config(&effective_config)?;
+    run_prompt_benchmark_with_client(
+        spec,
+        runner,
+        spec_path,
+        out,
+        &effective_config,
+        tasks,
+        &client,
+    )
+}
+
+fn prompt_config_with_overrides(
+    config: &PromptModelConfig,
+    options: &RunOptions,
+) -> PromptModelConfig {
+    let mut config = config.clone();
+    if let Some(model) = options
+        .prompt_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        config.model = model.to_string();
+    }
+    config
 }
 
 /// Precompile every declared `Regex` expectation's pattern, failing on the
@@ -978,15 +1035,76 @@ fn spec_id(spec: &EvalSpec, spec_path: &Path) -> String {
         .to_string()
 }
 
-fn resolve_spec_path(spec_path: &Path, raw: &str) -> PathBuf {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedSpecPath {
+    pub path: PathBuf,
+    pub declared: String,
+    pub alias: Option<&'static str>,
+}
+
+pub(crate) fn resolve_spec_path_with_alias(spec_path: &Path, raw: &str) -> ResolvedSpecPath {
     let path = PathBuf::from(raw);
-    if path.is_absolute() {
+    let declared = if path.is_absolute() {
         path
     } else {
         spec_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(path)
+    };
+    if declared.exists() {
+        return ResolvedSpecPath {
+            path: canonicalize_existing(&declared),
+            declared: raw.to_string(),
+            alias: None,
+        };
+    }
+    if !Path::new(raw).is_absolute() {
+        if let Some(alias_raw) = daedalus_to_threshold_raw(raw) {
+            let alias_path = spec_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(alias_raw);
+            if alias_path.exists() {
+                return ResolvedSpecPath {
+                    path: canonicalize_existing(&alias_path),
+                    declared: raw.to_string(),
+                    alias: Some("daedalus_to_threshold"),
+                };
+            }
+        }
+    }
+    ResolvedSpecPath {
+        path: declared,
+        declared: raw.to_string(),
+        alias: None,
+    }
+}
+
+fn canonicalize_existing(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn resolve_spec_path(spec_path: &Path, raw: &str) -> PathBuf {
+    resolve_spec_path_with_alias(spec_path, raw).path
+}
+
+fn daedalus_to_threshold_raw(raw: &str) -> Option<PathBuf> {
+    let mut replaced = false;
+    let mut out = PathBuf::new();
+    for component in Path::new(raw).components() {
+        match component {
+            Component::Normal(name) if name == "daedalus" && !replaced => {
+                out.push("threshold");
+                replaced = true;
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if replaced {
+        Some(out)
+    } else {
+        None
     }
 }
 
@@ -1387,6 +1505,12 @@ enum CorpusEvidence {
     DaedalusTrials {
         arena_dir: String,
         trials_jsonl: String,
+        declared_arena_dir: String,
+        declared_trials_jsonl: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        arena_dir_alias: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trials_jsonl_alias: Option<String>,
         candidate_id: String,
         selected_tasks: Vec<String>,
     },
@@ -1659,6 +1783,98 @@ mod tests {
     }
 
     #[test]
+    fn daedalus_paths_resolve_to_threshold_alias_when_that_checkout_exists() {
+        let root =
+            std::env::temp_dir().join(format!("crucible-daedalus-alias-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let spec_dir = root.join("crucible/evals");
+        let threshold_arena = root.join("threshold/arenas/pr-review-v0");
+        std::fs::create_dir_all(&spec_dir).expect("create spec dir");
+        std::fs::create_dir_all(&threshold_arena).expect("create threshold arena dir");
+        let spec_path = spec_dir.join("pr-review-key-recall-v0.json");
+
+        let resolved =
+            resolve_spec_path_with_alias(&spec_path, "../../daedalus/arenas/pr-review-v0");
+
+        assert_eq!(
+            resolved.path,
+            std::fs::canonicalize(&threshold_arena).expect("canonical threshold arena")
+        );
+        assert_eq!(resolved.alias, Some("daedalus_to_threshold"));
+    }
+
+    #[test]
+    fn prompt_model_override_updates_the_effective_config_only() {
+        let config = PromptModelConfig {
+            provider: ModelProvider::OpenRouter,
+            model: "openrouter/auto".to_string(),
+            system_prompt: "Answer exactly.".to_string(),
+            credential_env: "OPENROUTER_API_KEY".to_string(),
+            max_output_units: Some(8),
+            temperature: Some(0),
+        };
+
+        let effective =
+            prompt_config_with_overrides(&config, &RunOptions::with_prompt_model("test/model"));
+
+        assert_eq!(config.model, "openrouter/auto");
+        assert_eq!(effective.model, "test/model");
+        assert_eq!(effective.system_prompt, config.system_prompt);
+    }
+
+    #[test]
+    fn model_override_refuses_non_prompt_runners() {
+        let temp =
+            std::env::temp_dir().join(format!("crucible-model-override-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("key-recall.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+        let spec = EvalSpec {
+            schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
+            id: "key-recall".to_string(),
+            task: "key-recall".to_string(),
+            inputs: String::new(),
+            outputs: String::new(),
+            fixtures: Vec::new(),
+            graders: crucible_core::GraderManifest {
+                graders: vec![crucible_core::Grader {
+                    id: "expected_key_match".to_string(),
+                    kind: GraderKind::Deterministic,
+                }],
+            },
+            baselines: Vec::new(),
+            aggregation: AggregationMethod::Proportion,
+            uncertainty: crucible_core::UncertaintyRule::default(),
+            decision: String::new(),
+            runner: None,
+        };
+        let runner = RunnerSpec {
+            kind: RunnerKind::KeyRecall,
+            corpus: CorpusSpec::DaedalusTrials {
+                arena_dir: "arena".to_string(),
+                trials_jsonl: "trials.jsonl".to_string(),
+                candidate_id: "probe".to_string(),
+                tasks: Vec::new(),
+            },
+        };
+
+        let err = run_runner(
+            &spec,
+            &runner,
+            &spec_path,
+            &temp,
+            &RunOptions::with_prompt_model("test/model"),
+        )
+        .expect_err("model override must not be ignored by key_recall");
+
+        assert!(
+            err.to_string().contains("prompt_benchmark"),
+            "error names the constrained runner kind: {err}"
+        );
+    }
+
+    #[test]
     fn expected_key_scoring_uses_daedalus_span_contract_without_line_tolerance() {
         let expected = ExpectedKey {
             defects: vec![crucible_core::Defect {
@@ -1870,7 +2086,7 @@ mod tests {
         // before it even builds an OpenRouterClient, so if this refused for
         // the credential instead of the pattern, the assertion below would
         // catch it.
-        let err = run_prompt_benchmark(&spec, &runner, &spec_path, &temp)
+        let err = run_prompt_benchmark(&spec, &runner, &spec_path, &temp, &RunOptions::default())
             .expect_err("a malformed regex must refuse before any model call");
         let full_chain = format!("{err:#}");
         assert!(
@@ -2136,7 +2352,7 @@ mod tests {
             corpus: CorpusSpec::AgenticJudge { config, tasks },
         };
 
-        let err = run_runner(&spec, &runner, &spec_path, &temp)
+        let err = run_runner(&spec, &runner, &spec_path, &temp, &RunOptions::default())
             .expect_err("a spec without a declared Agentic grader must refuse to run");
         assert!(
             err.to_string().contains("requires an Agentic grader"),

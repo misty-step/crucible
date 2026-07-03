@@ -229,6 +229,11 @@ enum Command {
         /// Emit the stable run report JSON to stdout in addition to writing it.
         #[arg(long)]
         json: bool,
+        /// Override a prompt_benchmark spec's configured model slug for this
+        /// run. This keeps one authored benchmark comparable across selected
+        /// OpenRouter models without committing model-specific spec copies.
+        #[arg(long, value_name = "SLUG")]
+        model: Option<String>,
         /// SQLite run ledger path. Defaults to the local gitignored run store.
         #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
         db: PathBuf,
@@ -397,8 +402,16 @@ fn main() -> ExitCode {
             eval,
             out,
             json,
+            model,
             db,
-        } => run_eval(spec.as_deref(), eval, out.as_deref(), json, &db),
+        } => run_eval(
+            spec.as_deref(),
+            eval,
+            out.as_deref(),
+            json,
+            model.as_deref(),
+            &db,
+        ),
         Command::Runs { command } => run_runs(command),
         Command::Validate { spec, json } => run_validate(&spec, json),
         Command::Serve { db, specs, port } => serve::serve(serve::ServeOptions {
@@ -431,6 +444,7 @@ fn run_eval(
     eval: eval_run::RunEval,
     out: Option<&Path>,
     json: bool,
+    model: Option<&str>,
     db: &Path,
 ) -> anyhow::Result<()> {
     let report = if let Some(spec_path) = spec {
@@ -439,8 +453,15 @@ fn run_eval(
                 "--eval selects built-in receipts and cannot be combined with a spec path"
             );
         }
-        spec_run::run(spec_path, out)?
+        let options = match model {
+            Some(model) => spec_run::RunOptions::with_prompt_model(model),
+            None => spec_run::RunOptions::default(),
+        };
+        spec_run::run_with_options(spec_path, out, &options)?
     } else {
+        if model.is_some() {
+            anyhow::bail!("--model can only be used with a declared prompt_benchmark spec");
+        }
         let out = out.with_context(|| "built-in receipt runs require --out <DIR>")?;
         eval_run::run(eval, out)?
     };

@@ -1360,6 +1360,34 @@ fn run_prompt_benchmark_requires_openrouter_key_without_fallback() {
     );
 }
 
+#[test]
+fn run_prompt_benchmark_model_override_is_a_runtime_option_not_usage_error() {
+    let out_dir = temp_root("prompt-model-override-no-key");
+    let out = crucible()
+        .arg("run")
+        .arg(repo_fixture("evals/prompt-smoke-v0.json"))
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--model")
+        .arg("deepseek/deepseek-v4-flash")
+        .arg("--json")
+        .env_remove("OPENROUTER_API_KEY")
+        .output()
+        .expect("crucible binary runs");
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "--model should parse and reach the runner; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("OPENROUTER_API_KEY"),
+        "runtime still names the missing BYOK key: {stderr}"
+    );
+}
+
 /// Backlog 017: the broadened deterministic grader library (`Regex`,
 /// `CaseInsensitiveContains`) is real, not just a schema addition — a spec
 /// declaring both variants validates clean and routes through the same
