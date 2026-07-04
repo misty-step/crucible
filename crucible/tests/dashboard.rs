@@ -156,12 +156,23 @@ fn dashboard_renders_real_surfaces_and_a_stable_model() {
         "1 defect",                // the seeded task key surfaced
         "stronger than runner-up", // the signal verdict surface
         "inside noise floor",      // the noise-floor verdict surface
+        // crucible-033: the flask-conical wordmark icon rides next to the
+        // "Crucible" header text (the favicon alone, added by 88da37d, isn't
+        // "used consistently wherever the project identity appears" — a
+        // generated artifact's own visible header needs the mark too).
+        r#"<svg class="ae-icon""#,
+        "M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2",
+        "stroke=\"currentColor\"",
     ] {
         assert!(
             html.contains(marker),
             "rendered HTML is missing the marker {marker:?}"
         );
     }
+    assert!(
+        html.contains(".ae-icon{"),
+        "expected an .ae-icon CSS rule sizing/coloring the wordmark glyph"
+    );
 
     // ----- data.json is the stable model the page renders -----
     let data: serde_json::Value =

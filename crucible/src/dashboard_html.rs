@@ -326,7 +326,13 @@ fn render_header(out: &mut String, data: &DashboardData<'_>) {
     let ds = data.dataset;
     let board = data.leaderboard;
     out.push_str("<header class=\"top\">\n");
-    out.push_str("<h1>Crucible<span class=\"sub\">eval dashboard</span></h1>\n");
+    out.push_str(concat!(
+        "<h1><svg class=\"ae-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" ",
+        "stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">",
+        "<path d=\"M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96",
+        "l5.51-10.08A2 2 0 0 0 10 8V2\"/><path d=\"M6.453 15h11.094\"/><path d=\"M8.5 2h7\"/></svg>",
+        "Crucible<span class=\"sub\">eval dashboard</span></h1>\n"
+    ));
     out.push_str("<div class=\"prov\">\n");
     out.push_str(&format!(
         "<span><b>{}</b> evals</span><span><b>{}</b> runs</span><span><b>{}</b> trials</span>",
@@ -900,6 +906,7 @@ h1,h2,h3{margin:0;font-weight:650;letter-spacing:-.01em}
 .top{padding:18px 16px 12px;border-bottom:1px solid var(--line);
   background:linear-gradient(180deg,#121828,#0b0e14)}
 .top h1{font-size:22px;display:flex;align-items:baseline;gap:8px}
+.ae-icon{width:.78em;height:.78em;align-self:center;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;fill:none;flex:none}
 .top h1 .sub{font-size:12px;color:var(--mut);font-weight:500;letter-spacing:.02em;text-transform:uppercase}
 .prov{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:10px;color:var(--mut);font-size:12.5px}
 .prov b{color:var(--ink);font-weight:650}

@@ -96,6 +96,7 @@ fn render_shell(queue: &JudgmentQueue, live_endpoint: Option<&str>) -> String {
          header{position:sticky;top:0;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);z-index:2}\
          .wrap{max-width:44rem;margin:0 auto;padding:1rem}.eyebrow{font:700 .68rem/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--red)}\
          h1{font-size:1.35rem;line-height:1.15;margin:.25rem 0 .65rem}.status{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem}.stat{border:1px solid var(--line);background:var(--panel);border-radius:.45rem;padding:.5rem}.stat b{display:block;font-size:1.15rem}.stat span{font-size:.72rem;color:var(--muted)}\
+         .ae-icon{width:1.05em;height:1.05em;margin-right:.2rem;vertical-align:-.15em;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;fill:none}\
          .bar{height:.5rem;border-radius:1rem;background:color-mix(in srgb,var(--muted) 18%,transparent);overflow:hidden;margin:.8rem 0 .1rem}.bar i{display:block;height:100%;background:var(--teal)}\
          main{max-width:44rem;margin:0 auto;padding:.75rem 1rem}.item{background:var(--panel);border:1px solid var(--line);border-radius:.55rem;margin:.85rem 0;padding:.9rem}.item.recoverable{border-left:4px solid var(--gold)}.item.plain{border-left:4px solid var(--teal)}\
          .meta{display:flex;gap:.45rem;flex-wrap:wrap;margin-bottom:.55rem}.pill{font:700 .68rem/1 ui-monospace,SFMono-Regular,Menlo,monospace;border:1px solid var(--line);border-radius:999px;padding:.28rem .48rem;color:var(--muted)}\
@@ -105,7 +106,13 @@ fn render_shell(queue: &JudgmentQueue, live_endpoint: Option<&str>) -> String {
     );
     html.push_str("</style>\n</head>\n<body>\n<header><div class=\"wrap\">\n");
     html.push_str("<div class=\"eyebrow\">Crucible judgment queue</div>\n");
-    html.push_str("<h1>Adjudication panel</h1>\n");
+    html.push_str(concat!(
+        "<h1><svg class=\"ae-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" ",
+        "stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">",
+        "<path d=\"M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96",
+        "l5.51-10.08A2 2 0 0 0 10 8V2\"/><path d=\"M6.453 15h11.094\"/><path d=\"M8.5 2h7\"/></svg> ",
+        "Adjudication panel</h1>\n"
+    ));
     html.push_str("<div class=\"status\">");
     html.push_str(&stat("items", "Items", total));
     html.push_str(&stat("labeled", "Labeled", labeled));
@@ -402,6 +409,49 @@ mod tests {
         assert!(
             LIVE_SCRIPT.contains(r#"[data-stat="open"]"#),
             "expected the live script to update the header Open stat by its hook: {LIVE_SCRIPT}"
+        );
+    }
+
+    /// crucible-033: the adjudication panel is a separate render path from
+    /// `crucible serve`'s arena chrome and the eval dashboard artifact, and
+    /// commit 88da37d gave it a favicon but no visible wordmark — this
+    /// asserts the same Lucide `flask-conical` glyph (identical path data to
+    /// the favicon and the arena's `ae-logo`) rides next to the header text,
+    /// via `.ae-icon`/`currentColor` so it inherits the panel's own
+    /// light/dark `--ink` token like every other glyph on the page.
+    #[test]
+    fn header_carries_the_flask_conical_wordmark_icon() {
+        let queue = JudgmentQueue {
+            schema_version: crucible_core::JUDGMENT_QUEUE_SCHEMA.to_string(),
+            summary: GradeSummary {
+                matched: 0,
+                disputed: 0,
+                missed: 0,
+                recoverable_misses: 0,
+            },
+            items: vec![],
+            labels: vec![],
+        };
+
+        let html = render(&queue);
+
+        assert!(
+            html.contains(r#"<svg class="ae-icon""#),
+            "expected an .ae-icon flask-conical mark in the header: {html}"
+        );
+        assert!(
+            html.contains(
+                "M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"
+            ),
+            "expected the flask-conical bowl path (same source as the favicon): {html}"
+        );
+        assert!(
+            html.contains("stroke=\"currentColor\""),
+            "the wordmark icon must ride currentColor so it follows --ink in both themes: {html}"
+        );
+        assert!(
+            html.contains(".ae-icon{"),
+            "expected an .ae-icon CSS rule sizing/coloring the glyph: {html}"
         );
     }
 }
