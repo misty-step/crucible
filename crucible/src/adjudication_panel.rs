@@ -78,7 +78,7 @@ fn render_shell(queue: &JudgmentQueue, live: bool) -> String {
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
     html.push_str("<title>Crucible Adjudication Queue</title>\n");
     html.push_str(r#"<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231a1a1a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2'/%3E%3Cpath d='M6.453 15h11.094'/%3E%3Cpath d='M8.5 2h7'/%3E%3C/svg%3E">"#);
-    html.push_str("\n");
+    html.push('\n');
     html.push_str("<style>\n");
     html.push_str(
         ":root{--bg:#f6f1e8;--panel:#fffaf0;--ink:#231f18;--muted:#6a6258;--line:#dfd3bf;--red:#a73a2a;--teal:#247467;--gold:#a77a24;--ok:#1f7a4f}\
