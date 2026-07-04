@@ -15,7 +15,15 @@ For the project north star and the boundary with Threshold and Harness Kit, read
 If you are trying to understand Crucible as an operator, start with
 [`docs/operator-walkthrough.md`](docs/operator-walkthrough.md): it defines a
 five-task benchmark from scratch, runs it against two OpenRouter models, and
-shows where to read the verdicts in the UI.
+shows where to read the verdicts in the UI. That walkthrough is the 10-minute
+human path through this repo; everything below it in this README is reference
+material, not a second tutorial.
+
+Crucible's output uses a dozen or so terms of art (`EvalSpec`, runner kind,
+Wilson interval, noise floor, pass^k, judge-gaming canary, Harbor, ...) that
+don't need defining to follow the walkthrough, but will come up as soon as you
+read real output closely. [`docs/glossary.md`](docs/glossary.md) defines each
+one in plain language with a pointer to where it's implemented.
 
 ## First: Verify The Install Is Actually Live
 
@@ -39,9 +47,18 @@ failed.
 Crucible now has a Rust core and CLI for the first eval family: agentic
 code-review quality. The shipped wedge can:
 
-- execute a declared `EvalSpec` with `crucible run <spec>`;
+- assemble a valid `EvalSpec` from flags or a guided prompt with `crucible
+  author`, and check whether one is an executable contract with `crucible
+  validate` — no hand-written JSON required;
+- execute a declared `EvalSpec` with `crucible run <spec>` across three runner
+  kinds (`key_recall`, `prompt_benchmark`, `agentic_judge`);
 - run a Crucible-owned prompt benchmark through an OpenRouter-compatible BYOK
   model boundary and grade it with a deterministic rubric;
+- grade an `agentic_judge` candidate with a live model judge, guarded by a
+  judge-gaming canary and a `CalibrationRecord` measuring judge-vs-human
+  agreement;
+- prove the install is actually live end-to-end with `crucible doctor`, before
+  any command that spends real OpenRouter money;
 - expose the same run surface as a stdio MCP tool for agents and Threshold;
 - persist each run into a gitignored SQLite ledger and query it by benchmark,
   run id, or latest config/model comparison through CLI and MCP;
@@ -64,7 +81,27 @@ Committed fixture inputs live only under `crucible*/tests/fixtures/`.
 
 ## Runnable Evals
 
-Run the first declared benchmark spec:
+Start with the example that needs nothing but this checkout and an
+OpenRouter key — no sibling repo required. Run the first Crucible-owned
+prompt benchmark through OpenRouter:
+
+```sh
+OPENROUTER_API_KEY=... \
+cargo run -p crucible -- run evals/prompt-smoke-v0.json \
+  --out runs/local/prompt-smoke \
+  --json
+```
+
+This spec makes a real model call through the OpenRouter chat-completions API,
+captures token/latency metadata when the provider returns it, grades the response
+with a deterministic contains rubric, and writes
+`runs/local/prompt-smoke/prompt-run.json`. The same prompt task evidence is
+indexed into the SQLite ledger as task rows plus artifact pointers. Raw model
+output stays under `runs/`.
+
+The next example, by contrast, **needs a sibling `daedalus` checkout** —
+skip it unless you have one. Run the first declared key-recall benchmark
+spec:
 
 ```sh
 cargo run -p crucible -- run evals/pr-review-key-recall-v0.json --json
@@ -72,12 +109,16 @@ cargo run -p crucible -- run evals/pr-review-key-recall-v0.json --json
 
 That spec, `pr-review-key-recall-v0`, selects the frozen Threshold
 `pr-review-v0` trials corpus and grades the `probe-oneshot` candidate against
-the Harbor scorer keys under the sibling `daedalus` checkout. The default
-evidence directory is `runs/local/pr-review-key-recall-v0/`.
-Every `crucible run` invocation also writes rows into the SQLite run ledger at
+the Harbor scorer keys under the sibling `daedalus` checkout (paths like
+`../../daedalus/arenas/pr-review-v0` resolve relative to this repo's parent
+directory). Without that sibling checkout present, this command fails on a
+missing corpus path — that's expected, not a bug. The default evidence
+directory is `runs/local/pr-review-key-recall-v0/`. Every `crucible run`
+invocation also writes rows into the SQLite run ledger at
 `runs/local/crucible-runs.sqlite` unless `--db <PATH>` is supplied.
 
-Run a Cerberus producer handoff through the same declared-spec runner:
+Run a Cerberus producer handoff through the same declared-spec runner (this
+also assumes a sibling Cerberus checkout):
 
 ```sh
 # from the sibling Cerberus checkout
@@ -119,22 +160,6 @@ directory per eval:
 Each score is binary and small-n by design, so its Wilson interval is wide. That
 is the intended behavior: the eval is runnable evidence, not overclaimed
 precision.
-
-Run the first Crucible-owned prompt benchmark through OpenRouter:
-
-```sh
-OPENROUTER_API_KEY=... \
-cargo run -p crucible -- run evals/prompt-smoke-v0.json \
-  --out runs/local/prompt-smoke \
-  --json
-```
-
-This spec makes a real model call through the OpenRouter chat-completions API,
-captures token/latency metadata when the provider returns it, grades the response
-with a deterministic contains rubric, and writes
-`runs/local/prompt-smoke/prompt-run.json`. The same prompt task evidence is
-indexed into the SQLite ledger as task rows plus artifact pointers. Raw model
-output stays under `runs/`.
 
 Run the deterministic tracer benchmark across selected real models:
 

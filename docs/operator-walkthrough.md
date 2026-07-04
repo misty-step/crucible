@@ -8,6 +8,10 @@ The benchmark below is intentionally small and plain. It has five prompt tasks,
 one deterministic exact-match rubric, two model runs, one stored ledger, and one
 UI receipt view. Raw model output stays under `runs/`, which is gitignored.
 
+If a term below (`EvalSpec`, Wilson interval, noise floor, ...) is unfamiliar,
+[`docs/glossary.md`](glossary.md) defines it in plain language — but you don't
+need it to follow this walkthrough end to end.
+
 ## What you will build
 
 You will create `evals/operator-micro-benchmark-v0.json`, a five-task prompt
