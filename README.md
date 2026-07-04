@@ -17,6 +17,23 @@ If you are trying to understand Crucible as an operator, start with
 five-task benchmark from scratch, runs it against two OpenRouter models, and
 shows where to read the verdicts in the UI.
 
+## First: Verify The Install Is Actually Live
+
+Before running anything that spends real OpenRouter money, run the doctor:
+
+```sh
+cargo run -p crucible -- doctor --json
+```
+
+`doctor` proves the CLI runs, the MCP server initializes and lists its tools,
+`crucible serve` binds a port and answers `/api/specs`, and the SQLite run
+ledger can be created under `runs/` — all without a network call. It then
+separately reports whether `OPENROUTER_API_KEY` is set (a warning, not a
+failure, when it is absent — that only means the live-model steps below are
+skipped, not that anything is broken) and never prints the key's value. A
+broken check exits non-zero; the report's `checks` array names exactly what
+failed.
+
 ## Current State
 
 Crucible now has a Rust core and CLI for the first eval family: agentic

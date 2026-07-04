@@ -66,6 +66,13 @@
 //!   validation `crucible validate` performs, and only writes the spec file
 //!   when it is valid (backlog/Powder crucible-942 — the brainstorm/design/
 //!   define lifecycle stage previously had no guided surface at all).
+//! - `crucible doctor [--json]` (crucible-911) is the push-button,
+//!   verified-live onboarding check: it proves the CLI runs, the MCP server
+//!   initializes and lists tools, `crucible serve` binds a port and answers
+//!   `/api/specs`, and the SQLite run ledger can be created under `runs/` —
+//!   then separately reports whether `OPENROUTER_API_KEY` is configured
+//!   (`Warn`, never `Fail`, when absent; the value is never printed). See
+//!   `doctor.rs` for the exact checks.
 //!
 //! `--json` emits a stable serde object (`adapt`/`grade`/`adjudicate`); the
 //! default is a human-readable table. `dashboard` instead writes files under
@@ -74,7 +81,10 @@
 //! **Exit codes** are stable so Cerberus/Daedalus can branch headlessly:
 //! `0` success, `1` a load/parse failure (a bad artifact, key, or labels file),
 //! `2` a usage error (bad arguments, surfaced by clap). `--help`/`--version` exit
-//! `0`.
+//! `0`. `crucible doctor` is the one exception to "verdict lives only in the
+//! JSON body": since its whole purpose is a scriptable readiness gate, it
+//! exits `1` when any check is broken (not merely a missing optional
+//! credential), after printing the full report either way.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -95,6 +105,7 @@ mod adjudication_panel;
 mod adjudication_server;
 mod author;
 mod dashboard_html;
+mod doctor;
 mod eval_run;
 mod findings_journal;
 mod mcp;
@@ -316,6 +327,16 @@ enum Command {
     /// (crucible-942). Boxed: `AuthorArgs` carries every runner kind's flags
     /// at once, making it by far the largest `Command` variant.
     Author(Box<author::AuthorArgs>),
+    /// Push-button, verified-live onboarding check (crucible-911): confirms
+    /// the CLI runs, MCP initializes and lists tools, `serve` binds a port
+    /// and answers `/api/specs`, and the run ledger can be created under
+    /// `runs/` — then separately reports whether `OPENROUTER_API_KEY` is
+    /// configured (a warning, not a failure, when absent).
+    Doctor {
+        /// Emit a stable JSON object instead of a human-readable report.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -458,6 +479,7 @@ fn main() -> ExitCode {
         } => run_adjudication_panel(&queue, &out, serve, port, labels.as_deref()),
         Command::Mcp => mcp::run_stdio(),
         Command::Author(args) => author::run(*args),
+        Command::Doctor { json } => run_doctor(json),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -558,6 +580,47 @@ fn print_validation_report(report: &validate::ValidationReport) {
     }
     if report.errors.is_empty() && report.warnings.is_empty() {
         println!("  (no issues)");
+    }
+}
+
+/// `crucible doctor`: run every onboarding self-check, print the full report
+/// (JSON or human-readable) unconditionally, then fail the process — exit `1`
+/// via the caller's error mapping — iff any check is broken. Missing optional
+/// model credentials alone never triggers this; only a real `Fail` check does.
+fn run_doctor(json: bool) -> anyhow::Result<()> {
+    let report = doctor::run();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_doctor_report(&report);
+    }
+    if report.ok {
+        return Ok(());
+    }
+    let failed: Vec<&str> = report
+        .checks
+        .iter()
+        .filter(|check| check.status == doctor::CheckStatus::Fail)
+        .map(|check| check.id)
+        .collect();
+    anyhow::bail!(
+        "doctor found {} broken check{}: {}",
+        failed.len(),
+        plural(failed.len()),
+        failed.join(", ")
+    );
+}
+
+fn print_doctor_report(report: &doctor::DoctorReport) {
+    println!("crucible doctor");
+    println!("  ok        {}", report.ok);
+    for check in &report.checks {
+        let status = match check.status {
+            doctor::CheckStatus::Ok => "ok",
+            doctor::CheckStatus::Warn => "warn",
+            doctor::CheckStatus::Fail => "FAIL",
+        };
+        println!("  {:<9} {:<18} {}", status, check.id, check.message);
     }
 }
 
