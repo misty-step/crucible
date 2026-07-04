@@ -1384,6 +1384,7 @@ fn render_index() -> String {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Crucible benchmark arena</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231a1a1a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2'/%3E%3Cpath d='M6.453 15h11.094'/%3E%3Cpath d='M8.5 2h7'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/assets/aesthetic.css">
   <style>
     :root { --ae-accent: #8a3b30; --ae-accent-dark: #ff9f90; }
@@ -1448,7 +1449,7 @@ fn render_index() -> String {
 <body>
   <div class="ae-shell">
     <aside class="ae-rail">
-      <h1 class="ae-name">CRUCIBLE</h1>
+      <h1 class="ae-logo"><span class="ae-app-mark"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></svg></span><span class="ae-name">CRUCIBLE</span></h1>
       <p class="ae-h">BENCHMARK ARENA</p>
       <nav>
         <button data-view-button="benchmarks" aria-current="page">Benchmarks</button>
@@ -1466,7 +1467,7 @@ fn render_index() -> String {
     </aside>
     <main class="ae-desk cru-desk">
       <div class="cru-mobile-bar">
-        <p class="ae-name">CRUCIBLE</p>
+        <p class="ae-logo"><span class="ae-app-mark"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></svg></span><span class="ae-name">CRUCIBLE</span></p>
         <select class="cru-select" id="mobile-view">
           <option value="benchmarks">Benchmarks</option>
           <option value="setup">Run setup</option>
