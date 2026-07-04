@@ -95,7 +95,7 @@ fn doctor_happy_path_without_openrouter_key_is_ok_overall_with_a_credentials_war
 /// presence, so no live OpenRouter call happens here.
 #[test]
 fn doctor_reports_ok_credentials_without_ever_echoing_the_value() {
-    let fake_key = "sk-doctor-test-should-never-appear-in-output";
+    let fake_key = "doctor-test-value-should-never-appear-in-output";
     let out = crucible()
         .arg("doctor")
         .arg("--json")
@@ -126,7 +126,7 @@ fn doctor_reports_ok_credentials_without_ever_echoing_the_value() {
 /// credential value, and must still surface every check id.
 #[test]
 fn doctor_human_readable_report_lists_every_check_and_never_leaks_credentials() {
-    let fake_key = "sk-doctor-test-human-mode-should-not-leak";
+    let fake_key = "doctor-test-human-mode-value-should-not-leak";
     let out = crucible()
         .arg("doctor")
         .env("OPENROUTER_API_KEY", fake_key)

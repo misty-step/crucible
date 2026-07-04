@@ -392,13 +392,13 @@ mod tests {
     #[test]
     fn present_model_credentials_is_ok_and_never_echoes_the_value() {
         let check = check_model_credentials_with(Some(
-            "sk-doctor-test-should-not-appear-in-output".to_string(),
+            "doctor-test-value-must-not-appear-in-output".to_string(),
         ));
         assert_eq!(check.status, CheckStatus::Ok);
         assert!(
             !check
                 .message
-                .contains("sk-doctor-test-should-not-appear-in-output"),
+                .contains("doctor-test-value-must-not-appear-in-output"),
             "message must never echo the credential value: {}",
             check.message
         );
