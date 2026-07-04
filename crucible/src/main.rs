@@ -60,6 +60,12 @@
 //! - `crucible mcp` serves the shared `crucible run` path over stdio MCP as the
 //!   `crucible_run` tool, so agents and Threshold can invoke the same declared
 //!   spec runner and get the same Wilson-scored run report.
+//! - `crucible author [--interactive] --out <PATH> ...` assembles a valid
+//!   [`EvalSpec`](crucible_core::EvalSpec) from flags (cold-agent/scriptable
+//!   path) or a guided stdin/stdout prompt flow, runs it through the same
+//!   validation `crucible validate` performs, and only writes the spec file
+//!   when it is valid (backlog/Powder crucible-942 — the brainstorm/design/
+//!   define lifecycle stage previously had no guided surface at all).
 //!
 //! `--json` emits a stable serde object (`adapt`/`grade`/`adjudicate`); the
 //! default is a human-readable table. `dashboard` instead writes files under
@@ -87,6 +93,7 @@ use serde::Serialize;
 
 mod adjudication_panel;
 mod adjudication_server;
+mod author;
 mod dashboard_html;
 mod eval_run;
 mod findings_journal;
@@ -301,6 +308,12 @@ enum Command {
     },
     /// Serve Crucible's run surface as a stdio Model Context Protocol server.
     Mcp,
+    /// Assemble a valid EvalSpec from flags or a guided `--interactive`
+    /// prompt flow, validate it the same way `crucible validate` does, and
+    /// only write it when valid — no hand-written JSON required
+    /// (crucible-942). Boxed: `AuthorArgs` carries every runner kind's flags
+    /// at once, making it by far the largest `Command` variant.
+    Author(Box<author::AuthorArgs>),
 }
 
 #[derive(Debug, Subcommand)]
@@ -442,6 +455,7 @@ fn main() -> ExitCode {
             labels,
         } => run_adjudication_panel(&queue, &out, serve, port, labels.as_deref()),
         Command::Mcp => mcp::run_stdio(),
+        Command::Author(args) => author::run(*args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
