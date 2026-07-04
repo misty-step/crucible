@@ -12,6 +12,11 @@ For the project north star and the boundary with Threshold and Harness Kit, read
 [`VISION.md`](VISION.md). For the cold-agent command contract, read
 [`SKILL.md`](SKILL.md).
 
+If you are trying to understand Crucible as an operator, start with
+[`docs/operator-walkthrough.md`](docs/operator-walkthrough.md): it defines a
+five-task benchmark from scratch, runs it against two OpenRouter models, and
+shows where to read the verdicts in the UI.
+
 ## Current State
 
 Crucible now has a Rust core and CLI for the first eval family: agentic

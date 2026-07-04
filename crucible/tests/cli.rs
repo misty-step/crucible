@@ -1336,6 +1336,20 @@ fn serve_exposes_specs_runs_trends_and_run_detail_over_http() {
         tracer["runner_defaults"]["tool_policy"],
         "No tools. The runner sends one text prompt to the model and grades the final text with deterministic verifiers."
     );
+    let operator = specs_array
+        .iter()
+        .find(|spec| spec["id"] == "operator-micro-benchmark-v0")
+        .expect("operator walkthrough benchmark is listed");
+    assert_eq!(operator["task_count"], 5);
+    assert_eq!(operator["supports_controlled_comparison"], true);
+    let operator_summary = operator["plain_summary"]
+        .as_str()
+        .expect("plain summary")
+        .to_ascii_lowercase();
+    assert!(
+        operator_summary.contains("five tiny exact-answer prompt tasks"),
+        "operator benchmark explains itself plainly: {operator}"
+    );
 
     let runs = http_get_json(port, "/api/runs");
     assert_eq!(runs["schema_version"], "crucible.ui.runs.v1");
@@ -2115,6 +2129,10 @@ fn exit_codes_are_stable_across_success_load_error_and_usage_error() {
 fn validate_reports_the_real_flagship_specs_as_valid_with_expected_warnings() {
     for (spec, expect_warnings) in [
         (repo_fixture("evals/agentic-judge-smoke-v0.json"), false),
+        (
+            repo_fixture("evals/operator-micro-benchmark-v0.json"),
+            false,
+        ),
         (repo_fixture("evals/prompt-smoke-v0.json"), false),
         (repo_fixture("evals/tracer-exact-v1.json"), false),
         (repo_fixture("evals/pr-review-key-recall-v0.json"), true),

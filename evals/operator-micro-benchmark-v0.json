@@ -1,0 +1,77 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "operator-micro-benchmark-v0",
+  "task": "operator-micro-benchmark",
+  "inputs": "Five tiny exact-answer prompt tasks: structured extraction, CSV selection, JSON field lookup, arithmetic, and date normalization.",
+  "outputs": "Model text graded by deterministic exact-match rubrics. No judge model is called.",
+  "graders": {
+    "graders": [
+      {
+        "id": "exact_match",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "decision": "Show a cold operator how to define, run, compare, and inspect a tiny Crucible benchmark in about ten minutes.",
+  "runner": {
+    "kind": "prompt_benchmark",
+    "corpus": {
+      "source": "prompt_benchmark",
+      "config": {
+        "provider": "open_router",
+        "model": "deepseek/deepseek-v4-flash",
+        "system_prompt": "You are running an exact-match benchmark. Output exactly the requested answer and nothing else. No markdown, no quotes unless they are part of the requested answer, no explanation.",
+        "credential_env": "OPENROUTER_API_KEY",
+        "max_tokens": 128,
+        "temperature": 0
+      },
+      "tasks": [
+        {
+          "task_id": "extract-ticket-id",
+          "prompt": "Fixed input: ticket=[CRU-101] status=ready. Return exactly the ticket id without brackets.",
+          "expectation": {
+            "kind": "exact",
+            "value": "CRU-101"
+          }
+        },
+        {
+          "task_id": "csv-largest-count",
+          "prompt": "Given CSV rows name,count\\nalpha,7\\nbeta,11\\ngamma,9\\nReturn exactly the name with the largest count.",
+          "expectation": {
+            "kind": "exact",
+            "value": "beta"
+          }
+        },
+        {
+          "task_id": "json-owner-email",
+          "prompt": "From this JSON, return exactly owner.email: {\"owner\":{\"name\":\"Mira\",\"email\":\"mira@example.test\"},\"repo\":\"crucible\"}",
+          "expectation": {
+            "kind": "exact",
+            "value": "mira@example.test"
+          }
+        },
+        {
+          "task_id": "sum-integers",
+          "prompt": "Return exactly the integer sum of 47 and 58.",
+          "expectation": {
+            "kind": "exact",
+            "value": "105"
+          }
+        },
+        {
+          "task_id": "date-to-iso",
+          "prompt": "Reformat exactly this date from July 4, 2026 to ISO YYYY-MM-DD.",
+          "expectation": {
+            "kind": "exact",
+            "value": "2026-07-04"
+          }
+        }
+      ]
+    }
+  }
+}

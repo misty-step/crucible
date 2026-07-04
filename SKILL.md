@@ -16,6 +16,39 @@ boundaries, runner boundaries, exports, or UI. Raw model outputs and raw diffs
 must stay under `runs/` unless deliberately committed as sanitized fixtures under
 `crucible*/tests/fixtures/`.
 
+## Operator Onboarding: Crucible In 10 Minutes
+
+When the operator asks "how do I actually define and run a benchmark?", start
+with [`docs/operator-walkthrough.md`](docs/operator-walkthrough.md). It walks a
+cold reader through the smallest useful Crucible loop:
+
+```sh
+cargo run -p crucible -- validate evals/operator-micro-benchmark-v0.json --json
+
+cargo run -p crucible -- run evals/operator-micro-benchmark-v0.json \
+  --models deepseek/deepseek-v4-flash,z-ai/glm-5.2 \
+  --out runs/local/crucible-101/final \
+  --db runs/local/crucible-101/final.sqlite \
+  --json
+
+cargo run -p crucible -- runs compare \
+  --benchmark operator-micro-benchmark-v0 \
+  --left deepseek/deepseek-v4-flash \
+  --right z-ai/glm-5.2 \
+  --db runs/local/crucible-101/final.sqlite \
+  --json
+
+cargo run -p crucible -- serve \
+  --db runs/local/crucible-101/final.sqlite \
+  --specs evals \
+  --port 4174
+```
+
+The expected operator-level readout is: DeepSeek and GLM both produce stored
+run receipts, task-level pass/fail verdicts are visible in the UI's Receipts
+view, and the paired comparison reports any tiny-sample delta as inside the
+noise floor unless it is actually defensible.
+
 ## Validate A Spec Before Running
 
 Check a declared spec is an executable contract — no sibling checkout, no
