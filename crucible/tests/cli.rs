@@ -1640,6 +1640,134 @@ fn serve_exposes_specs_runs_trends_and_run_detail_over_http() {
     stop_child(child);
 }
 
+/// crucible-031: `crucible serve` must mount the same live writeback loop
+/// `adjudication-panel --serve` runs as a separate process — not just
+/// render-compose a read-only projection of an existing queue artifact. A
+/// run carrying a `crucible.judgment_queue.v1` artifact must be openable
+/// *and labelable* from inside the main serve shell, minting labels through
+/// the exact same `apply_label` persistence path (`crucible.label.v1` JSON
+/// array, sibling to the queue artifact) that the standalone `--serve` loop
+/// and `adjudicate --apply` both read and write.
+#[test]
+fn serve_mounts_live_adjudication_writeback_for_a_queue_artifact() {
+    let root = temp_root("serve-adjudication-live");
+    let db = root.join("runs.sqlite");
+    let out_dir = root.join("out");
+    let bearer = "serve-pass";
+
+    // `crucible run` with no spec/--eval executes all three built-in
+    // receipts, including `recoverable-adjudication-queue`, which writes a
+    // real `queue.json` + `panel/index.html` and persists both as artifacts
+    // of its run row.
+    let run = crucible()
+        .arg("run")
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    assert!(
+        run.status.success(),
+        "seed run must persist; stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let (child, port) = spawn_serve(&db, &fixture("specs"), Some(bearer));
+
+    let runs = http_get_json_auth(port, "/api/runs", bearer);
+    let rows = runs["runs"].as_array().expect("runs array");
+    let run_id = rows
+        .iter()
+        .find(|row| row["benchmark_id"] == "recoverable-adjudication-queue")
+        .and_then(|row| row["run_id"].as_str())
+        .expect("recoverable-adjudication-queue run is persisted")
+        .to_string();
+
+    let panel_html = http_get_auth(port, &format!("/adjudication/panel/{run_id}"), bearer);
+    let label_path = format!("/adjudication/panel/{run_id}/label");
+    // The panel embeds the run id percent-encoded (`:` -> `%3A`) in the
+    // `fetch()` target; the raw form is what the test itself POSTs to below
+    // (the server percent-decodes either way).
+    let encoded_label_path = label_path.replace(':', "%3A");
+    assert!(
+        panel_html.contains("<script>") && panel_html.contains("fetch("),
+        "the mounted panel must be the live-wired render, not the static \
+         read-only projection: {panel_html}"
+    );
+    assert!(
+        panel_html.contains(&encoded_label_path),
+        "the live script must post verdicts to this run's own mounted label \
+         route (not a shared /label), so multiple runs stay independently \
+         labelable from one `crucible serve` process: {panel_html}"
+    );
+
+    let finding_id = panel_html
+        .split("data-finding-id=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("panel renders at least one item with a finding id")
+        .to_string();
+
+    let label_body = serde_json::to_string(&json!({
+        "finding_id": finding_id,
+        "verdict": "keep",
+        "in_scope": true,
+        "latency_ms": 1234
+    }))
+    .expect("label request body");
+
+    let unauth = http_post_json(port, &label_path, None, &label_body);
+    assert!(
+        unauth.starts_with("HTTP/1.1 401 Unauthorized"),
+        "posting a label is a state-changing write and must require the \
+         same bearer auth every other mutating serve route requires: {unauth}"
+    );
+
+    let response = http_post_json(port, &label_path, Some(bearer), &label_body);
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK"),
+        "authenticated label post must succeed: {response}"
+    );
+    let response_json: serde_json::Value =
+        serde_json::from_str(&response_body(&response)).expect("label response is JSON");
+    assert_eq!(response_json["ok"], true);
+    assert_eq!(response_json["label"]["finding_id"], finding_id);
+    assert_eq!(response_json["label"]["verdict"], "keep");
+
+    // The mounted write path must land through the same persistence
+    // `adjudication-panel --serve` uses: a `crucible.label.v1` array sibling
+    // to the queue.json artifact, re-readable by `adjudicate --apply`.
+    let labels_path = out_dir
+        .join("recoverable-adjudication-queue")
+        .join("labels.json");
+    let persisted: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&labels_path).unwrap_or_else(|err| {
+            panic!(
+                "mounted route must persist to {}: {err}",
+                labels_path.display()
+            )
+        }),
+    )
+    .expect("persisted labels are JSON");
+    let persisted_array = persisted.as_array().expect("labels.json is an array");
+    assert_eq!(persisted_array.len(), 1);
+    assert_eq!(persisted_array[0]["finding_id"], finding_id);
+    assert_eq!(persisted_array[0]["verdict"], "keep");
+
+    // Re-fetching the panel must reflect the just-applied label, exactly as
+    // the standalone `--serve` loop's `GET /` does after a `POST /label`.
+    let refreshed = http_get_auth(port, &format!("/adjudication/panel/{run_id}"), bearer);
+    assert!(
+        refreshed.contains("Label: Keep"),
+        "the mounted panel must reflect the applied label on next GET, not \
+         a stale pre-label snapshot: {refreshed}"
+    );
+
+    stop_child(child);
+}
+
 #[test]
 fn serve_requires_bearer_auth_for_run_reading_and_mutating_routes() {
     let root = temp_root("serve-auth");

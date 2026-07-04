@@ -15,7 +15,7 @@ use crucible_core::{CorpusSpec, EvalSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::{adjudication_panel, load_queue, run_store, spec_run, validate};
+use crate::{adjudication_panel, adjudication_server, load_queue, run_store, spec_run, validate};
 
 const SPECS_SCHEMA: &str = "crucible.ui.specs.v1";
 const RUNS_SCHEMA: &str = "crucible.ui.runs.v1";
@@ -110,6 +110,18 @@ fn route(request: &HttpRequest, opts: &ServeOptions) -> Result<HttpResponse> {
         }),
         ("GET", path) if path.starts_with("/adjudication/panel/") => {
             protected(request, || serve_adjudication_panel(path, &opts.db_path))
+        }
+        ("POST", path) if path.starts_with("/adjudication/panel/") && path.ends_with("/label") => {
+            protected(request, || {
+                match submit_adjudication_label(path, &opts.db_path, &request.body) {
+                    Ok(response) => Ok(response),
+                    Err(err) if is_label_request_error(&err) => Ok(HttpResponse::json(
+                        400,
+                        &json!({ "error": err.to_string() }),
+                    )),
+                    Err(err) => Err(err),
+                }
+            })
         }
         ("GET", path) if path.starts_with("/artifacts/") => {
             protected(request, || serve_artifact(path, &opts.db_path))
@@ -1416,11 +1428,12 @@ fn serve_artifact(path: &str, db_path: &Path) -> Result<HttpResponse> {
     Ok(HttpResponse::new(200, content_type, bytes))
 }
 
-fn serve_adjudication_panel(path: &str, db_path: &Path) -> Result<HttpResponse> {
-    let raw = path.trim_start_matches("/adjudication/panel/");
-    let run_id = percent_decode(raw)?;
-    let detail = run_store::show_run(db_path, &run_id)?;
-    let queue_artifact = detail
+/// Find this run's judgment-queue artifact: the un-panel-scoped `queue.json`
+/// a run writes directly (e.g. `recoverable-adjudication-queue`'s), falling
+/// back to any `queue.json` (e.g. one copied alongside a pre-rendered static
+/// panel) if that is all a run has.
+fn find_queue_artifact(detail: &run_store::RunDetail) -> Option<&run_store::StoredArtifact> {
+    detail
         .artifacts
         .iter()
         .find(|artifact| {
@@ -1431,10 +1444,37 @@ fn serve_adjudication_panel(path: &str, db_path: &Path) -> Result<HttpResponse> 
                 .artifacts
                 .iter()
                 .find(|artifact| artifact.path.ends_with("queue.json"))
-        });
-    if let Some(queue_artifact) = queue_artifact {
-        let queue = load_queue(Path::new(&queue_artifact.path))?;
-        return Ok(HttpResponse::html(adjudication_panel::render(&queue)));
+        })
+}
+
+/// Where a run's applied labels live: sibling to its `queue.json`, matching
+/// `adjudication-panel --serve`'s own default (`<out>/labels.json`) so the
+/// same file is readable by `crucible adjudicate --apply` either way.
+fn labels_path_for_queue(queue_path: &Path) -> PathBuf {
+    queue_path.with_file_name("labels.json")
+}
+
+/// `GET /adjudication/panel/<run_id>` — mounts the same live writeback loop
+/// [`crate::adjudication_server`]'s standalone `--serve` process runs
+/// (crucible-031): when the run has a real `queue.json` artifact, this
+/// renders the live-wired panel (verdict taps `POST` to this run's own
+/// `.../label` route) with any already-applied labels folded in, instead of
+/// the old read-only static projection. Runs that only carry a pre-rendered
+/// static `panel/index.html` (no `queue.json` of their own) still fall back
+/// to serving that file verbatim — there is no queue model to make live.
+fn serve_adjudication_panel(path: &str, db_path: &Path) -> Result<HttpResponse> {
+    let raw = path.trim_start_matches("/adjudication/panel/");
+    let run_id = percent_decode(raw)?;
+    let detail = run_store::show_run(db_path, &run_id)?;
+    if let Some(queue_artifact) = find_queue_artifact(&detail) {
+        let queue_path = PathBuf::from(&queue_artifact.path);
+        let mut queue = load_queue(&queue_path)?;
+        let labels_path = labels_path_for_queue(&queue_path);
+        queue.labels = adjudication_server::load_existing_labels(&labels_path)?;
+        let endpoint = adjudication_label_url(&run_id);
+        return Ok(HttpResponse::html(adjudication_panel::render_live_at(
+            &queue, &endpoint,
+        )));
     }
 
     let panel_path = detail
@@ -1449,12 +1489,59 @@ fn serve_adjudication_panel(path: &str, db_path: &Path) -> Result<HttpResponse> 
     Ok(HttpResponse::html(html))
 }
 
+/// `POST /adjudication/panel/<run_id>/label` — the mounted writeback route.
+/// Mints and persists a label through the exact same
+/// [`adjudication_server::handle_label_post`] the standalone
+/// `adjudication-panel --serve` process calls: no forked mint/persist logic,
+/// just a stateless per-request load-mutate-persist over the same
+/// `labels.json` sibling file (`crucible serve`'s request loop keeps no
+/// in-memory session between connections, unlike the standalone server).
+fn submit_adjudication_label(path: &str, db_path: &Path, body: &[u8]) -> Result<HttpResponse> {
+    let run_id = adjudication_label_run_id(path)?;
+    let detail = run_store::show_run(db_path, &run_id)?;
+    let queue_artifact = find_queue_artifact(&detail).with_context(|| {
+        format!("run {run_id:?} has no adjudication queue artifact to label against")
+    })?;
+    let queue_path = PathBuf::from(&queue_artifact.path);
+    let queue = load_queue(&queue_path)?;
+    let labels_path = labels_path_for_queue(&queue_path);
+    let mut labels = adjudication_server::load_existing_labels(&labels_path)?;
+    let response_body =
+        adjudication_server::handle_label_post(body, &queue, &mut labels, &labels_path)?;
+    Ok(HttpResponse::new(200, "application/json", response_body))
+}
+
+/// Classifies the client-caused failures `submit_adjudication_label` can
+/// return as 400s, the same treatment `/api/run`'s `is_run_request_error`
+/// gives its own request-shaped errors — anything else (e.g. a DB I/O
+/// failure) still falls through to `route()`'s generic 500.
+fn is_label_request_error(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.contains("run id") && message.contains("not found")
+        || message.contains("has no adjudication queue artifact")
+        || message.contains("is not an adjudication item in this queue")
+        || message.contains("parsing label request body as JSON")
+        || message.contains("invalid adjudication label path")
+}
+
+fn adjudication_label_run_id(path: &str) -> Result<String> {
+    let raw = path
+        .strip_prefix("/adjudication/panel/")
+        .and_then(|rest| rest.strip_suffix("/label"))
+        .with_context(|| format!("invalid adjudication label path {path:?}"))?;
+    percent_decode(raw)
+}
+
 fn artifact_url(run_id: &str, index: usize) -> String {
     format!("/artifacts/{}/{}", percent_encode(run_id), index)
 }
 
 fn adjudication_panel_url(run_id: &str) -> String {
     format!("/adjudication/panel/{}", percent_encode(run_id))
+}
+
+fn adjudication_label_url(run_id: &str) -> String {
+    format!("/adjudication/panel/{}/label", percent_encode(run_id))
 }
 
 fn nonempty_query(query: &HashMap<String, String>, key: &str) -> Option<String> {

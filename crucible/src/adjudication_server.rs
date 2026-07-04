@@ -16,6 +16,16 @@
 //!
 //! Single-threaded, one connection at a time: this serves one judge clicking
 //! buttons, not concurrent traffic. Binds `127.0.0.1` only.
+//!
+//! [`crate::serve`] mounts the same writeback loop inside the main `crucible
+//! serve` application shell (crucible-031) by calling [`load_existing_labels`]
+//! and [`handle_label_post`] directly per request — reusing this exact
+//! `apply_label` persistence path instead of forking it. `crucible serve`'s
+//! request loop is stateless between connections (it re-derives everything
+//! from disk/DB each request), so the mount loads labels fresh from
+//! `labels_path` on every `POST`/`GET` rather than holding one long-lived
+//! in-memory `Vec<Label>` the way [`serve`] does for a single standalone
+//! session.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -193,7 +203,7 @@ fn default_in_scope() -> bool {
 /// [`crucible_core::judgment::reconcile_labels`]'s semantics) rather than
 /// accumulating duplicates. `saw_grader_before_commit` is always `true`: the
 /// panel shows the deterministic grader's context before every verdict.
-fn handle_label_post(
+pub(crate) fn handle_label_post(
     body: &[u8],
     queue: &JudgmentQueue,
     labels: &mut Vec<Label>,
@@ -240,7 +250,7 @@ fn now_rfc3339() -> anyhow::Result<String> {
         .context("formatting current timestamp")
 }
 
-fn load_existing_labels(path: &Path) -> anyhow::Result<Vec<Label>> {
+pub(crate) fn load_existing_labels(path: &Path) -> anyhow::Result<Vec<Label>> {
     if !path.exists() {
         return Ok(Vec::new());
     }

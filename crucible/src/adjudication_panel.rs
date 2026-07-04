@@ -51,7 +51,7 @@ pub struct PanelReceipt {
 /// Render the static (non-interactive) panel HTML: verdict buttons present,
 /// wired to nothing. What [`write_panel`] has always produced.
 pub fn render(queue: &JudgmentQueue) -> String {
-    render_shell(queue, false)
+    render_shell(queue, None)
 }
 
 /// Render the panel HTML wired for [`crate::adjudication_server`]'s live
@@ -59,10 +59,19 @@ pub fn render(queue: &JudgmentQueue) -> String {
 /// the page reflects the response without a reload. Identical markup and data
 /// model to [`render`] otherwise — the only new surface is the `fetch()` call.
 pub fn render_live(queue: &JudgmentQueue) -> String {
-    render_shell(queue, true)
+    render_live_at(queue, "/label")
 }
 
-fn render_shell(queue: &JudgmentQueue, live: bool) -> String {
+/// Same live-wired render as [`render_live`], but posts verdicts to
+/// `label_endpoint` instead of the hardcoded `/label`. `crucible serve`
+/// mounts one queue per run, so each run's panel needs its own label route
+/// (`/adjudication/panel/<run_id>/label`) rather than the single shared
+/// `/label` the standalone `adjudication-panel --serve` process owns alone.
+pub fn render_live_at(queue: &JudgmentQueue, label_endpoint: &str) -> String {
+    render_shell(queue, Some(label_endpoint))
+}
+
+fn render_shell(queue: &JudgmentQueue, live_endpoint: Option<&str>) -> String {
     let labeled = queue.labels.len();
     let total = queue.items.len();
     let remaining = total.saturating_sub(labeled);
@@ -117,11 +126,19 @@ fn render_shell(queue: &JudgmentQueue, live: bool) -> String {
     }
 
     html.push_str("</main>\n");
-    if live {
-        html.push_str(LIVE_SCRIPT);
+    if let Some(endpoint) = live_endpoint {
+        html.push_str(&live_script(endpoint));
     }
     html.push_str("</body>\n</html>\n");
     html
+}
+
+/// [`LIVE_SCRIPT`] with its one hardcoded `'/label'` target swapped for
+/// `endpoint`, JSON-encoded so an arbitrary (but percent-decoded, ordinary)
+/// run id can never break out of the JS string literal.
+fn live_script(endpoint: &str) -> String {
+    let literal = serde_json::to_string(endpoint).unwrap_or_else(|_| "\"/label\"".to_string());
+    LIVE_SCRIPT.replacen("'/label'", &literal, 1)
 }
 
 /// Wires every `.item .actions button[data-verdict]` to `POST /label`
