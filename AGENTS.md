@@ -20,11 +20,16 @@
   writeback loop (`adjudication-panel --serve`, `backlog.d/005-*`) — a small
   local HTTP server that persists Keep/Nit/Wrong/Noise taps as
   `crucible.label.v1` labels through the same `apply_label` path
-  `adjudicate --apply` uses. See `SKILL.md` for the exact commands. Do not
-  invent a broad platform stack ahead of real usage; open work lives in
-  `backlog.d/` (deterministic grader dispatch beyond the required-kind check,
-  judge-calibration model-family separation, baseline comparison wiring, the
-  phone-adjudication epic's remaining UI polish).
+  `adjudicate --apply` uses. `crucible author` (crucible-942) assembles a
+  valid `EvalSpec` from flags or a guided `--interactive` prompt flow for
+  `key_recall`/`prompt_benchmark`, running the same validation `crucible
+  validate` performs before saving — the brainstorm/design/define lifecycle
+  stage no longer requires hand-writing JSON. See `SKILL.md` for the exact
+  commands. Do not invent a broad platform stack ahead of real usage; open
+  work lives in `backlog.d/` (deterministic grader dispatch beyond the
+  required-kind check, judge-calibration model-family separation, baseline
+  comparison wiring, the phone-adjudication epic's remaining UI polish,
+  `agentic_judge` authoring in `crucible author`).
 - Boundary (rechartered 2026-06-29, refreshed 2026-07-01): Crucible owns the
   eval/benchmark as a durable artifact — definition, design, implementation,
   selected execution, calibration, run records, judging, reporting, and export.

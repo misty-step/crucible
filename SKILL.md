@@ -49,6 +49,49 @@ run receipts, task-level pass/fail verdicts are visible in the UI's Receipts
 view, and the paired comparison reports any tiny-sample delta as inside the
 noise floor unless it is actually defensible.
 
+## Author A New Eval Spec (No Hand-Written JSON)
+
+`crucible author` assembles a valid `EvalSpec` from flags — a scriptable,
+cold-agent-friendly path — or a guided `--interactive` stdin/stdout prompt
+flow (plain `read_line`, no TUI dependency). Either way it runs the assembled
+spec through the exact same validation `crucible validate` performs and
+prints `{valid, runnable, errors, warnings}` before saving; an invalid
+assembly is refused and leaves no file behind.
+
+```sh
+cargo run -p crucible -- author \
+  --id my-eval-v0 \
+  --task-family prompt-smoke \
+  --runner-kind prompt_benchmark \
+  --prompt-model openrouter/auto \
+  --prompt-system-prompt "Answer exactly." \
+  --prompt-task-id marker-echo \
+  --prompt-task-prompt "Reply with crucible-smoke" \
+  --prompt-expectation-kind contains \
+  --prompt-expectation-value crucible-smoke \
+  --out evals/my-eval-v0.json \
+  --json
+```
+
+Or walk through the same fields interactively:
+
+```sh
+cargo run -p crucible -- author --interactive --out evals/my-eval-v0.json
+```
+
+Covers `key_recall` (over a Daedalus `trials.jsonl` corpus, `--key-recall-*`
+flags) and `prompt_benchmark` (`--prompt-*` flags, one authored task per
+invocation — hand-edit the `tasks` array or re-run `author` for additional
+tasks). `agentic_judge` authoring is a documented follow-up (backlog.d/):
+its judge-gaming canary and calibration-probe shape need a richer prompt
+flow than this pass's flag/stdin surface covers well. When no `--grader` is
+named, one canonical grader of the chosen runner's required kind is added
+automatically so the spec is runnable, not merely definition-only; an
+explicit grader mix that still lacks the required kind is left as declared
+so the save-gate validation reports it, rather than the CLI silently
+rewriting it. The result is a real `evals/*.json` file — usable by
+`crucible run`/`validate`/`serve` exactly like a hand-written one.
+
 ## Validate A Spec Before Running
 
 Check a declared spec is an executable contract — no sibling checkout, no
