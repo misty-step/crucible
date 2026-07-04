@@ -89,6 +89,7 @@ mod adjudication_panel;
 mod adjudication_server;
 mod dashboard_html;
 mod eval_run;
+mod findings_journal;
 mod mcp;
 mod run_fanout;
 mod run_store;
@@ -359,6 +360,10 @@ enum RunsCommand {
         /// runs share prompt task fixtures.
         #[arg(long, value_name = "ALPHA", default_value_t = run_store::DEFAULT_ALPHA)]
         alpha: f64,
+        /// Write a findings journal JSON file. The journal contains a finding
+        /// only when this comparison's paired verdict is a statistical signal.
+        #[arg(long, value_name = "PATH")]
+        findings_out: Option<PathBuf>,
         /// Emit stable JSON instead of a readable table.
         #[arg(long)]
         json: bool,
@@ -587,13 +592,34 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             left,
             right,
             alpha,
+            findings_out,
             json,
         } => {
             let comparison = run_store::compare_configs(&db, &benchmark, &left, &right, alpha)?;
+            let findings_receipt = if let Some(path) = findings_out.as_deref() {
+                let repro_command =
+                    runs_compare_repro_command(&db, &benchmark, &left, &right, alpha);
+                Some(findings_journal::write_journal(
+                    &comparison,
+                    alpha,
+                    repro_command,
+                    path,
+                )?)
+            } else {
+                None
+            };
             if json {
                 println!("{}", serde_json::to_string_pretty(&comparison)?);
             } else {
                 print_config_comparison(&comparison);
+                if let (Some(path), Some(journal)) = (findings_out.as_deref(), findings_receipt) {
+                    println!(
+                        "  findings {}  ({} record{})",
+                        path.display(),
+                        journal.findings.len(),
+                        plural(journal.findings.len())
+                    );
+                }
             }
         }
     }
@@ -740,6 +766,34 @@ fn plural(count: usize) -> &'static str {
         ""
     } else {
         "s"
+    }
+}
+
+fn runs_compare_repro_command(
+    db: &Path,
+    benchmark: &str,
+    left: &str,
+    right: &str,
+    alpha: f64,
+) -> String {
+    format!(
+        "crucible runs compare --db {} --benchmark {} --left {} --right {} --alpha {} --json",
+        shell_word(&db.display().to_string()),
+        shell_word(benchmark),
+        shell_word(left),
+        shell_word(right),
+        alpha
+    )
+}
+
+fn shell_word(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':'))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 

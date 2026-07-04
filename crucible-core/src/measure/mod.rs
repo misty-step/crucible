@@ -20,8 +20,8 @@
 //! - [`agreement`](self) — raw [`agreement`] and chance-corrected
 //!   [`cohen_kappa`] between two judges.
 //! - [`paired`](self) — [`PairedComparison`] (McNemar) over two configs' paired
-//!   binary outcomes, and the [`DeltaVerdict`] that refuses a delta inside the
-//!   noise floor.
+//!   binary outcomes, a matched-pairs rate-delta interval, and the
+//!   [`DeltaVerdict`] that refuses a delta inside the noise floor.
 //! - [`power`](self) — the [`required_sample_size`] to detect an effect and the
 //!   [`power_warning`] that flags an underpowered fixture set.
 //! - [`bootstrap`](self) — a deterministic, seeded [`bootstrap_interval`] for a
@@ -37,7 +37,9 @@ mod rate;
 
 pub use agreement::{agreement, cohen_kappa};
 pub use bootstrap::{bootstrap_envelope, bootstrap_interval, BootstrapInterval, EnsembleInterval};
-pub use paired::{DeltaVerdict, PairedComparison};
+pub use paired::{
+    paired_rate_delta_interval, DeltaVerdict, PairedComparison, PairedRateDeltaInterval,
+};
 pub use power::{power_warning, required_sample_size, PowerWarning};
 pub use rate::{proportion, wilson_interval};
 
