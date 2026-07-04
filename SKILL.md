@@ -375,9 +375,13 @@ cargo run -p crucible -- serve \
   --port 4174
 ```
 
-`crucible serve` binds `127.0.0.1`, has no app-level auth, and should only be
-exposed through the private Bastion/Sanctum layer or another authenticated local
-proxy.
+`crucible serve` binds `127.0.0.1`. Reading the run ledger, launching runs, and
+now applying adjudication labels (crucible-031) all require a bearer token: set
+`CRUCIBLE_SERVE_TOKEN` and send `Authorization: Bearer <token>`, or those
+routes 401. The read-only spec library (`GET /` and `GET /api/specs`) stays
+open. Still expose this only through the private Bastion/Sanctum layer or
+another authenticated local proxy — the bearer token is a same-machine
+courtesy gate, not a substitute for network isolation.
 
 Query tools:
 
@@ -479,6 +483,17 @@ and persists the accumulated labels to `runs/local/adjudication-panel/labels.jso
 shape `crucible adjudicate --apply <that file>` reads back, so a served
 session re-enters the headless loop with zero conversion. Resumable: restart
 `--serve` against the same `--labels` path and prior work is still there.
+
+Live writeback is also mounted directly inside `crucible serve` (crucible-031)
+— no separate `--serve` process required. `GET /adjudication/panel/<run_id>`
+(bearer-protected, same as every other run-reading route) renders the live
+panel for any run whose ledger row carries a real `queue.json` artifact, with
+verdict taps posting to that run's own `POST
+/adjudication/panel/<run_id>/label` route. It mints and persists through the
+identical `apply_label` path and `crucible.label.v1` shape the standalone
+`--serve` loop uses — `labels.json` sibling to the run's `queue.json` — so
+`crucible adjudicate --apply` reads either one back the same way. `GET
+/api/adjudication` lists which runs have a panel to open.
 
 ## Dashboard
 
