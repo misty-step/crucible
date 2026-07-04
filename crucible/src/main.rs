@@ -95,6 +95,8 @@ mod run_fanout;
 mod run_store;
 mod serve;
 mod spec_run;
+#[cfg(test)]
+mod test_fixtures;
 mod validate;
 
 /// Standard-normal quantile for a two-sided 95% interval.
@@ -769,7 +771,12 @@ fn plural(count: usize) -> &'static str {
     }
 }
 
-fn runs_compare_repro_command(
+/// The `crucible runs compare` invocation that reproduces one comparison.
+///
+/// Shared by the CLI, the MCP `crucible_runs_compare` tool, and `crucible
+/// serve`'s `/api/compare` route so every face's findings journal points at
+/// the same repro command for the same comparison.
+pub(crate) fn runs_compare_repro_command(
     db: &Path,
     benchmark: &str,
     left: &str,

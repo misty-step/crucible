@@ -83,6 +83,16 @@ fn route(request: &HttpRequest, opts: &ServeOptions) -> Result<HttpResponse> {
         ("GET", "/api/adjudication") => protected(request, || {
             HttpResponse::json_ok(&adjudication_response(&opts.db_path)?)
         }),
+        ("GET", "/api/compare") => protected(request, || {
+            match compare_query_response(&opts.db_path, &request.query) {
+                Ok(response) => HttpResponse::json_ok(&response),
+                Err(err) if is_compare_request_error(&err) => Ok(HttpResponse::json(
+                    400,
+                    &json!({ "error": err.to_string() }),
+                )),
+                Err(err) => Err(err),
+            }
+        }),
         ("POST", "/api/run") => protected(request, || {
             match run_spec_response(&opts.db_path, &opts.specs_dir, &request.body) {
                 Ok(response) => HttpResponse::json_ok(&response),
@@ -288,6 +298,58 @@ fn is_run_request_error(err: &anyhow::Error) -> bool {
     message.contains("run output path")
         || message.contains("known spec")
         || message.contains("parsing run request JSON body")
+}
+
+const COMPARE_SCHEMA: &str = "crucible.ui.compare.v1";
+
+/// The `GET /api/compare` response: the same `ConfigComparison` the CLI's
+/// `runs compare` and the MCP `crucible_runs_compare` tool return, plus the
+/// findings journal computed from it — the local API-face analog of both.
+#[derive(Debug, Serialize)]
+struct CompareResponse {
+    schema_version: &'static str,
+    comparison: run_store::ConfigComparison,
+    findings_journal: crate::findings_journal::FindingsJournal,
+}
+
+fn is_compare_request_error(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.contains("query param")
+}
+
+/// `?benchmark=&left=&right=&alpha=` over the server's configured run
+/// ledger — no new runs are launched, unlike `POST /api/run`.
+fn compare_query_response(
+    db_path: &Path,
+    query: &HashMap<String, String>,
+) -> Result<CompareResponse> {
+    let benchmark = query
+        .get("benchmark")
+        .filter(|value| !value.is_empty())
+        .context("missing benchmark query param")?;
+    let left = query
+        .get("left")
+        .filter(|value| !value.is_empty())
+        .context("missing left query param")?;
+    let right = query
+        .get("right")
+        .filter(|value| !value.is_empty())
+        .context("missing right query param")?;
+    let alpha = match query.get("alpha") {
+        Some(value) => value
+            .parse::<f64>()
+            .with_context(|| format!("invalid alpha query param {value:?}"))?,
+        None => run_store::DEFAULT_ALPHA,
+    };
+
+    let comparison = run_store::compare_configs(db_path, benchmark, left, right, alpha)?;
+    let findings_journal =
+        findings_journal_for(db_path, benchmark, left, right, alpha, &comparison);
+    Ok(CompareResponse {
+        schema_version: COMPARE_SCHEMA,
+        comparison,
+        findings_journal,
+    })
 }
 
 fn run_detail_response(db_path: &Path, run_id: &str) -> Result<Value> {
@@ -979,6 +1041,24 @@ struct RunComparisonResponse {
     control_label: String,
     verdict_explanation: String,
     comparison: run_store::ConfigComparison,
+    /// The same defensible-findings computation the CLI's `--findings-out`
+    /// and the MCP `crucible_runs_compare` tool's `include_findings` perform.
+    /// `findings` is empty unless `comparison.paired` clears the noise floor.
+    findings_journal: crate::findings_journal::FindingsJournal,
+}
+
+/// Build the findings journal for one comparison, reusing the same repro
+/// command shape the CLI and MCP tool report.
+fn findings_journal_for(
+    db_path: &Path,
+    benchmark: &str,
+    left: &str,
+    right: &str,
+    alpha: f64,
+    comparison: &run_store::ConfigComparison,
+) -> crate::findings_journal::FindingsJournal {
+    let repro_command = crate::runs_compare_repro_command(db_path, benchmark, left, right, alpha);
+    crate::findings_journal::journal_from_comparison(comparison, alpha, repro_command)
 }
 
 fn run_spec_response(db_path: &Path, specs_dir: &Path, body: &[u8]) -> Result<RunSpecResponse> {
@@ -1095,13 +1175,18 @@ fn run_controlled_comparison(
             })
             .with_context(|| "first runner produced no benchmark id")?;
         match run_store::compare_configs(db_path, benchmark, left, right, alpha) {
-            Ok(comparison) => Some(RunComparisonResponse {
-                schema_version: RUN_COMPARISON_SCHEMA,
-                control_label: control_label(&changed_variables),
-                verdict_explanation: verdict_explanation(&comparison),
-                changed_variables,
-                comparison,
-            }),
+            Ok(comparison) => {
+                let findings_journal =
+                    findings_journal_for(db_path, benchmark, left, right, alpha, &comparison);
+                Some(RunComparisonResponse {
+                    schema_version: RUN_COMPARISON_SCHEMA,
+                    control_label: control_label(&changed_variables),
+                    verdict_explanation: verdict_explanation(&comparison),
+                    changed_variables,
+                    comparison,
+                    findings_journal,
+                })
+            }
             Err(err) => {
                 return Ok(RunSpecResponse {
                     schema_version: RUN_ACTION_SCHEMA,
@@ -1835,8 +1920,22 @@ fn render_index() -> String {
         <p>${esc(result.verdict_explanation)}</p>
         <p class="cru-subtle">Plain English: the uncertainty range shows where the true pass rate could plausibly land for this task sample. If the paired result is inside the noise floor, the measured difference is not strong enough to trust yet.</p>
         <pre class="cru-json cru-code">${esc(JSON.stringify(c.paired || { comparison_kind: c.comparison_kind, note: c.note }, null, 2))}</pre>
-      </section>`;
+      </section>
+      ${renderFindings(result.findings_journal)}`;
       document.querySelector('#new-run').onclick = () => setView('setup');
+    }
+    function renderFindings(journal) {
+      const findings = journal?.findings || [];
+      if (!findings.length) return '';
+      return `<section class="cru-card" style="margin-top: var(--ae-space-4)">
+        <p class="cru-title">Defensible findings</p>
+        <p class="cru-subtle">Crucible only mints a finding record when the paired result clears the noise floor above — this is the same crucible.findings_journal.v1 artifact crucible runs compare --findings-out writes.</p>
+        ${findings.map(finding => `<div class="cru-card" style="margin-top: var(--ae-space-2)">
+          <p>${esc(finding.hypothesis)}</p>
+          <p class="cru-subtle">Δ ${esc(finding.delta.point.toFixed(4))} [${esc(finding.delta.lower.toFixed(4))}, ${esc(finding.delta.upper.toFixed(4))}] over ${esc(finding.delta.common_tasks)} shared tasks, ${esc((finding.delta.confidence * 100).toFixed(0))}% confidence.</p>
+          <p class="cru-code">${esc(finding.repro_command)}</p>
+        </div>`).join('')}
+      </section>`;
     }
     function scoreCard(side, run) {
       return `<section class="cru-card">
@@ -1917,4 +2016,92 @@ fn render_index() -> String {
 </html>
 "#
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn query(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    }
+
+    // These unit tests call `compare_query_response` — the same handler
+    // `route()` dispatches `GET /api/compare` to — directly rather than
+    // through `route()`/`protected()`. `route()`'s bearer-auth gate is a
+    // generic wrapper already covered end-to-end for other routes in
+    // `tests/cli.rs` via a spawned `crucible serve` subprocess; calling it
+    // here would mean mutating the process-global `CRUCIBLE_SERVE_TOKEN` env
+    // var from these in-process, parallel unit tests, which is exactly the
+    // kind of shared mutable state this repo's tests otherwise avoid.
+
+    /// `GET /api/compare` is the serve face's analog of `crucible runs
+    /// compare` and the MCP `crucible_runs_compare` tool: it must expose the
+    /// findings journal (non-empty when the paired verdict clears the noise
+    /// floor) without any new run being launched.
+    #[test]
+    fn api_compare_includes_a_findings_journal_for_a_paired_signal() {
+        let db = crate::test_fixtures::temp_db("serve-compare-signal");
+        crate::test_fixtures::seed_paired_signal(&db);
+        let query = query(&[
+            ("benchmark", crate::test_fixtures::BENCHMARK),
+            ("left", crate::test_fixtures::LEFT_MODEL),
+            ("right", crate::test_fixtures::RIGHT_MODEL),
+        ]);
+
+        let response = compare_query_response(&db, &query).expect("compare query succeeds");
+        assert_eq!(response.schema_version, COMPARE_SCHEMA);
+        assert_eq!(response.comparison.comparison_kind, "paired_mcnemar");
+        assert_eq!(
+            response.findings_journal.findings.len(),
+            1,
+            "a paired signal must mint exactly one finding record: {:?}",
+            response.findings_journal
+        );
+        assert_eq!(
+            response.findings_journal.findings[0].paired.verdict,
+            crucible_core::DeltaVerdict::Signal
+        );
+    }
+
+    /// Parity with the CLI's own non-regression test (`tests/cli.rs`,
+    /// `--findings-out` on an unpaired comparison) and the MCP test of the
+    /// same scenario: inside the noise floor, `/api/compare` must show zero
+    /// finding records too.
+    #[test]
+    fn api_compare_shows_no_findings_inside_the_noise_floor() {
+        let db = crate::test_fixtures::temp_db("serve-compare-noise-floor");
+        crate::test_fixtures::seed_paired_inside_noise_floor(&db);
+        let query = query(&[
+            ("benchmark", crate::test_fixtures::BENCHMARK),
+            ("left", crate::test_fixtures::LEFT_MODEL),
+            ("right", crate::test_fixtures::RIGHT_MODEL),
+        ]);
+
+        let response = compare_query_response(&db, &query).expect("compare query succeeds");
+        assert_eq!(response.comparison.comparison_kind, "paired_mcnemar");
+        assert_eq!(
+            response.findings_journal.findings.len(),
+            0,
+            "an inside-noise-floor paired comparison must mint no finding records: {:?}",
+            response.findings_journal
+        );
+    }
+
+    #[test]
+    fn api_compare_reports_a_classifiable_error_on_a_missing_required_query_param() {
+        let db = crate::test_fixtures::temp_db("serve-compare-missing-param");
+        crate::test_fixtures::seed_paired_signal(&db);
+        let query = query(&[("left", crate::test_fixtures::LEFT_MODEL)]);
+
+        let err =
+            compare_query_response(&db, &query).expect_err("benchmark and right are both missing");
+        assert!(
+            is_compare_request_error(&err),
+            "a missing required query param must classify as a client error (400), not a 500: {err}"
+        );
+    }
 }
