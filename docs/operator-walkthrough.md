@@ -25,23 +25,49 @@ Crucible sends each task to each model, grades the final text with the exact
 rubric, writes JSON evidence, stores rows in SQLite, and shows the rows in the
 browser workbench.
 
-## 0. Start clean
+## 0. Start clean, then verify the install is actually live
 
 Run from the repo root:
 
 ```sh
 pwd
 git status --short --branch --untracked-files=all
-test -n "${OPENROUTER_API_KEY:-}" && printf 'OPENROUTER_API_KEY=set\n' || printf 'OPENROUTER_API_KEY=missing\n'
+cargo run -p crucible -- doctor --json
 ```
 
-Output from the run that produced this walkthrough:
+`doctor` (crucible-911) is the one command that replaces guessing whether the
+CLI, MCP, serve UI, and run ledger actually work: it spawns the CLI, initializes
+the MCP server and lists its tools, binds `crucible serve` to a real port and
+checks `/api/specs`, and creates a scratch SQLite ledger under `runs/` — no
+network call involved. Its `model_credentials` check separately reports
+whether `OPENROUTER_API_KEY` is set (`warn`, not `fail`, when absent — the
+value is never printed). If `doctor` exits non-zero, something in `checks` is
+genuinely broken; fix that before continuing. If it exits 0 but
+`model_credentials` is `warn`, the walkthrough's live-model steps below (1
+onward) will not work until the key is loaded into the environment — do not
+print it.
 
-```text
-/Users/phaedrus/Development/crucible
-## crucible-902-legibility...origin/master
-OPENROUTER_API_KEY=set
+Representative `doctor --json` output (from a real run with `OPENROUTER_API_KEY`
+set — every field except `ok`/`status` is diagnostic detail, not something to
+match byte-for-byte):
+
+```json
+{
+  "schema_version": "crucible.doctor_report.v1",
+  "ok": true,
+  "checks": [
+    { "id": "cli", "status": "ok", "message": ".../crucible --version: crucible 0.0.0" },
+    { "id": "mcp", "status": "ok", "message": "stdio MCP server initialized and listed 8 tool(s): ..." },
+    { "id": "serve", "status": "ok", "message": "bound 127.0.0.1:56203 and GET /api/specs returned schema Some(\"crucible.ui.specs.v1\")" },
+    { "id": "ledger", "status": "ok", "message": "created and opened runs/doctor-check/ledger-check-32029-1.sqlite (0 row(s), schema initialized)" },
+    { "id": "model_credentials", "status": "ok", "message": "OPENROUTER_API_KEY is set (value not shown) — live-model prompt_benchmark/agentic_judge runs can reach OpenRouter" }
+  ]
+}
 ```
+
+With no `OPENROUTER_API_KEY` set, every field is identical except
+`model_credentials.status` becomes `"warn"` and `ok` stays `true` — a missing
+optional credential never fails the doctor's overall verdict.
 
 If the key is missing, stop and load it into the environment. Do not print it.
 

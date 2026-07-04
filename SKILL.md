@@ -16,6 +16,24 @@ boundaries, runner boundaries, exports, or UI. Raw model outputs and raw diffs
 must stay under `runs/` unless deliberately committed as sanitized fixtures under
 `crucible*/tests/fixtures/`.
 
+## Verify Before You Spend: `crucible doctor`
+
+Before running anything below that calls a real OpenRouter model, run the
+push-button onboarding check (crucible-911):
+
+```sh
+cargo run -p crucible -- doctor --json
+```
+
+`doctor` proves five things without any network call: the CLI itself is
+invocable, the stdio MCP server initializes and lists its tools, `crucible
+serve` binds a port and returns a working `/api/specs`, the SQLite run ledger
+can be created under `runs/`, and whether `OPENROUTER_API_KEY` is set (a
+`warn`, never a `fail`, when absent — presence only, the value is never
+printed). A broken check exits non-zero and names itself in the `checks`
+array; a cold agent should treat a non-zero `doctor` exit as "fix this first,"
+not "OPENROUTER_API_KEY is missing" — that specific gap is always `warn`.
+
 ## Operator Onboarding: Crucible In 10 Minutes
 
 When the operator asks "how do I actually define and run a benchmark?", start

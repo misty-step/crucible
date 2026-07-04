@@ -210,6 +210,35 @@ fn crucible_author_tool_def() -> Value {
     })
 }
 
+/// In-process MCP self-check for `crucible doctor` (crucible-911): initialize
+/// the server and list its tools through the exact same [`dispatch`] path
+/// `run_stdio` uses, without spawning a subprocess or touching stdio. Returns
+/// the tool names so the caller can confirm the expected surface is present.
+/// Kept to this one function rather than exporting `dispatch`/`tool_defs`
+/// directly, so the MCP module's stdio-server internals stay private.
+pub(crate) fn self_check() -> Result<Vec<String>> {
+    let initialized = dispatch(
+        "initialize",
+        &json!({ "params": { "protocolVersion": PROTOCOL_VERSION } }),
+    )
+    .context("MCP initialize failed")?;
+    if initialized["serverInfo"]["name"].as_str() != Some("crucible") {
+        anyhow::bail!("initialize did not return crucible serverInfo: {initialized}");
+    }
+
+    let listed = dispatch("tools/list", &json!({})).context("MCP tools/list failed")?;
+    let names: Vec<String> = listed["tools"]
+        .as_array()
+        .ok_or_else(|| anyhow!("tools/list did not return a tools array: {listed}"))?
+        .iter()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+        .collect();
+    if names.is_empty() {
+        anyhow::bail!("tools/list returned zero tools");
+    }
+    Ok(names)
+}
+
 fn tool_defs() -> Value {
     json!([
         crucible_author_tool_def(),
@@ -851,6 +880,20 @@ fn parse_run_eval(raw: Option<&str>) -> Result<RunEval> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn self_check_initializes_and_lists_a_nonempty_tool_surface() {
+        let names = self_check().expect("in-process MCP self-check succeeds");
+        assert!(
+            names.contains(&"crucible_run".to_string()),
+            "self_check must surface the same tools tools/list returns: {names:?}"
+        );
+        assert_eq!(
+            names.len(),
+            tool_defs().as_array().unwrap().len(),
+            "self_check must not silently filter the real tool surface"
+        );
+    }
 
     #[test]
     fn mcp_exposes_run_as_an_agent_intent() {
