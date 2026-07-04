@@ -1568,7 +1568,7 @@ fn render_index() -> String {
   <link rel="stylesheet" href="/assets/aesthetic.css">
   <style>
     :root { --ae-accent: #8a3b30; --ae-accent-dark: #ff9f90; }
-    .cru-desk { display: grid; gap: var(--ae-space-5); align-content: start; }
+    .cru-desk { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ae-space-5); align-content: start; }
     .cru-toolbar { display: flex; gap: var(--ae-space-3); align-items: start; justify-content: space-between; flex-wrap: wrap; }
     .cru-title { font-weight: var(--ae-w-black); }
     .cru-lede { color: var(--ae-ink-muted); max-width: 58rem; }
@@ -1615,6 +1615,7 @@ fn render_index() -> String {
     .cru-json { max-height: 28em; overflow: auto; padding: var(--ae-space-4); background: var(--ae-wash); border: 1px solid var(--ae-line); }
     .cru-toast { position: fixed; right: 1em; bottom: 1em; max-width: 32em; border: 1px solid var(--ae-line); background: var(--ae-surface); padding: .8em 1em; z-index: var(--ae-z-toast); }
     .cru-mobile-bar { display: none; }
+    .cru-progress-runner-label { display: none; }
     @media (max-width: 820px) {
       .cru-mobile-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--ae-space-3); padding-bottom: var(--ae-space-4); border-bottom: 1px solid var(--ae-line); }
       .cru-mobile-bar .ae-name { margin: 0; }
@@ -1623,6 +1624,14 @@ fn render_index() -> String {
       .cru-progress > div { border-left: 0; }
       .cru-progress > div:nth-child(-n + 3) { border-top: 1px solid var(--ae-line); }
       .cru-progress > div:first-child { border-top: 0; }
+      /* Collapsed to one column, the task/runner grid loses its row/column
+         correspondence -- a task name, then each runner's header, then each
+         runner's result cell, stack in position order alone. Hide the now-
+         redundant header row and instead label each result cell inline with
+         its runner, so a viewer never has to count position to tell runners
+         apart. */
+      .cru-progress-head { display: none; }
+      .cru-progress-runner-label { display: inline; font-weight: var(--ae-w-medium); margin-right: .35em; }
     }
   </style>
 </head>
@@ -1892,16 +1901,21 @@ fn render_index() -> String {
       view.innerHTML = `<div class="cru-toolbar"><div><p class="cru-title">Live run</p><p class="cru-lede">${esc(active.spec.id)} started ${esc(active.startedAt)}. This run appears here immediately; receipts fill in when each runner returns.</p></div></div>
       <section class="cru-card ${failed ? 'warning' : ''}"><p>${statusGlyph(done, !failed)}${failed ? 'failed' : done ? 'complete' : 'running'}</span> ${failed ? esc(active.error) : done ? 'Both runner receipts are stored.' : 'Crucible is executing the runner bundle now.'}</p></section>
       <div class="cru-progress" style="margin-top: var(--ae-space-4)">
-        <div class="cru-label">task</div>${active.runners.map(runner => `<div class="cru-label">${esc(runner.id || runner.model)}</div>`).join('')}
+        <div class="cru-label cru-progress-head">task</div>${active.runners.map(runner => `<div class="cru-label cru-progress-head">${esc(runner.id || runner.model)}</div>`).join('')}
         ${active.tasks.map(task => `<div class="cru-code">${esc(task)}</div>${active.runners.map(runner => taskCell(active, runner, task)).join('')}`).join('')}
       </div>`;
     }
     function taskCell(active, runner, taskId) {
-      if (!active.response) return `<div>${statusGlyph(false, true)}running</span></div>`;
+      // The runner label repeats inline in every cell (shown only at the
+      // mobile breakpoint via .cru-progress-runner-label) so the task/runner
+      // grouping survives the grid collapsing to one column: nothing here
+      // depends on counting position to know which runner a result is for.
+      const runnerLabel = `<span class="cru-progress-runner-label">${esc(runner.id || runner.model)}</span>`;
+      if (!active.response) return `<div>${runnerLabel}${statusGlyph(false, true)}running</span></div>`;
       const run = (active.response.runs || []).find(row => row.runner_id === runner.id || row.model === runner.model);
       const detail = run?.report?.evals?.[0];
-      if (!detail) return `<div>${statusGlyph(false, true)}stored</span></div>`;
-      return `<div>${statusGlyph(true, false)}receipt written</span><br><span class="cru-subtle">${esc(scoreText(run))}</span></div>`;
+      if (!detail) return `<div>${runnerLabel}${statusGlyph(false, true)}stored</span></div>`;
+      return `<div>${runnerLabel}${statusGlyph(true, false)}receipt written</span><br><span class="cru-subtle">${esc(scoreText(run))}</span></div>`;
     }
 
     function renderComparison() {
@@ -2102,6 +2116,75 @@ mod tests {
         assert!(
             is_compare_request_error(&err),
             "a missing required query param must classify as a client error (400), not a 500: {err}"
+        );
+    }
+
+    /// Extract the declaration body of the first CSS rule with an exact
+    /// selector (e.g. `.cru-desk`) inside `css`, panicking if the selector
+    /// is not found. Assumes a single-line-ish `selector { decls }` rule,
+    /// which is how `render_index`'s inline `<style>` block is written.
+    fn css_rule_body<'a>(css: &'a str, selector: &str) -> &'a str {
+        let needle = format!("{selector} {{");
+        let start = css
+            .find(&needle)
+            .unwrap_or_else(|| panic!("selector {selector:?} not found in: {css}"));
+        let body_start = start + needle.len();
+        let end = css[body_start..]
+            .find('}')
+            .unwrap_or_else(|| panic!("unterminated rule for {selector:?}"));
+        &css[body_start..body_start + end]
+    }
+
+    /// crucible-940 bug #1: `.cru-desk` is the grid parent for every desk
+    /// view (Receipts, Run-detail, Live-run, ...). Without an explicit
+    /// `grid-template-columns`, a single-flex-child toolbar (Receipts,
+    /// Run-detail) lets the implicit grid column size to its child's
+    /// intrinsic content width, blowing out past the viewport at mobile
+    /// widths (measured 1014px content in a 375px viewport). `minmax(0, 1fr)`
+    /// lets the sole column shrink below that intrinsic width instead of a
+    /// bare `1fr` track, which still respects intrinsic minimums.
+    #[test]
+    fn cru_desk_grid_has_explicit_shrinkable_column() {
+        let html = render_index();
+        let body = css_rule_body(&html, ".cru-desk");
+        assert!(
+            body.contains("grid-template-columns"),
+            ".cru-desk must declare grid-template-columns so an implicit \
+             single-child column cannot blow out past the viewport: {body}"
+        );
+        assert!(
+            body.contains("minmax(0"),
+            ".cru-desk's grid-template-columns must allow the column to \
+             shrink below its content's intrinsic width (minmax(0, ...)), \
+             not just declare a bare 1fr track: {body}"
+        );
+    }
+
+    /// crucible-940 bug #2: the Live-run task x runner progress grid must not
+    /// lose the row/column correspondence when it collapses to one column at
+    /// the mobile breakpoint -- each result cell needs the runner's name
+    /// inline so a viewer isn't counting position to tell runners apart.
+    #[test]
+    fn live_run_progress_cells_carry_runner_label_for_mobile_grouping() {
+        let html = render_index();
+        assert!(
+            html.contains("cru-progress-runner-label"),
+            "expected a runner-label hook usable inside each result cell: {html}"
+        );
+        // taskCell() must render the label into every branch it returns, not
+        // just the (position-only) header row above the grid.
+        let task_cell_start = html
+            .find("function taskCell")
+            .expect("taskCell function present");
+        let task_cell_end = html[task_cell_start..]
+            .find("\n    function ")
+            .map(|offset| task_cell_start + offset)
+            .unwrap_or(html.len());
+        let task_cell_body = &html[task_cell_start..task_cell_end];
+        assert!(
+            task_cell_body.contains("cru-progress-runner-label"),
+            "taskCell() must emit the runner label inline in every branch \
+             so mobile users can tell which runner a result belongs to: {task_cell_body}"
         );
     }
 }

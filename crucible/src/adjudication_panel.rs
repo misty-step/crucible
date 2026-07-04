@@ -98,9 +98,9 @@ fn render_shell(queue: &JudgmentQueue, live: bool) -> String {
     html.push_str("<div class=\"eyebrow\">Crucible judgment queue</div>\n");
     html.push_str("<h1>Adjudication panel</h1>\n");
     html.push_str("<div class=\"status\">");
-    html.push_str(&stat("Items", total));
-    html.push_str(&stat("Labeled", labeled));
-    html.push_str(&stat("Open", remaining));
+    html.push_str(&stat("items", "Items", total));
+    html.push_str(&stat("labeled", "Labeled", labeled));
+    html.push_str(&stat("open", "Open", remaining));
     html.push_str("</div>");
     html.push_str(&format!(
         "<div class=\"bar\" aria-label=\"Progress\"><i style=\"width:{:.2}%\"></i></div>",
@@ -158,6 +158,15 @@ const LIVE_SCRIPT: &str = r#"<script>
         note.className = 'labels';
         note.textContent = 'Label: ' + data.label.verdict + ' · saved (' + data.labeled + '/' + data.total + ')';
         actions.replaceWith(note);
+        // The per-card note above and the header counters below both read
+        // straight off this same `/label` response — no separate fetch, no
+        // stale page-load snapshot.
+        var labeledStat = document.querySelector('[data-stat="labeled"] b');
+        if (labeledStat) { labeledStat.textContent = data.labeled; }
+        var openStat = document.querySelector('[data-stat="open"] b');
+        if (openStat) { openStat.textContent = data.total - data.labeled; }
+        var bar = document.querySelector('.bar i');
+        if (bar && data.total) { bar.style.width = ((data.labeled / data.total) * 100).toFixed(2) + '%'; }
       }).catch(function (err) {
         actions.querySelectorAll('button').forEach(function (b) { b.disabled = false; });
         var note = document.createElement('div');
@@ -171,9 +180,10 @@ const LIVE_SCRIPT: &str = r#"<script>
 </script>
 "#;
 
-fn stat(label: &str, n: usize) -> String {
+fn stat(key: &str, label: &str, n: usize) -> String {
     format!(
-        "<div class=\"stat\"><b>{}</b><span>{}</span></div>",
+        "<div class=\"stat\" data-stat=\"{}\"><b>{}</b><span>{}</span></div>",
+        escape_html(key),
         n,
         escape_html(label)
     )
@@ -327,5 +337,54 @@ mod tests {
         ] {
             assert!(html.contains(marker), "missing {marker:?} in {html}");
         }
+    }
+
+    /// crucible-940 bug #3: the header's "N Labeled" / "N Open" counters must
+    /// update from the same `/label` response payload (`data.labeled`,
+    /// `data.total`) that already drives the per-card confirmation text
+    /// (`'Label: ' + data.label.verdict + ' saved (' + data.labeled + '/' +
+    /// data.total + ')'`), not just a page-load-time snapshot. The header
+    /// stats need stable hooks (`data-stat="labeled"` / `data-stat="open"`)
+    /// so the live script can find and update them without a reload.
+    #[test]
+    fn live_script_updates_header_counters_from_same_label_response_as_card_note() {
+        let queue = JudgmentQueue {
+            schema_version: crucible_core::JUDGMENT_QUEUE_SCHEMA.to_string(),
+            summary: GradeSummary {
+                matched: 1,
+                disputed: 1,
+                missed: 1,
+                recoverable_misses: 1,
+            },
+            items: vec![item("F3")],
+            labels: vec![],
+        };
+
+        let html = render_live(&queue);
+
+        assert!(
+            html.contains("data-stat=\"labeled\""),
+            "header Labeled stat needs a stable hook for the live script to update: {html}"
+        );
+        assert!(
+            html.contains("data-stat=\"open\""),
+            "header Open stat needs a stable hook for the live script to update: {html}"
+        );
+
+        // The per-card confirmation text is built from `data.labeled` and
+        // `data.total` inside the same `.then(function (data) { ... })`
+        // callback that must also refresh the header counters.
+        assert!(
+            LIVE_SCRIPT.contains("data.labeled") && LIVE_SCRIPT.contains("data.total"),
+            "expected the label-response handler to read labeled/total: {LIVE_SCRIPT}"
+        );
+        assert!(
+            LIVE_SCRIPT.contains(r#"[data-stat="labeled"]"#),
+            "expected the live script to update the header Labeled stat by its hook: {LIVE_SCRIPT}"
+        );
+        assert!(
+            LIVE_SCRIPT.contains(r#"[data-stat="open"]"#),
+            "expected the live script to update the header Open stat by its hook: {LIVE_SCRIPT}"
+        );
     }
 }
