@@ -1683,8 +1683,9 @@ fn render_index() -> String {
     .cru-chip.err { color: var(--ae-err); }
     .cru-status { display: inline-flex; gap: .35em; align-items: baseline; }
     .cru-status.ok .glyph { color: var(--ae-ok); }
-    .cru-status.warn .glyph { color: var(--ae-warn); }
+    .cru-status.progress .glyph { color: var(--ae-ink-muted); }
     .cru-status.err .glyph { color: var(--ae-err); }
+    .cru-status .glyph svg.ae-icon { vertical-align: -0.25em; }
     .cru-code { font-family: var(--ae-font-mono); font-size: 13px; word-break: break-word; }
     .cru-empty { border: 1px solid var(--ae-line); padding: var(--ae-space-5); color: var(--ae-ink-muted); }
     .cru-table-wrap { overflow: auto; border: 1px solid var(--ae-line); }
@@ -1767,10 +1768,14 @@ fn render_index() -> String {
     function pct(value) { return value == null ? 'n/a' : (value * 100).toFixed(1) + '%'; }
     function scoreText(run) { return run?.point == null ? 'No score yet' : `${pct(run.point)} (${run.successes}/${run.n} tasks passed)`; }
     function uncertaintyText(run) { return `uncertainty range ${pct(run.lower)} to ${pct(run.upper)}`; }
-    function statusGlyph(ok, warn) {
-      const cls = ok ? 'ok' : warn ? 'warn' : 'err';
-      const glyph = ok ? '✓' : warn ? '!' : '×';
-      return `<span class="cru-status ${cls}"><span class="glyph">${glyph}</span>`;
+    // kind is one of 'ok' | 'err' | 'progress' -- 'progress' is a neutral
+    // in-progress state (a still-executing run, a receipt not yet detailed),
+    // never a judgment, so it rides the same muted ink as supporting text
+    // rather than the warn/err hues reserved for actual verdicts.
+    const PROGRESS_ICON = '<svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+    function statusGlyph(kind) {
+      const glyph = kind === 'ok' ? '✓' : kind === 'progress' ? PROGRESS_ICON : '×';
+      return `<span class="cru-status ${kind}"><span class="glyph">${glyph}</span>`;
     }
     function ci(run) {
       const lower = Math.max(0, Math.min(1, run?.lower ?? 0));
@@ -1982,11 +1987,20 @@ fn render_index() -> String {
 
     function renderLive() {
       const active = state.activeRun;
-      if (!active) { view.innerHTML = '<div class="cru-empty">No active run. Start from Run setup.</div>'; return; }
+      if (!active) {
+        view.innerHTML = `<div class="cru-toolbar"><div><p class="cru-title">Live run</p><p class="cru-lede">Runners land here the moment a comparison launches, with receipts filling in as each one returns.</p></div></div>
+        <div class="ae-empty">
+          <p class="ae-item"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg> No active run</p>
+          <p class="ae-dim">Compose a runner bundle in Run setup and launch a controlled comparison to watch it execute here.</p>
+          <p><button class="cru-button" id="live-empty-cta" type="button">Go to Run setup</button></p>
+        </div>`;
+        document.querySelector('#live-empty-cta').onclick = () => setView('setup');
+        return;
+      }
       const done = active.status === 'complete';
       const failed = active.status === 'failed';
       view.innerHTML = `<div class="cru-toolbar"><div><p class="cru-title">Live run</p><p class="cru-lede">${esc(active.spec.id)} started ${esc(active.startedAt)}. This run appears here immediately; receipts fill in when each runner returns.</p></div></div>
-      <section class="cru-card ${failed ? 'warning' : ''}"><p>${statusGlyph(done, !failed)}${failed ? 'failed' : done ? 'complete' : 'running'}</span> ${failed ? esc(active.error) : done ? 'Both runner receipts are stored.' : 'Crucible is executing the runner bundle now.'}</p></section>
+      <section class="cru-card ${failed ? 'warning' : ''}"><p>${statusGlyph(failed ? 'err' : done ? 'ok' : 'progress')}${failed ? 'failed' : done ? 'complete' : 'running'}</span> ${failed ? esc(active.error) : done ? 'Both runner receipts are stored.' : 'Crucible is executing the runner bundle now.'}</p></section>
       <div class="cru-progress" style="margin-top: var(--ae-space-4)">
         <div class="cru-label cru-progress-head">task</div>${active.runners.map(runner => `<div class="cru-label cru-progress-head">${esc(runner.id || runner.model)}</div>`).join('')}
         ${active.tasks.map(task => `<div class="cru-code">${esc(task)}</div>${active.runners.map(runner => taskCell(active, runner, task)).join('')}`).join('')}
@@ -1998,11 +2012,11 @@ fn render_index() -> String {
       // grouping survives the grid collapsing to one column: nothing here
       // depends on counting position to know which runner a result is for.
       const runnerLabel = `<span class="cru-progress-runner-label">${esc(runner.id || runner.model)}</span>`;
-      if (!active.response) return `<div>${runnerLabel}${statusGlyph(false, true)}running</span></div>`;
+      if (!active.response) return `<div>${runnerLabel}${statusGlyph('progress')}running</span></div>`;
       const run = (active.response.runs || []).find(row => row.runner_id === runner.id || row.model === runner.model);
       const detail = run?.report?.evals?.[0];
-      if (!detail) return `<div>${runnerLabel}${statusGlyph(false, true)}stored</span></div>`;
-      return `<div>${runnerLabel}${statusGlyph(true, false)}receipt written</span><br><span class="cru-subtle">${esc(scoreText(run))}</span></div>`;
+      if (!detail) return `<div>${runnerLabel}${statusGlyph('progress')}stored</span></div>`;
+      return `<div>${runnerLabel}${statusGlyph('ok')}receipt written</span><br><span class="cru-subtle">${esc(scoreText(run))}</span></div>`;
     }
 
     function renderComparison() {
@@ -2085,10 +2099,10 @@ fn render_index() -> String {
     }
     function renderTasks(detail) {
       if (detail.prompt_tasks.length) {
-        return `<div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>task</th><th>verdict</th><th>latency</th><th>model</th><th>cost</th></tr></thead><tbody>${detail.prompt_tasks.map(task => `<tr><td class="ae-item">${esc(task.task_id)}</td><td>${statusGlyph(task.passed, false)}${task.passed ? 'pass' : 'fail'}</span></td><td>${task.latency_ms == null ? 'n/a' : esc(task.latency_ms + 'ms')}</td><td>${esc(task.response_model || task.requested_model || '')}</td><td>${task.cost_usd == null ? 'n/a' : '$' + Number(task.cost_usd).toFixed(5)}</td></tr>`).join('')}</tbody></table></div>`;
+        return `<div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>task</th><th>verdict</th><th>latency</th><th>model</th><th>cost</th></tr></thead><tbody>${detail.prompt_tasks.map(task => `<tr><td class="ae-item">${esc(task.task_id)}</td><td>${statusGlyph(task.passed ? 'ok' : 'err')}${task.passed ? 'pass' : 'fail'}</span></td><td>${task.latency_ms == null ? 'n/a' : esc(task.latency_ms + 'ms')}</td><td>${esc(task.response_model || task.requested_model || '')}</td><td>${task.cost_usd == null ? 'n/a' : '$' + Number(task.cost_usd).toFixed(5)}</td></tr>`).join('')}</tbody></table></div>`;
       }
       if (detail.task_results && detail.task_results.length) {
-        return `<div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>task</th><th>trial</th><th>matched</th><th>missed</th><th>false positives</th><th>verifier</th></tr></thead><tbody>${detail.task_results.map(task => `<tr><td class="ae-item">${esc(task.task_id)}</td><td>${esc(task.trial ?? '')}</td><td>${esc(task.matched ?? '')}/${esc(task.expected_defects ?? '')}</td><td>${esc(task.missed ?? '')}</td><td>${esc(task.false_positives ?? '')}</td><td>${statusGlyph(!task.error && !task.scorer_error, false)}${task.error || task.scorer_error ? esc(task.error || task.scorer_error) : 'graded'}</span></td></tr>`).join('')}</tbody></table></div>`;
+        return `<div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>task</th><th>trial</th><th>matched</th><th>missed</th><th>false positives</th><th>verifier</th></tr></thead><tbody>${detail.task_results.map(task => `<tr><td class="ae-item">${esc(task.task_id)}</td><td>${esc(task.trial ?? '')}</td><td>${esc(task.matched ?? '')}/${esc(task.expected_defects ?? '')}</td><td>${esc(task.missed ?? '')}</td><td>${esc(task.false_positives ?? '')}</td><td>${statusGlyph(!task.error && !task.scorer_error ? 'ok' : 'err')}${task.error || task.scorer_error ? esc(task.error || task.scorer_error) : 'graded'}</span></td></tr>`).join('')}</tbody></table></div>`;
       }
       return '<p class="cru-subtle">No per-task rows were indexed for this runner.</p>';
     }
@@ -2272,6 +2286,89 @@ mod tests {
             task_cell_body.contains("cru-progress-runner-label"),
             "taskCell() must emit the runner label inline in every branch \
              so mobile users can tell which runner a result belongs to: {task_cell_body}"
+        );
+    }
+
+    /// Extract the body of a top-level JS function declared as
+    /// `function <name>(` inside `render_index`'s inline `<script>`, up to
+    /// the next top-level `function` declaration (or end of string).
+    fn js_function_body<'a>(html: &'a str, name: &str) -> &'a str {
+        let needle = format!("function {name}(");
+        let start = html
+            .find(&needle)
+            .unwrap_or_else(|| panic!("function {name:?} not found in rendered index"));
+        let end = html[start..]
+            .find("\n    function ")
+            .map(|offset| start + offset)
+            .unwrap_or(html.len());
+        &html[start..end]
+    }
+
+    /// crucible-941: the Live-run empty state ("no active run yet") was a
+    /// single line of gray text with no next-step affordance -- the weakest
+    /// screen in the app next to Comparison/Benchmarks/Setup, which all
+    /// carry a heading, supporting line, and (where relevant) a real button.
+    /// Guard the fix at the source level: renderLive()'s empty branch must
+    /// use the design system's own `.ae-empty` absence recipe (heading +
+    /// supporting line + one quiet action), not reinvent a bespoke bare div,
+    /// and must wire a real `.cru-button` CTA back to Run setup.
+    #[test]
+    fn live_run_empty_state_has_a_real_cta_and_design_system_weight() {
+        let html = render_index();
+        let render_live = js_function_body(&html, "renderLive");
+        assert!(
+            render_live.contains("ae-empty"),
+            "the empty Live-run branch must use the Aesthetic .ae-empty \
+             absence recipe rather than a bare, unstyled div: {render_live}"
+        );
+        assert!(
+            render_live.contains("cru-button") && render_live.contains("setView('setup')"),
+            "the empty Live-run branch must offer a real button (not a bare \
+             link) that navigates to Run setup: {render_live}"
+        );
+        assert!(
+            render_live.contains("ae-item") && render_live.contains("ae-dim"),
+            "the empty Live-run branch must carry a heading and a supporting \
+             line, matching the design system's own empty-state weight: {render_live}"
+        );
+        assert!(
+            !render_live.contains("cru-empty\">No active run"),
+            "the old single-line unstyled empty state must be gone: {render_live}"
+        );
+    }
+
+    /// crucible-941: while a run is in progress, `statusGlyph` painted the
+    /// glyph with the `warn` class (an amber '!') -- indistinguishable at a
+    /// glance from a real warning. In-progress is not a judgment, so it must
+    /// ride neutral ink (`--ae-ink-muted`) via a dedicated `progress` state,
+    /// never the warn/err hues reserved for actual verdicts.
+    #[test]
+    fn running_status_glyph_is_neutral_not_warning_coded() {
+        let html = render_index();
+        assert!(
+            !html.contains(".cru-status.warn"),
+            "no rendered status should still be styled with the warn hue: {html}"
+        );
+        assert!(
+            html.contains(".cru-status.progress .glyph { color: var(--ae-ink-muted); }"),
+            "the in-progress glyph must ride neutral ink, not a warning color"
+        );
+        let status_glyph = js_function_body(&html, "statusGlyph");
+        assert!(
+            status_glyph.contains("'progress'") && !status_glyph.contains("'warn'"),
+            "statusGlyph must expose an explicit neutral 'progress' state, \
+             not the removed boolean warn flag: {status_glyph}"
+        );
+        // Regression guard: none of the "in progress" call sites (the
+        // running summary line, and the two still-executing taskCell
+        // branches) may regress to the old boolean (ok, warn) signature.
+        assert!(
+            !html.contains("statusGlyph(false, true)"),
+            "a taskCell branch is still using the removed boolean warn signature: {html}"
+        );
+        assert!(
+            html.contains("statusGlyph('progress')"),
+            "the in-progress call sites must use the explicit neutral state: {html}"
         );
     }
 }
