@@ -92,6 +92,11 @@ so the save-gate validation reports it, rather than the CLI silently
 rewriting it. The result is a real `evals/*.json` file — usable by
 `crucible run`/`validate`/`serve` exactly like a hand-written one.
 
+The same flag surface is exposed over MCP as `crucible_author` (see
+[Agent/MCP Surface](#agentmcp-surface) below) — an agent can author and run a
+new benchmark through CLI and MCP without hand-writing JSON or needing a
+human to explain an undocumented step.
+
 ## Validate A Spec Before Running
 
 Check a declared spec is an executable contract — no sibling checkout, no
@@ -334,6 +339,31 @@ Serve the same run surface over stdio MCP:
 cargo run -p crucible -- mcp
 ```
 
+Call `crucible_author` to assemble a new spec without hand-writing JSON —
+the same flags `crucible author` takes, minus `--interactive` (no stdin
+prompt loop over JSON-RPC):
+
+```json
+{
+  "out": "evals/my-eval-v0.json",
+  "task_family": "prompt-smoke",
+  "runner_kind": "prompt_benchmark",
+  "prompt_model": "openrouter/auto",
+  "prompt_system_prompt": "Answer exactly.",
+  "prompt_task_id": "marker-echo",
+  "prompt_task_prompt": "Reply with crucible-smoke",
+  "prompt_expectation_kind": "contains",
+  "prompt_expectation_value": "crucible-smoke"
+}
+```
+
+Returns `{schema_version, out, written, validate}` — the same
+`{valid, runnable, errors, warnings}` shape `crucible_validate` returns
+nested under `validate`, plus the resolved `out` path and whether the file
+was actually written. `written: false` means the assembly failed validation
+and no file exists at `out`; the call still succeeds (no MCP-level error) so
+an agent can inspect why the same way it inspects `crucible_validate`.
+
 Call the `crucible_run` tool with either a declared spec:
 
 ```json
@@ -381,6 +411,14 @@ proxy.
 
 Query tools:
 
+- `crucible_author`: assemble a valid `EvalSpec` from flags — `key_recall` or
+  `prompt_benchmark` — the same computation `crucible author` (non-interactive
+  flag path) performs, writes and all. Runs the exact same validate-then-save
+  gate `crucible_validate` performs before writing; an invalid assembly
+  reports `written: false` and `validate.valid: false` with no file left at
+  `out`, the same shape `crucible_validate` returns rather than an MCP error.
+  `--interactive` has no MCP equivalent (no stdin prompt loop over JSON-RPC);
+  use flags for both the CLI and MCP paths.
 - `crucible_validate`: check a declared spec's `{valid, runnable, errors,
   warnings}` before spending a `crucible_run` call on it — call this first.
 - `crucible_grade`: score a Cerberus artifact against a Daedalus answer key —

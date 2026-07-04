@@ -193,10 +193,45 @@ pub fn run(args: AuthorArgs) -> anyhow::Result<()> {
         AuthorInputs::from_flags(&args)?
     };
 
-    let spec = inputs.into_eval_spec();
-    let out_path = resolve_out_path(args.out.as_deref(), &spec);
+    let report = assemble_and_write(inputs, args.out.as_deref(), args.force)?;
 
-    if out_path.exists() && !args.force {
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_author_report(Path::new(&report.out), report.written, &report.validate);
+    }
+
+    if !report.written {
+        anyhow::bail!(
+            "assembled spec failed validation; refusing to write {} (see errors above)",
+            report.out
+        );
+    }
+    Ok(())
+}
+
+/// The non-interactive half of `crucible author`, factored out so callers
+/// that cannot drive a stdin prompt flow — namely MCP's `crucible_author`
+/// tool — can assemble, validate, and (if valid) save an [`EvalSpec`] from
+/// flags alone and get back a structured [`AuthorReport`] instead of parsing
+/// CLI stdout.
+pub fn author_from_flags(args: &AuthorArgs) -> anyhow::Result<AuthorReport> {
+    let inputs = AuthorInputs::from_flags(args)?;
+    assemble_and_write(inputs, args.out.as_deref(), args.force)
+}
+
+/// Shared tail of both authoring paths: turn resolved [`AuthorInputs`] into
+/// an [`EvalSpec`], resolve the output path, refuse an unintended overwrite,
+/// and run the same validate-then-save gate `crucible validate` performs.
+fn assemble_and_write(
+    inputs: AuthorInputs,
+    out: Option<&Path>,
+    force: bool,
+) -> anyhow::Result<AuthorReport> {
+    let spec = inputs.into_eval_spec();
+    let out_path = resolve_out_path(out, &spec);
+
+    if out_path.exists() && !force {
         anyhow::bail!(
             "refusing to overwrite existing spec at {} (pass --force to overwrite)",
             out_path.display()
@@ -204,35 +239,22 @@ pub fn run(args: AuthorArgs) -> anyhow::Result<()> {
     }
 
     let (report, written) = validate_and_maybe_write(&spec, &out_path)?;
-
-    if args.json {
-        let payload = AuthorReport {
-            schema_version: AUTHOR_REPORT_SCHEMA,
-            out: out_path.display().to_string(),
-            written,
-            validate: report,
-        };
-        println!("{}", serde_json::to_string_pretty(&payload)?);
-    } else {
-        print_author_report(&out_path, written, &report);
-    }
-
-    if !written {
-        anyhow::bail!(
-            "assembled spec failed validation; refusing to write {} (see errors above)",
-            out_path.display()
-        );
-    }
-    Ok(())
+    Ok(AuthorReport {
+        schema_version: AUTHOR_REPORT_SCHEMA,
+        out: out_path.display().to_string(),
+        written,
+        validate: report,
+    })
 }
 
-/// Stable JSON shape for `crucible author --json`.
+/// Stable JSON shape for `crucible author --json`, and the structured
+/// content MCP's `crucible_author` tool returns.
 #[derive(Debug, Serialize)]
-struct AuthorReport {
-    schema_version: &'static str,
-    out: String,
-    written: bool,
-    validate: ValidationReport,
+pub struct AuthorReport {
+    pub schema_version: &'static str,
+    pub out: String,
+    pub written: bool,
+    pub validate: ValidationReport,
 }
 
 fn print_author_report(out_path: &Path, written: bool, report: &ValidationReport) {
