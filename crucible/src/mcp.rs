@@ -8,9 +8,11 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
+use clap::ValueEnum;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::author::{self, AuthorArgs, AuthorExpectationKind, AuthorRunnerKind};
 use crate::eval_run::{self, RunEval};
 use crate::run_store;
 use crate::spec_run;
@@ -84,8 +86,133 @@ fn dispatch(method: &str, message: &Value) -> Result<Value> {
     }
 }
 
+/// `crucible_author`'s tool definition, factored out of [`tool_defs`]'s
+/// `json!` array literal — folded inline, the array's total nesting tripped
+/// the macro's default recursion limit (see `#[recursion_limit]` docs).
+/// Interpolating a pre-built `Value` here counts as one leaf to the
+/// surrounding `json!`, not additional nested tokens.
+fn crucible_author_tool_def() -> Value {
+    json!({
+        "name": "crucible_author",
+        "description": "Assemble a valid Crucible EvalSpec from flags without hand-writing JSON — covers key_recall (Daedalus trials.jsonl corpus) and prompt_benchmark (one authored task per call) runner kinds. Runs the exact same validate-then-save gate crucible_validate performs before writing: an assembly that fails validation is refused and leaves no file at out. Returns the same {valid, runnable, errors, warnings} report as crucible_validate plus the resolved out path and whether the file was written. agentic_judge authoring and the interactive prompt flow are CLI-only (crucible author --interactive); this tool covers the same non-interactive flag surface as crucible author.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["task_family", "runner_kind"],
+            "properties": {
+                "out": {
+                    "type": "string",
+                    "description": "Output path for the assembled spec JSON. Defaults to evals/<id-or-task-slug>.json."
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Overwrite an existing file at out. Without this, an existing file at out refuses the write.",
+                    "default": false
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Stable eval id, e.g. my-eval-v0. Defaults to the output file stem."
+                },
+                "task_family": {
+                    "type": "string",
+                    "description": "The task family this eval measures, e.g. code-review."
+                },
+                "inputs": {
+                    "type": "string",
+                    "description": "Free-form description of the inputs this eval consumes."
+                },
+                "outputs": {
+                    "type": "string",
+                    "description": "Free-form description of the outputs this eval scores."
+                },
+                "decision": {
+                    "type": "string",
+                    "description": "The decision this eval informs, in one sentence."
+                },
+                "baselines": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Named baseline configs to compare against."
+                },
+                "graders": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Grader mix entries, each `<id>:<kind>` where kind is deterministic|agentic|human. When omitted, one canonical grader of the chosen runner's required kind is added automatically."
+                },
+                "runner_kind": {
+                    "type": "string",
+                    "enum": ["key_recall", "prompt_benchmark"],
+                    "description": "Which runner this spec declares."
+                },
+                "key_recall_arena_dir": {
+                    "type": "string",
+                    "description": "key_recall: Daedalus arena directory, absolute or relative to the eventual spec file."
+                },
+                "key_recall_trials_jsonl": {
+                    "type": "string",
+                    "description": "key_recall: Daedalus trials.jsonl file, absolute or relative to the eventual spec file."
+                },
+                "key_recall_candidate_id": {
+                    "type": "string",
+                    "description": "key_recall: candidate id to select from the trials file."
+                },
+                "key_recall_tasks": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "key_recall: task ids to select. Omit entirely to select every trial for the candidate."
+                },
+                "prompt_model": {
+                    "type": "string",
+                    "description": "prompt_benchmark: OpenRouter model slug, e.g. openai/gpt-4o-mini."
+                },
+                "prompt_system_prompt": {
+                    "type": "string",
+                    "description": "prompt_benchmark: system prompt shared by the authored task."
+                },
+                "prompt_credential_env": {
+                    "type": "string",
+                    "description": "prompt_benchmark: env var carrying the provider credential. Defaults to OPENROUTER_API_KEY."
+                },
+                "prompt_max_output_units": {
+                    "type": "integer",
+                    "description": "prompt_benchmark: optional output cap for the model call."
+                },
+                "prompt_temperature": {
+                    "type": "integer",
+                    "description": "prompt_benchmark: optional integer temperature."
+                },
+                "prompt_task_id": {
+                    "type": "string",
+                    "description": "prompt_benchmark: the authored task's stable id."
+                },
+                "prompt_task_prompt": {
+                    "type": "string",
+                    "description": "prompt_benchmark: the authored task's user prompt."
+                },
+                "prompt_task_class": {
+                    "type": "string",
+                    "description": "prompt_benchmark: optional reporting class, e.g. format_adherence."
+                },
+                "prompt_task_context_file": {
+                    "type": "string",
+                    "description": "prompt_benchmark: optional prompt-context file, absolute or relative to the eventual spec file."
+                },
+                "prompt_expectation_kind": {
+                    "type": "string",
+                    "enum": ["exact", "contains", "case_insensitive_contains", "regex", "strict_json"],
+                    "description": "prompt_benchmark: the task's deterministic rubric kind."
+                },
+                "prompt_expectation_value": {
+                    "type": "string",
+                    "description": "prompt_benchmark: the rubric value — exact/contains text, a regex pattern, or (for strict_json) a literal JSON value."
+                }
+            }
+        }
+    })
+}
+
 fn tool_defs() -> Value {
     json!([
+        crucible_author_tool_def(),
         {
             "name": "crucible_validate",
             "description": "Check whether a declared Crucible EvalSpec is an executable contract: every preflight rule crucible_run enforces (aggregation, uncertainty method/confidence, required grader kind), without needing a runnable corpus. Returns valid/runnable booleans plus named errors and warnings — call this before crucible_run to check a spec is well-formed.",
@@ -324,6 +451,7 @@ fn call_tool(params: &Value) -> Result<Value> {
         .unwrap_or_else(|| json!({}));
 
     match name {
+        "crucible_author" => crucible_author(arguments),
         "crucible_validate" => crucible_validate(arguments),
         "crucible_run" => crucible_run(arguments),
         "crucible_grade" => crucible_grade(arguments),
@@ -334,6 +462,109 @@ fn call_tool(params: &Value) -> Result<Value> {
         "crucible_runs_compare" => crucible_runs_compare(arguments),
         other => Err(anyhow!("unknown tool: {other}")),
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CrucibleAuthorArgs {
+    out: Option<PathBuf>,
+    #[serde(default)]
+    force: bool,
+    id: Option<String>,
+    task_family: Option<String>,
+    inputs: Option<String>,
+    outputs: Option<String>,
+    decision: Option<String>,
+    #[serde(default)]
+    baselines: Vec<String>,
+    #[serde(default)]
+    graders: Vec<String>,
+    runner_kind: Option<String>,
+    key_recall_arena_dir: Option<String>,
+    key_recall_trials_jsonl: Option<String>,
+    key_recall_candidate_id: Option<String>,
+    #[serde(default)]
+    key_recall_tasks: Vec<String>,
+    prompt_model: Option<String>,
+    prompt_system_prompt: Option<String>,
+    prompt_credential_env: Option<String>,
+    prompt_max_output_units: Option<u32>,
+    prompt_temperature: Option<u32>,
+    prompt_task_id: Option<String>,
+    prompt_task_prompt: Option<String>,
+    prompt_task_class: Option<String>,
+    prompt_task_context_file: Option<String>,
+    prompt_expectation_kind: Option<String>,
+    prompt_expectation_value: Option<String>,
+}
+
+impl CrucibleAuthorArgs {
+    /// Convert the MCP wire args into the same [`AuthorArgs`] `crucible
+    /// author`'s flag path resolves — same enum parsing, same required-field
+    /// checks in [`author::author_from_flags`], so a caller sees the exact
+    /// same errors either surface would report.
+    fn into_author_args(self) -> Result<AuthorArgs> {
+        let runner_kind = self
+            .runner_kind
+            .as_deref()
+            .map(|raw| {
+                AuthorRunnerKind::from_str(raw, false).map_err(|err| {
+                    anyhow!("runner_kind {raw:?} is invalid: {err} (expected key_recall or prompt_benchmark)")
+                })
+            })
+            .transpose()?;
+        let prompt_expectation_kind = self
+            .prompt_expectation_kind
+            .as_deref()
+            .map(|raw| {
+                AuthorExpectationKind::from_str(raw, false).map_err(|err| {
+                    anyhow!(
+                        "prompt_expectation_kind {raw:?} is invalid: {err} (expected exact, contains, case_insensitive_contains, regex, or strict_json)"
+                    )
+                })
+            })
+            .transpose()?;
+
+        Ok(AuthorArgs {
+            interactive: false,
+            out: self.out,
+            force: self.force,
+            json: false,
+            id: self.id,
+            task_family: self.task_family,
+            inputs: self.inputs,
+            outputs: self.outputs,
+            decision: self.decision,
+            baselines: self.baselines,
+            graders: self.graders,
+            runner_kind,
+            key_recall_arena_dir: self.key_recall_arena_dir,
+            key_recall_trials_jsonl: self.key_recall_trials_jsonl,
+            key_recall_candidate_id: self.key_recall_candidate_id,
+            key_recall_tasks: self.key_recall_tasks,
+            prompt_model: self.prompt_model,
+            prompt_system_prompt: self.prompt_system_prompt,
+            prompt_credential_env: self.prompt_credential_env,
+            prompt_max_output_units: self.prompt_max_output_units,
+            prompt_temperature: self.prompt_temperature,
+            prompt_task_id: self.prompt_task_id,
+            prompt_task_prompt: self.prompt_task_prompt,
+            prompt_task_class: self.prompt_task_class,
+            prompt_task_context_file: self.prompt_task_context_file,
+            prompt_expectation_kind,
+            prompt_expectation_value: self.prompt_expectation_value,
+        })
+    }
+}
+
+fn crucible_author(arguments: Value) -> Result<Value> {
+    let raw: CrucibleAuthorArgs =
+        serde_json::from_value(arguments).context("parse crucible_author arguments")?;
+    let args = raw.into_author_args()?;
+    let report = author::author_from_flags(&args)?;
+    Ok(json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&report)? }],
+        "structuredContent": report
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -634,6 +865,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "crucible_author",
                 "crucible_validate",
                 "crucible_run",
                 "crucible_grade",
@@ -644,6 +876,92 @@ mod tests {
                 "crucible_runs_compare"
             ]
         );
+    }
+
+    /// crucible-006: agents need to author a new benchmark through CLI *and*
+    /// MCP without a human explaining undocumented steps. Before this test,
+    /// `crucible author` existed only as a CLI command — MCP callers had no
+    /// way to assemble a spec, only to validate/run one already on disk. This
+    /// pins the MCP half of that path end to end: assemble a runnable
+    /// `prompt_benchmark` spec from flags, confirm it's written and valid,
+    /// and confirm it reloads and runs identically to a hand-authored one.
+    #[test]
+    fn crucible_author_assembles_and_saves_a_runnable_prompt_benchmark_spec() {
+        let dir = std::env::temp_dir().join(format!(
+            "crucible-mcp-author-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("mcp-authored-v0.json");
+
+        let response = crucible_author(json!({
+            "out": out_path.display().to_string(),
+            "task_family": "prompt-smoke",
+            "runner_kind": "prompt_benchmark",
+            "prompt_model": "openrouter/auto",
+            "prompt_system_prompt": "Answer exactly.",
+            "prompt_task_id": "marker-echo",
+            "prompt_task_prompt": "Reply with crucible-smoke",
+            "prompt_expectation_kind": "contains",
+            "prompt_expectation_value": "crucible-smoke",
+        }))
+        .expect("crucible_author succeeds");
+
+        let structured = &response["structuredContent"];
+        assert_eq!(structured["written"], true, "{structured}");
+        assert_eq!(structured["validate"]["valid"], true, "{structured}");
+        assert_eq!(structured["validate"]["runnable"], true, "{structured}");
+        assert_eq!(structured["out"], out_path.display().to_string());
+        assert!(out_path.exists(), "spec must be written to out");
+
+        // The saved file is a real EvalSpec crucible_validate accepts too —
+        // the exact same save gate CLI `crucible author` runs through.
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
+        assert_eq!(saved["task"], "prompt-smoke");
+        assert_eq!(saved["graders"]["graders"][0]["kind"], "deterministic");
+    }
+
+    /// An invalid assembly (explicit grader mix missing the runner's
+    /// required kind) must be refused with no file written — same shape as
+    /// `crucible_validate` reporting `valid: false` in the body rather than
+    /// erroring the MCP call, so a caller can inspect why without a
+    /// try/catch. No file is left at `out`.
+    #[test]
+    fn crucible_author_refuses_an_invalid_assembly_and_writes_nothing() {
+        let dir = std::env::temp_dir().join(format!(
+            "crucible-mcp-author-invalid-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("bad-v0.json");
+
+        let response = crucible_author(json!({
+            "out": out_path.display().to_string(),
+            "task_family": "prompt-smoke",
+            "runner_kind": "prompt_benchmark",
+            "prompt_model": "openrouter/auto",
+            "prompt_system_prompt": "Answer exactly.",
+            "prompt_task_id": "marker-echo",
+            "prompt_task_prompt": "Reply with crucible-smoke",
+            "prompt_expectation_kind": "contains",
+            "prompt_expectation_value": "crucible-smoke",
+            "graders": ["operator:human"],
+        }))
+        .expect("crucible_author succeeds even for an invalid assembly");
+
+        let structured = &response["structuredContent"];
+        assert_eq!(structured["written"], false, "{structured}");
+        assert_eq!(structured["validate"]["valid"], false, "{structured}");
+        assert!(!out_path.exists(), "no file should exist at out");
     }
 
     #[test]
