@@ -1040,6 +1040,7 @@ fn run_persists_to_sqlite_and_cli_queries_the_ledger() {
         show["run_record"]["evaluation_card"]
     );
 
+    let findings_out = root.join("findings.json");
     let compare = crucible()
         .arg("runs")
         .arg("compare")
@@ -1051,6 +1052,8 @@ fn run_persists_to_sqlite_and_cli_queries_the_ledger() {
         .arg("probe")
         .arg("--right")
         .arg("probe")
+        .arg("--findings-out")
+        .arg(&findings_out)
         .arg("--json")
         .output()
         .expect("crucible runs compare executes");
@@ -1066,6 +1069,18 @@ fn run_persists_to_sqlite_and_cli_queries_the_ledger() {
         "latest_unpaired_descriptive_delta"
     );
     assert_eq!(compare["delta_point"], 0.0);
+    let findings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&findings_out).expect("read findings"))
+            .expect("findings journal is JSON");
+    assert_eq!(findings["schema_version"], "crucible.findings_journal.v1");
+    assert_eq!(
+        findings["findings"]
+            .as_array()
+            .expect("findings is an array")
+            .len(),
+        0,
+        "unpaired descriptive deltas must not mint finding records"
+    );
 }
 
 /// `crucible runs list` filters by config/model/date, and `runs compare

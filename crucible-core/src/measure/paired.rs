@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::normal::erfc;
+use super::normal::{erfc, inv_normal_cdf};
 
 /// Discordant-pair count at or below which the exact binomial p-value is used
 /// instead of the χ² approximation.
@@ -136,6 +136,73 @@ impl DeltaVerdict {
     }
 }
 
+/// Matched-pairs rate difference over the same shared-task population that
+/// drives McNemar's test.
+///
+/// `point` is `(c - b) / n`: positive values favor the right/comparison arm,
+/// negative values favor the left/baseline arm. The interval is the standard
+/// large-sample matched-pairs risk-difference interval, clipped to the feasible
+/// `[-1, 1]` range:
+///
+/// `SE = sqrt((p_b + p_c - (p_c - p_b)^2) / n)`
+///
+/// where `p_b = b/n` and `p_c = c/n`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PairedRateDeltaInterval {
+    pub point: f64,
+    pub lower: f64,
+    pub upper: f64,
+    pub confidence: f64,
+}
+
+/// Approximate confidence interval for a matched-pairs rate delta.
+///
+/// Returns a zero-width `0.0` interval when `n == 0`. `b + c <= n` is the
+/// expected caller contract; debug builds assert it, while release builds clamp
+/// the discordant count to keep the interval finite rather than leaking NaNs
+/// into downstream artifacts.
+pub fn paired_rate_delta_interval(
+    b: u64,
+    c: u64,
+    n: usize,
+    confidence: f64,
+) -> PairedRateDeltaInterval {
+    let confidence = if confidence.is_finite() {
+        confidence.clamp(0.0, 1.0)
+    } else {
+        0.95
+    };
+    if n == 0 {
+        return PairedRateDeltaInterval {
+            point: 0.0,
+            lower: 0.0,
+            upper: 0.0,
+            confidence,
+        };
+    }
+
+    debug_assert!(
+        b.saturating_add(c) <= n as u64,
+        "paired_rate_delta_interval: discordant pairs ({}) exceed n ({n})",
+        b.saturating_add(c)
+    );
+    let b = b.min(n as u64);
+    let c = c.min((n as u64).saturating_sub(b));
+    let n_f = n as f64;
+    let b_f = b as f64;
+    let c_f = c as f64;
+    let point = (c_f - b_f) / n_f;
+    let variance = ((b_f + c_f) / n_f - point * point) / n_f;
+    let z = inv_normal_cdf(1.0 - (1.0 - confidence) / 2.0);
+    let margin = z * variance.max(0.0).sqrt();
+    PairedRateDeltaInterval {
+        point,
+        lower: (point - margin).max(-1.0),
+        upper: (point + margin).min(1.0),
+        confidence,
+    }
+}
+
 /// Exact two-sided McNemar p-value: `2 · P(X ≤ min(b, c))` for
 /// `X ~ Binomial(b + c, 0.5)`, capped at `1.0`.
 ///
@@ -198,6 +265,37 @@ mod tests {
         let cmp = PairedComparison::mcnemar(7, 7);
         assert_eq!(cmp.statistic, 0.0);
         assert_eq!(cmp.p_value, 1.0);
+    }
+
+    #[test]
+    fn paired_rate_delta_interval_uses_the_shared_task_population() {
+        let interval = paired_rate_delta_interval(1, 15, 24, 0.95);
+        assert!(close(interval.point, 14.0 / 24.0, 1e-12));
+        assert!(
+            close(interval.lower, 0.354_768_109, 1e-6),
+            "{}",
+            interval.lower
+        );
+        assert!(
+            close(interval.upper, 0.811_898_557, 1e-6),
+            "{}",
+            interval.upper
+        );
+        assert_eq!(interval.confidence, 0.95);
+    }
+
+    #[test]
+    fn paired_rate_delta_interval_handles_degenerate_input() {
+        let interval = paired_rate_delta_interval(0, 0, 0, 0.95);
+        assert_eq!(
+            interval,
+            PairedRateDeltaInterval {
+                point: 0.0,
+                lower: 0.0,
+                upper: 0.0,
+                confidence: 0.95
+            }
+        );
     }
 
     #[test]
