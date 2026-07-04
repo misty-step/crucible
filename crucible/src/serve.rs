@@ -22,6 +22,7 @@ const RUNS_SCHEMA: &str = "crucible.ui.runs.v1";
 const ADJUDICATION_SCHEMA: &str = "crucible.ui.adjudication.v1";
 const RUN_ACTION_SCHEMA: &str = "crucible.ui.run_action.v1";
 const RUN_COMPARISON_SCHEMA: &str = "crucible.ui.run_comparison.v1";
+const SERVE_TOKEN_ENV: &str = "CRUCIBLE_SERVE_TOKEN";
 const AESTHETIC_CSS: &str = include_str!("ui/aesthetic.css");
 
 pub struct ServeOptions {
@@ -76,26 +77,33 @@ fn route(request: &HttpRequest, opts: &ServeOptions) -> Result<HttpResponse> {
             AESTHETIC_CSS.as_bytes().to_vec(),
         )),
         ("GET", "/api/specs") => HttpResponse::json_ok(&specs_response(&opts.specs_dir)?),
-        ("GET", "/api/runs") => {
+        ("GET", "/api/runs") => protected(request, || {
             HttpResponse::json_ok(&runs_response(&opts.db_path, &request.query)?)
-        }
-        ("GET", "/api/adjudication") => {
+        }),
+        ("GET", "/api/adjudication") => protected(request, || {
             HttpResponse::json_ok(&adjudication_response(&opts.db_path)?)
-        }
-        ("POST", "/api/run") => HttpResponse::json_ok(&run_spec_response(
-            &opts.db_path,
-            &opts.specs_dir,
-            &request.body,
-        )?),
-        ("GET", path) if path.starts_with("/api/runs/") => {
+        }),
+        ("POST", "/api/run") => protected(request, || {
+            match run_spec_response(&opts.db_path, &opts.specs_dir, &request.body) {
+                Ok(response) => HttpResponse::json_ok(&response),
+                Err(err) if is_run_request_error(&err) => Ok(HttpResponse::json(
+                    400,
+                    &json!({ "error": err.to_string() }),
+                )),
+                Err(err) => Err(err),
+            }
+        }),
+        ("GET", path) if path.starts_with("/api/runs/") => protected(request, || {
             let raw = path.trim_start_matches("/api/runs/");
             let run_id = percent_decode(raw)?;
             HttpResponse::json_ok(&run_detail_response(&opts.db_path, &run_id)?)
-        }
+        }),
         ("GET", path) if path.starts_with("/adjudication/panel/") => {
-            serve_adjudication_panel(path, &opts.db_path)
+            protected(request, || serve_adjudication_panel(path, &opts.db_path))
         }
-        ("GET", path) if path.starts_with("/artifacts/") => serve_artifact(path, &opts.db_path),
+        ("GET", path) if path.starts_with("/artifacts/") => {
+            protected(request, || serve_artifact(path, &opts.db_path))
+        }
         _ => Ok(HttpResponse::text(404, "not found")),
     }
 }
@@ -104,6 +112,7 @@ struct HttpRequest {
     method: String,
     path: String,
     query: HashMap<String, String>,
+    headers: HashMap<String, String>,
     body: Vec<u8>,
 }
 
@@ -122,6 +131,7 @@ impl HttpRequest {
         let target = parts.next().unwrap_or("/").to_string();
 
         let mut content_length = 0usize;
+        let mut headers = HashMap::new();
         loop {
             let mut line = String::new();
             reader.read_line(&mut line).context("reading header")?;
@@ -130,6 +140,7 @@ impl HttpRequest {
                 break;
             }
             if let Some((name, value)) = trimmed.split_once(':') {
+                headers.insert(name.to_ascii_lowercase(), value.trim().to_string());
                 if name.eq_ignore_ascii_case("content-length") {
                     content_length = value.trim().parse().unwrap_or(0);
                 }
@@ -148,8 +159,15 @@ impl HttpRequest {
             method,
             path,
             query,
+            headers,
             body,
         })
+    }
+
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
     }
 }
 
@@ -196,6 +214,7 @@ impl HttpResponse {
             200 => "OK",
             204 => "No Content",
             400 => "Bad Request",
+            401 => "Unauthorized",
             404 => "Not Found",
             405 => "Method Not Allowed",
             500 => "Internal Server Error",
@@ -214,6 +233,61 @@ impl HttpResponse {
             .write_all(&self.body)
             .context("writing response body")
     }
+}
+
+fn protected(
+    request: &HttpRequest,
+    handle: impl FnOnce() -> Result<HttpResponse>,
+) -> Result<HttpResponse> {
+    match require_bearer_auth(request) {
+        Ok(()) => handle(),
+        Err(response) => Ok(response),
+    }
+}
+
+fn require_bearer_auth(request: &HttpRequest) -> std::result::Result<(), HttpResponse> {
+    let expected = match std::env::var(SERVE_TOKEN_ENV) {
+        Ok(token) if !token.trim().is_empty() => token,
+        _ => return Err(auth_error("serve token is not configured")),
+    };
+    let Some(header) = request.header("authorization") else {
+        return Err(auth_error("authorization bearer token required"));
+    };
+    let Some(actual) = header.strip_prefix("Bearer ") else {
+        return Err(auth_error("authorization bearer token required"));
+    };
+    if constant_time_eq(actual.as_bytes(), expected.as_bytes()) {
+        Ok(())
+    } else {
+        Err(auth_error("authorization bearer token required"))
+    }
+}
+
+fn auth_error(message: &str) -> HttpResponse {
+    HttpResponse::json(
+        401,
+        &json!({
+            "error": message,
+            "auth": "bearer",
+            "env": SERVE_TOKEN_ENV
+        }),
+    )
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let max = left.len().max(right.len());
+    let mut diff = left.len() ^ right.len();
+    for index in 0..max {
+        diff |= usize::from(*left.get(index).unwrap_or(&0) ^ *right.get(index).unwrap_or(&0));
+    }
+    diff == 0
+}
+
+fn is_run_request_error(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.contains("run output path")
+        || message.contains("known spec")
+        || message.contains("parsing run request JSON body")
 }
 
 fn run_detail_response(db_path: &Path, run_id: &str) -> Result<Value> {
@@ -929,9 +1003,7 @@ fn run_single_spec(
     spec_path: &Path,
     out: Option<String>,
 ) -> Result<RunSpecResponse> {
-    let out_dir = out
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_run_out(spec_path));
+    let out_dir = resolve_requested_run_out(out, spec_path)?;
     let report = spec_run::run(spec_path, Some(&out_dir))?;
     let stored = run_store::persist_report(db_path, &report)?;
     let run = stored_run_for_invocation(db_path, &stored.invocation_id)?;
@@ -972,9 +1044,7 @@ fn run_controlled_comparison(
             "controlled comparison is currently available for deterministic prompt_benchmark specs"
         );
     }
-    let base_out = out
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_run_out(spec_path));
+    let base_out = resolve_requested_run_out(out, spec_path)?;
     let mut run_rows = Vec::new();
     for (index, runner) in runners.into_iter().enumerate() {
         let runner_id = runner
@@ -1209,6 +1279,31 @@ fn default_run_out(spec_path: &Path) -> PathBuf {
     Path::new("runs")
         .join("local")
         .join(format!("ui-{id}-{now}"))
+}
+
+fn resolve_requested_run_out(out: Option<String>, spec_path: &Path) -> Result<PathBuf> {
+    match out {
+        Some(requested) => confine_requested_run_out(&requested),
+        None => Ok(default_run_out(spec_path)),
+    }
+}
+
+fn confine_requested_run_out(requested: &str) -> Result<PathBuf> {
+    let requested_path = PathBuf::from(requested);
+    let cwd = lexical_normalize(&std::env::current_dir().context("reading current directory")?);
+    let requested_abs = lexical_normalize(&if requested_path.is_absolute() {
+        requested_path.clone()
+    } else {
+        cwd.join(&requested_path)
+    });
+    let runs_abs = lexical_normalize(&cwd.join("runs"));
+    if !requested_abs.starts_with(&runs_abs) {
+        anyhow::bail!(
+            "run output path must stay under gitignored runs/; got {}",
+            requested_path.display()
+        );
+    }
+    Ok(requested_path)
 }
 
 fn serve_artifact(path: &str, db_path: &Path) -> Result<HttpResponse> {
@@ -1505,8 +1600,26 @@ fn render_index() -> String {
         <i class="point" style="left:${point * 100}%"></i>
       </div>`;
     }
+    function withAuth(options) {
+      const next = { ...(options || {}) };
+      next.headers = { ...(next.headers || {}) };
+      const access = window.sessionStorage.getItem('crucibleServeToken');
+      if (access) next.headers.Authorization = 'Bearer ' + access;
+      return next;
+    }
+    async function fetchWithAuth(url, options) {
+      let res = await fetch(url, withAuth(options));
+      if (res.status === 401) {
+        const access = window.prompt('Crucible serve token');
+        if (access) {
+          window.sessionStorage.setItem('crucibleServeToken', access);
+          res = await fetch(url, withAuth(options));
+        }
+      }
+      return res;
+    }
     function loadJson(url, options) {
-      return fetch(url, options).then(async res => {
+      return fetchWithAuth(url, options).then(async res => {
         const text = await res.text();
         let data;
         try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { error: text }; }
@@ -1745,15 +1858,30 @@ fn render_index() -> String {
       </tbody></table></div>
       ${detail ? renderDetail(detail) : ''}`;
       document.querySelectorAll('[data-run-id]').forEach(row => row.onclick = async () => { await loadDetail(row.dataset.runId, true); });
+      document.querySelectorAll('[data-artifact-url]').forEach(link => link.onclick = openArtifact);
     }
     function renderDetail(detail) {
       const run = detail.run;
+      const artifactHref = index => `/artifacts/${encodeURIComponent(run.run_id)}/${index}`;
       return `<section class="cru-card" style="margin-top: var(--ae-space-4)">
         <p class="cru-title">Run receipt</p><p class="cru-code">${esc(run.run_id)}</p>
         <div class="cru-grid two"><div><p>${esc(scoreText(run))}</p>${ci(run)}<p class="cru-subtle">${esc(uncertaintyText(run))}</p></div><dl class="cru-code"><dt>benchmark</dt><dd>${esc(run.benchmark_id)}</dd><dt>runner</dt><dd>${esc(run.runner_kind)}</dd><dt>report</dt><dd>${esc(run.run_report)}</dd></dl></div>
         <p class="cru-title">Task results</p>${renderTasks(detail)}
-        <p class="cru-title">Artifacts</p>${detail.artifacts.length ? `<table class="ae-table"><tbody>${detail.artifacts.map((artifact, index) => `<tr><td>${esc(artifact.kind)}</td><td class="wrap cru-code">${esc(artifact.path)}</td><td><a href="/artifacts/${encodeURIComponent(run.run_id)}/${index}" target="_blank" rel="noreferrer">open</a></td></tr>`).join('')}</tbody></table>` : '<p class="cru-subtle">No artifacts indexed.</p>'}
+        <p class="cru-title">Artifacts</p>${detail.artifacts.length ? `<table class="ae-table"><tbody>${detail.artifacts.map((artifact, index) => `<tr><td>${esc(artifact.kind)}</td><td class="wrap cru-code">${esc(artifact.path)}</td><td><a href="${artifactHref(index)}" data-artifact-url="${artifactHref(index)}" target="_blank" rel="noreferrer">open</a></td></tr>`).join('')}</tbody></table>` : '<p class="cru-subtle">No artifacts indexed.</p>'}
       </section>`;
+    }
+    async function openArtifact(event) {
+      event.preventDefault();
+      try {
+        const res = await fetchWithAuth(event.currentTarget.dataset.artifactUrl);
+        const blob = await res.blob();
+        if (!res.ok) throw new Error(await blob.text());
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank', 'noopener');
+        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      } catch (err) {
+        showToast('Artifact open failed: ' + err.message);
+      }
     }
     function renderTasks(detail) {
       if (detail.prompt_tasks.length) {
