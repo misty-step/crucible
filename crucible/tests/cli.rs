@@ -58,15 +58,56 @@ fn temp_root(tag: &str) -> PathBuf {
 }
 
 fn http_get(port: u16, path: &str) -> String {
+    let response = http_request(port, "GET", path, &[], "");
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK"),
+        "expected 200 for {path}, got {response}"
+    );
+    response_body(&response)
+}
+
+fn http_get_auth(port: u16, path: &str, bearer: &str) -> String {
+    let auth = format!("Bearer {bearer}");
+    let response = http_request(port, "GET", path, &[("Authorization", auth.as_str())], "");
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK"),
+        "expected 200 for {path}, got {response}"
+    );
+    response_body(&response)
+}
+
+fn http_post_json(port: u16, path: &str, bearer: Option<&str>, body: &str) -> String {
+    let auth = bearer.map(|bearer| format!("Bearer {bearer}"));
+    let mut headers = vec![("Content-Type", "application/json")];
+    if let Some(auth) = auth.as_deref() {
+        headers.push(("Authorization", auth));
+    }
+    http_request(port, "POST", path, &headers, body)
+}
+
+fn http_request(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to crucible serve");
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("set read timeout");
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n"
     )
     .expect("write HTTP request");
+    for (name, value) in headers {
+        write!(stream, "{name}: {value}\r\n").expect("write HTTP header");
+    }
+    if !body.is_empty() {
+        write!(stream, "Content-Length: {}\r\n", body.len()).expect("write content length");
+    }
+    write!(stream, "\r\n{body}").expect("write HTTP body");
     stream
         .shutdown(Shutdown::Write)
         .expect("finish HTTP request");
@@ -74,10 +115,10 @@ fn http_get(port: u16, path: &str) -> String {
     stream
         .read_to_string(&mut response)
         .expect("read HTTP response");
-    assert!(
-        response.starts_with("HTTP/1.1 200 OK"),
-        "expected 200 for {path}, got {response}"
-    );
+    response
+}
+
+fn response_body(response: &str) -> String {
     response
         .split("\r\n\r\n")
         .nth(1)
@@ -87,6 +128,46 @@ fn http_get(port: u16, path: &str) -> String {
 
 fn http_get_json(port: u16, path: &str) -> serde_json::Value {
     serde_json::from_str(&http_get(port, path)).expect("HTTP response body is JSON")
+}
+
+fn http_get_json_auth(port: u16, path: &str, bearer: &str) -> serde_json::Value {
+    serde_json::from_str(&http_get_auth(port, path, bearer)).expect("HTTP response body is JSON")
+}
+
+fn spawn_serve(db: &Path, specs: &Path, bearer: Option<&str>) -> (Child, u16) {
+    let mut command = crucible();
+    command
+        .arg("serve")
+        .arg("--db")
+        .arg(db)
+        .arg("--specs")
+        .arg(specs)
+        .arg("--port")
+        .arg("0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match bearer {
+        Some(bearer) => {
+            command.env("CRUCIBLE_SERVE_TOKEN", bearer);
+        }
+        None => {
+            command.env_remove("CRUCIBLE_SERVE_TOKEN");
+        }
+    }
+    let mut child = command.spawn().expect("spawn crucible serve");
+    let stdout = child.stdout.take().expect("serve stdout is piped");
+    let mut stdout = BufReader::new(stdout);
+    let mut line = String::new();
+    stdout
+        .read_line(&mut line)
+        .expect("read serve startup line");
+    let port: u16 = line
+        .split("http://127.0.0.1:")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|port| port.parse().ok())
+        .unwrap_or_else(|| panic!("startup line names bound localhost port: {line:?}"));
+    (child, port)
 }
 
 fn stop_child(mut child: Child) {
@@ -1246,6 +1327,7 @@ fn serve_exposes_specs_runs_trends_and_run_detail_over_http() {
     let db = root.join("runs.sqlite");
     let out_dir = root.join("out");
     let spec = fixture("specs/key-recall-fixture.json");
+    let bearer = "serve-pass";
 
     let run = crucible()
         .arg("run")
@@ -1263,30 +1345,7 @@ fn serve_exposes_specs_runs_trends_and_run_detail_over_http() {
         String::from_utf8_lossy(&run.stderr)
     );
 
-    let mut child = crucible()
-        .arg("serve")
-        .arg("--db")
-        .arg(&db)
-        .arg("--specs")
-        .arg(repo_fixture("evals"))
-        .arg("--port")
-        .arg("0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn crucible serve");
-    let stdout = child.stdout.take().expect("serve stdout is piped");
-    let mut stdout = BufReader::new(stdout);
-    let mut line = String::new();
-    stdout
-        .read_line(&mut line)
-        .expect("read serve startup line");
-    let port: u16 = line
-        .split("http://127.0.0.1:")
-        .nth(1)
-        .and_then(|rest| rest.split_whitespace().next())
-        .and_then(|port| port.parse().ok())
-        .unwrap_or_else(|| panic!("startup line names bound localhost port: {line:?}"));
+    let (child, port) = spawn_serve(&db, &repo_fixture("evals"), Some(bearer));
 
     let shell = http_get(port, "/");
     assert!(shell.contains("Crucible"));
@@ -1351,7 +1410,7 @@ fn serve_exposes_specs_runs_trends_and_run_detail_over_http() {
         "operator benchmark explains itself plainly: {operator}"
     );
 
-    let runs = http_get_json(port, "/api/runs");
+    let runs = http_get_json_auth(port, "/api/runs", bearer);
     assert_eq!(runs["schema_version"], "crucible.ui.runs.v1");
     let rows = runs["runs"].as_array().expect("runs array");
     assert_eq!(rows.len(), 1);
@@ -1366,11 +1425,135 @@ fn serve_exposes_specs_runs_trends_and_run_detail_over_http() {
         "the runs API returns enough data for SVG sparklines"
     );
 
-    let detail = http_get_json(port, &format!("/api/runs/{run_id}"));
+    let detail = http_get_json_auth(port, &format!("/api/runs/{run_id}"), bearer);
     assert_eq!(detail["schema_version"], "crucible.run_store.v1");
     assert_eq!(detail["run"]["run_id"], run_id);
     assert_eq!(detail["run"]["method"], "Wilson");
     assert_eq!(detail["eval_json"]["id"], "key-recall-fixture");
+
+    stop_child(child);
+}
+
+#[test]
+fn serve_requires_bearer_auth_for_run_reading_and_mutating_routes() {
+    let root = temp_root("serve-auth");
+    let db = root.join("runs.sqlite");
+    let out_dir = root.join("out");
+    let spec = fixture("specs/key-recall-fixture.json");
+    let bearer = "serve-pass";
+
+    let run = crucible()
+        .arg("run")
+        .arg(&spec)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    assert!(
+        run.status.success(),
+        "seed run must persist; stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let (child, port) = spawn_serve(&db, &fixture("specs"), Some(bearer));
+
+    let specs = http_get_json(port, "/api/specs");
+    assert_eq!(specs["schema_version"], "crucible.ui.specs.v1");
+
+    let no_auth_runs = http_request(port, "GET", "/api/runs", &[], "");
+    assert!(
+        no_auth_runs.starts_with("HTTP/1.1 401 Unauthorized"),
+        "run ledger listing requires auth: {no_auth_runs}"
+    );
+    let wrong_auth_runs = http_request(
+        port,
+        "GET",
+        "/api/runs",
+        &[("Authorization", "Bearer wrong")],
+        "",
+    );
+    assert!(
+        wrong_auth_runs.starts_with("HTTP/1.1 401 Unauthorized"),
+        "wrong bearer token is rejected: {wrong_auth_runs}"
+    );
+
+    let runs = http_get_json_auth(port, "/api/runs", bearer);
+    let run_id = runs["runs"][0]["run_id"].as_str().expect("seeded run id");
+    let _detail = http_get_json_auth(port, &format!("/api/runs/{run_id}"), bearer);
+
+    for path in [
+        "/api/adjudication".to_string(),
+        format!("/adjudication/panel/{run_id}"),
+        format!("/artifacts/{run_id}/0"),
+    ] {
+        let response = http_request(port, "GET", &path, &[], "");
+        assert!(
+            response.starts_with("HTTP/1.1 401 Unauthorized"),
+            "{path} requires auth before reading run-backed data: {response}"
+        );
+    }
+
+    let run_body = serde_json::to_string(&json!({
+        "spec": spec.display().to_string(),
+        "out": root.join("no-auth-run").display().to_string()
+    }))
+    .expect("run request body");
+    let no_auth_run = http_post_json(port, "/api/run", None, &run_body);
+    assert!(
+        no_auth_run.starts_with("HTTP/1.1 401 Unauthorized"),
+        "state-changing run launch requires auth: {no_auth_run}"
+    );
+
+    stop_child(child);
+}
+
+#[test]
+fn serve_confines_run_output_to_gitignored_runs_tree() {
+    let root = temp_root("serve-out-confine");
+    let db = root.join("runs.sqlite");
+    let spec = fixture("specs/key-recall-fixture.json");
+    let bearer = "serve-pass";
+    let (child, port) = spawn_serve(&db, &fixture("specs"), Some(bearer));
+
+    let escaped = root.join("escaped-output");
+    let escaped_body = serde_json::to_string(&json!({
+        "spec": spec.display().to_string(),
+        "out": escaped.display().to_string()
+    }))
+    .expect("escaped run request body");
+    let escaped_response = http_post_json(port, "/api/run", Some(bearer), &escaped_body);
+    assert!(
+        escaped_response.starts_with("HTTP/1.1 400 Bad Request"),
+        "out outside runs/ is a client error: {escaped_response}"
+    );
+    assert!(
+        !escaped.exists(),
+        "rejected out path must not be created outside the runs tree"
+    );
+
+    let allowed = Path::new("runs").join("local").join(format!(
+        "serve-out-confine-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::SeqCst)
+    ));
+    let allowed_body = serde_json::to_string(&json!({
+        "spec": spec.display().to_string(),
+        "out": allowed.display().to_string()
+    }))
+    .expect("allowed run request body");
+    let allowed_response = http_post_json(port, "/api/run", Some(bearer), &allowed_body);
+    assert!(
+        allowed_response.starts_with("HTTP/1.1 200 OK"),
+        "runs/local out path remains usable: {allowed_response}"
+    );
+    assert!(
+        allowed.join("run-report.json").exists(),
+        "allowed out path receives the run report"
+    );
+    let _ = std::fs::remove_dir_all(&allowed);
 
     stop_child(child);
 }

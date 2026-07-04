@@ -231,7 +231,9 @@ benchmark library, validation results, controlled runner setup, live run
 visibility, side-by-side comparisons, run ledger receipt/detail views, artifact
 readback, and `POST /api/run` over the same declared-spec runner used by the CLI
 and MCP. Model-backed prompt runs require `OPENROUTER_API_KEY` in the process
-environment; deterministic read paths do not.
+environment; run ledger reads, artifact readback, adjudication readback, and
+`POST /api/run` require `Authorization: Bearer $CRUCIBLE_SERVE_TOKEN`.
+`GET /api/specs` stays unauthenticated for readiness checks.
 
 The first browser workflow is deliberately benchmark-first:
 
@@ -257,12 +259,13 @@ Sanctum prepare-only posture:
 - Build artifact: `cargo build --release -p crucible`, then run
   `target/release/crucible serve`.
 - Process command:
-  `OPENROUTER_API_KEY=<secret> target/release/crucible serve --db /var/lib/crucible/crucible-runs.sqlite --specs /srv/crucible/evals --port 4174`.
+  `CRUCIBLE_SERVE_TOKEN=<secret> OPENROUTER_API_KEY=<secret> target/release/crucible serve --db /var/lib/crucible/crucible-runs.sqlite --specs /srv/crucible/evals --port 4174`.
 - Storage contract: keep the SQLite ledger and run artifacts on the box outside
   the git checkout; raw model outputs and diffs are not publishable assets.
-- Network/auth contract: `crucible serve` has no app-level auth and binds
-  localhost. Expose it only through the Bastion/Sanctum private tailnet layer or
-  an authenticated reverse proxy; do not bind it publicly.
+- Network/auth contract: `crucible serve` binds localhost and protects every
+  state-changing or run-reading route with `CRUCIBLE_SERVE_TOKEN`; still expose
+  it only through the Bastion/Sanctum private tailnet layer or an authenticated
+  reverse proxy, never as a public unauthenticated endpoint.
 - Readiness probe: `GET /api/specs` should return
   `crucible.ui.specs.v1` with the mounted spec directory.
 
