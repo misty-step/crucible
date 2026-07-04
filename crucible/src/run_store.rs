@@ -534,7 +534,7 @@ pub fn compare_configs(
     let (comparison_kind, note): (&'static str, &'static str) = if paired.is_some() {
         (
             "paired_mcnemar",
-            "Paired McNemar comparison over prompt tasks common to both runs; see paired.verdict for the noise-floor decision.",
+            "Paired McNemar comparison over per-task outcomes common to both runs (prompt tasks or pass^k task consistency); see paired.verdict for the noise-floor decision.",
         )
     } else {
         (
@@ -1048,6 +1048,67 @@ fn merge_spec_metadata(metadata: &mut EvidenceMetadata, artifact: &str, value: &
             .and_then(|corpus| corpus.get("candidate_id"))
             .and_then(Value::as_str)
             .map(str::to_string);
+    }
+
+    // Backlog 023: when this run reports pass^k task consistency (present
+    // only when every task shares one trial count `k ≥ 2` — see
+    // `compute_pass_k`), index each task's pass^k outcome as a paired task
+    // row in the same `prompt_task_results` table `compare_configs`'s
+    // existing McNemar pairing already reads. That is the entire wire-up: a
+    // pass^k comparison across two configs/runs of the same benchmark gets
+    // the identical noise-floor verdict `paired_mcnemar` already computes,
+    // not a second kernel.
+    if value.get("pass_k").is_some_and(|pass_k| !pass_k.is_null()) {
+        merge_pass_k_task_rows(metadata, value);
+    }
+}
+
+/// Reduce a `crucible.spec_run_evidence.v1` run's per-trial `tasks` array to
+/// one paired-comparable row per `task_id`: passed iff *every* trial for that
+/// task had zero missed defects and zero false positives — the same bar
+/// `compute_pass_k` uses to decide whether a task counts toward pass^k.
+fn merge_pass_k_task_rows(metadata: &mut EvidenceMetadata, value: &Value) {
+    let Some(tasks) = value.get("tasks").and_then(Value::as_array) else {
+        return;
+    };
+    let mut by_task: BTreeMap<&str, bool> = BTreeMap::new();
+    for task in tasks {
+        let Some(task_id) = task.get("task_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let missed = task.get("missed").and_then(Value::as_u64).unwrap_or(0);
+        let false_positives = task
+            .get("false_positives")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let trial_passed = missed == 0 && false_positives == 0;
+        by_task
+            .entry(task_id)
+            .and_modify(|passed| *passed = *passed && trial_passed)
+            .or_insert(trial_passed);
+    }
+    for (task_id, passed) in by_task {
+        metadata.prompt_tasks.push(PromptTaskInsert {
+            task_id: task_id.to_string(),
+            class: None,
+            passed,
+            latency_ms: None,
+            response_id: None,
+            requested_model: None,
+            response_model: None,
+            prompt_hash: None,
+            rubric_hash: None,
+            input_units: None,
+            output_units: None,
+            total_units: None,
+            cost_usd: None,
+            output_text: None,
+            evidence_json: serde_json::json!({
+                "task_id": task_id,
+                "pass_k_all_trials_matched": passed,
+            })
+            .to_string(),
+        });
     }
 }
 

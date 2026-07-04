@@ -1263,6 +1263,197 @@ fn runs_list_filters_by_config_model_and_date() {
     assert!(compare["paired"].is_null());
 }
 
+/// Backlog `023`: pass^k task consistency must pair through the same
+/// `PairedComparison`/`DeltaVerdict` McNemar kernel `compare_configs` already
+/// uses for prompt-benchmark runs — not just report each run's independent
+/// Wilson point estimate. One hermetic `cerberus-review-quality-v0`-shaped
+/// corpus (six tasks, `k=2` trials each) backs two `crucible runs compare`
+/// calls: a 0-vs-6 discordant split (exact two-sided p ≈ 0.031 — a `signal` at
+/// the default alpha) and a balanced 3-vs-3 split (p = 1.0 —
+/// `inside_noise_floor`).
+#[test]
+fn pass_k_comparison_reports_paired_noise_floor_verdict() {
+    let root = temp_root("pass-k-compare");
+    let db = root.join("runs.sqlite");
+
+    // Shared arena: six tasks, each seeded with one defect. All four
+    // candidates below run against this same task/expected-key set; only
+    // each candidate's own trials.jsonl rows decide whether it finds the
+    // seeded defect.
+    let arena = root.join("arena");
+    let task_ids = ["t1", "t2", "t3", "t4", "t5", "t6"];
+    for task_id in task_ids {
+        let tests_dir = arena.join("tasks").join(task_id).join("tests");
+        std::fs::create_dir_all(&tests_dir).expect("create task tests dir");
+        std::fs::write(
+            tests_dir.join("expected.json"),
+            serde_json::to_string_pretty(&json!({
+                "defects": [{
+                    "id": "d1",
+                    "file": "src/lib.rs",
+                    "line_start": 10,
+                    "line_end": 12,
+                    "category": "correctness",
+                    "note": "The candidate should find this defect."
+                }]
+            }))
+            .unwrap(),
+        )
+        .expect("write expected.json");
+    }
+
+    let matching_finding = json!({
+        "file": "src/lib.rs",
+        "line": 11,
+        "category": "correctness",
+        "description": "Found it."
+    });
+
+    // candidate_id -> the tasks that candidate fully matches on every trial
+    // (pass^2 success); every other task in `task_ids` gets an empty findings
+    // list on every trial (a missed defect, so pass^2 fails that task).
+    let candidates: [(&str, &[&str]); 4] = [
+        ("signal-left", &[]),                 // fails all six tasks
+        ("signal-right", &task_ids),          // passes all six tasks
+        ("noise-left", &["t1", "t2", "t3"]),  // passes the first half
+        ("noise-right", &["t4", "t5", "t6"]), // passes the second half
+    ];
+
+    let mut trials = String::new();
+    for (candidate_id, passing_tasks) in candidates {
+        for task_id in task_ids {
+            let passes = passing_tasks.contains(&task_id);
+            for trial in 1..=2u64 {
+                let findings = if passes {
+                    json!([matching_finding.clone()])
+                } else {
+                    json!([])
+                };
+                let line = json!({
+                    "run_id": format!("fixture-{candidate_id}-{task_id}-{trial}"),
+                    "arena_id": "fixture-arena",
+                    "arena_version": "0.1.0",
+                    "task_id": task_id,
+                    "trial": trial,
+                    "candidate_id": candidate_id,
+                    "candidate_kind": "oneshot",
+                    "reward": if passes { 1.0 } else { 0.0 },
+                    "recall": if passes { 1.0 } else { 0.0 },
+                    "false_positives": 0,
+                    "findings": findings,
+                    "artifacts": format!("artifacts/{candidate_id}/{task_id}"),
+                });
+                trials.push_str(&line.to_string());
+                trials.push('\n');
+            }
+        }
+    }
+    let trials_jsonl = root.join("trials.jsonl");
+    std::fs::write(&trials_jsonl, trials).expect("write trials.jsonl");
+
+    let benchmark = "pass-k-compare-fixture";
+    let run = |candidate_id: &str| {
+        let spec_json = json!({
+            "schema_version": "crucible.eval_spec.v1",
+            "id": benchmark,
+            "task": "cerberus-review-quality",
+            "inputs": "Hermetic pass^k-shaped fixture.",
+            "outputs": "Key recall and pass^2 task consistency.",
+            "graders": {"graders": [{"id": "expected_key_match", "kind": "deterministic"}]},
+            "aggregation": "proportion",
+            "uncertainty": {"method": "wilson", "confidence": 0.95},
+            "decision": "Prove pass^k paired noise-floor wiring without a sibling Daedalus checkout.",
+            "runner": {
+                "kind": "key_recall",
+                "corpus": {
+                    "source": "daedalus_trials",
+                    "arena_dir": arena.display().to_string(),
+                    "trials_jsonl": trials_jsonl.display().to_string(),
+                    "candidate_id": candidate_id,
+                    "tasks": task_ids,
+                }
+            }
+        });
+        let spec_path = root.join(format!("{candidate_id}.json"));
+        std::fs::write(
+            &spec_path,
+            serde_json::to_string_pretty(&spec_json).unwrap(),
+        )
+        .expect("write candidate spec");
+        let out_dir = root.join(format!("out-{candidate_id}"));
+        let out = crucible()
+            .arg("run")
+            .arg(&spec_path)
+            .arg("--out")
+            .arg(&out_dir)
+            .arg("--db")
+            .arg(&db)
+            .arg("--json")
+            .output()
+            .expect("crucible binary runs");
+        assert!(
+            out.status.success(),
+            "run for {candidate_id} must persist; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("run --json emits JSON");
+        assert!(
+            v["evals"][0]["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|note| note.as_str().unwrap_or("").starts_with("pass^2:")),
+            "{candidate_id} run must report a pass^2 score: {v}"
+        );
+    };
+    for (candidate_id, _) in candidates {
+        run(candidate_id);
+    }
+
+    let compare = |left: &str, right: &str| -> serde_json::Value {
+        let out = crucible()
+            .arg("runs")
+            .arg("compare")
+            .arg("--db")
+            .arg(&db)
+            .arg("--benchmark")
+            .arg(benchmark)
+            .arg("--left")
+            .arg(left)
+            .arg("--right")
+            .arg(right)
+            .arg("--alpha")
+            .arg("0.05")
+            .arg("--json")
+            .output()
+            .expect("crucible runs compare executes");
+        assert!(
+            out.status.success(),
+            "runs compare {left}/{right} exits 0; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).expect("runs compare emits JSON")
+    };
+
+    let signal = compare("signal-left", "signal-right");
+    assert_eq!(
+        signal["comparison_kind"], "paired_mcnemar",
+        "pass^k task rows must pair, not fall back to the unpaired delta: {signal}"
+    );
+    assert_eq!(signal["common_tasks"], 6);
+    assert_eq!(signal["paired"]["b"], 0);
+    assert_eq!(signal["paired"]["c"], 6);
+    assert_eq!(signal["paired"]["verdict"], "signal");
+
+    let noise = compare("noise-left", "noise-right");
+    assert_eq!(noise["comparison_kind"], "paired_mcnemar");
+    assert_eq!(noise["common_tasks"], 6);
+    assert_eq!(noise["paired"]["b"], 3);
+    assert_eq!(noise["paired"]["c"], 3);
+    assert_eq!(noise["paired"]["verdict"], "inside_noise_floor");
+}
+
 /// A malformed `--since`/`--until` bound is a clean load error (exit 1, a
 /// readable stderr message), not a panic/backtrace — `run_store::
 /// parse_timestamp_bound` refuses garbage input before any query runs.
