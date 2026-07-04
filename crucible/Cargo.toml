@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "CLI for Crucible's code-review eval: score a Cerberus review run against a Daedalus answer key."
+description = "Crucible: author, run, validate, judge, and export defensible evals/benchmarks (declared EvalSpecs, live OpenRouter model runs, a queryable SQLite run ledger, and a local browser workbench)."
 
 [[bin]]
 name = "crucible"
