@@ -272,7 +272,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "crucible_runs_compare",
-            "description": "Compare the latest stored runs for two configs or model slugs under one benchmark. When both runs share prompt task fixtures the result is a paired McNemar outcome; otherwise it is a descriptive latest-run delta that makes no significance claim.",
+            "description": "Compare the latest stored runs for two configs or model slugs under one benchmark. When both runs share prompt task fixtures the result is a paired McNemar outcome; otherwise it is a descriptive latest-run delta that makes no significance claim. When the paired verdict is a statistical signal, set include_findings and/or findings_out to also mint a crucible.findings_journal.v1 record — the same defensible-finding computation crucible runs compare --findings-out performs. Unpaired and inside-noise-floor comparisons always mint zero finding records.",
             "inputSchema": {
                 "type": "object",
                 "required": ["benchmark", "left", "right"],
@@ -297,6 +297,15 @@ fn tool_defs() -> Value {
                         "type": "number",
                         "description": "Significance threshold for the paired McNemar verdict. Defaults to 0.05.",
                         "default": 0.05
+                    },
+                    "include_findings": {
+                        "type": "boolean",
+                        "description": "Include a findings_journal object inline in the response (empty findings array unless the paired verdict is a signal). Defaults to false; omitting it leaves the response identical to before this option existed.",
+                        "default": false
+                    },
+                    "findings_out": {
+                        "type": "string",
+                        "description": "Also write the findings journal JSON to this path, exactly like crucible runs compare --findings-out. Implies include_findings."
                     }
                 }
             }
@@ -530,12 +539,20 @@ struct RunsCompareArgs {
     right: String,
     #[serde(default = "default_alpha")]
     alpha: f64,
+    #[serde(default)]
+    include_findings: bool,
+    findings_out: Option<PathBuf>,
 }
 
 fn default_alpha() -> f64 {
     run_store::DEFAULT_ALPHA
 }
 
+/// Compare the latest stored runs for two configs/models. The response's
+/// `structuredContent` is the same `ConfigComparison` object emitted before
+/// findings journals existed; `include_findings`/`findings_out` are additive
+/// fields inserted alongside it, never a replacement for it, so a caller that
+/// omits both sees byte-for-byte the same shape as before this option existed.
 fn crucible_runs_compare(arguments: Value) -> Result<Value> {
     let args: RunsCompareArgs =
         serde_json::from_value(arguments).context("parse crucible_runs_compare arguments")?;
@@ -544,9 +561,47 @@ fn crucible_runs_compare(arguments: Value) -> Result<Value> {
         .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
     let comparison =
         run_store::compare_configs(&db, &args.benchmark, &args.left, &args.right, args.alpha)?;
+
+    let mut structured = serde_json::to_value(&comparison).context("serializing comparison")?;
+    if args.include_findings || args.findings_out.is_some() {
+        let repro_command = crate::runs_compare_repro_command(
+            &db,
+            &args.benchmark,
+            &args.left,
+            &args.right,
+            args.alpha,
+        );
+        let journal = match args.findings_out.as_deref() {
+            Some(path) => crate::findings_journal::write_journal(
+                &comparison,
+                args.alpha,
+                repro_command,
+                path,
+            )?,
+            None => crate::findings_journal::journal_from_comparison(
+                &comparison,
+                args.alpha,
+                repro_command,
+            ),
+        };
+        let map = structured
+            .as_object_mut()
+            .expect("ConfigComparison serializes to a JSON object");
+        map.insert(
+            "findings_journal".to_string(),
+            serde_json::to_value(&journal).context("serializing findings journal")?,
+        );
+        if let Some(path) = args.findings_out.as_deref() {
+            map.insert(
+                "findings_journal_path".to_string(),
+                json!(path.display().to_string()),
+            );
+        }
+    }
+
     Ok(json!({
-        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&comparison)? }],
-        "structuredContent": comparison
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&structured)? }],
+        "structuredContent": structured
     }))
 }
 
@@ -599,5 +654,127 @@ mod tests {
             RunEval::HarborExportAcceptance
         );
         assert!(parse_run_eval(Some("missing")).is_err());
+    }
+
+    #[test]
+    fn runs_compare_omits_findings_journal_by_default() {
+        let db = crate::test_fixtures::temp_db("mcp-default");
+        crate::test_fixtures::seed_paired_signal(&db);
+
+        let response = crucible_runs_compare(json!({
+            "db": db.display().to_string(),
+            "benchmark": crate::test_fixtures::BENCHMARK,
+            "left": crate::test_fixtures::LEFT_MODEL,
+            "right": crate::test_fixtures::RIGHT_MODEL,
+        }))
+        .expect("crucible_runs_compare succeeds");
+
+        let structured = &response["structuredContent"];
+        // The existing comparison object is untouched: same fields as before
+        // this card, and no findings_journal key when it was not requested.
+        assert_eq!(structured["comparison_kind"], "paired_mcnemar");
+        assert_eq!(structured["common_tasks"], 10);
+        assert!(
+            structured.get("findings_journal").is_none(),
+            "findings_journal must be absent unless requested: {structured}"
+        );
+    }
+
+    #[test]
+    fn runs_compare_can_include_a_findings_journal_inline_for_a_paired_signal() {
+        let db = crate::test_fixtures::temp_db("mcp-include-signal");
+        crate::test_fixtures::seed_paired_signal(&db);
+
+        let response = crucible_runs_compare(json!({
+            "db": db.display().to_string(),
+            "benchmark": crate::test_fixtures::BENCHMARK,
+            "left": crate::test_fixtures::LEFT_MODEL,
+            "right": crate::test_fixtures::RIGHT_MODEL,
+            "include_findings": true,
+        }))
+        .expect("crucible_runs_compare succeeds");
+
+        let structured = &response["structuredContent"];
+        assert_eq!(
+            structured["comparison_kind"], "paired_mcnemar",
+            "the existing comparison object is preserved alongside the addition"
+        );
+        let journal = &structured["findings_journal"];
+        assert_eq!(journal["schema_version"], "crucible.findings_journal.v1");
+        let findings = journal["findings"].as_array().expect("findings array");
+        assert_eq!(
+            findings.len(),
+            1,
+            "a paired signal must mint exactly one finding record: {journal}"
+        );
+        assert_eq!(findings[0]["paired"]["verdict"], "signal");
+    }
+
+    #[test]
+    fn runs_compare_can_write_a_findings_journal_to_disk() {
+        let db = crate::test_fixtures::temp_db("mcp-write-signal");
+        crate::test_fixtures::seed_paired_signal(&db);
+        let out_dir = db.parent().expect("db has a parent dir").to_path_buf();
+        let findings_out = out_dir.join("findings.json");
+
+        let response = crucible_runs_compare(json!({
+            "db": db.display().to_string(),
+            "benchmark": crate::test_fixtures::BENCHMARK,
+            "left": crate::test_fixtures::LEFT_MODEL,
+            "right": crate::test_fixtures::RIGHT_MODEL,
+            "findings_out": findings_out.display().to_string(),
+        }))
+        .expect("crucible_runs_compare succeeds");
+
+        let structured = &response["structuredContent"];
+        assert_eq!(
+            structured["findings_journal_path"],
+            findings_out.display().to_string()
+        );
+        let written: Value = serde_json::from_str(
+            &std::fs::read_to_string(&findings_out).expect("read written findings journal"),
+        )
+        .expect("written findings journal is JSON");
+        assert_eq!(written["findings"].as_array().expect("findings").len(), 1);
+        // The same journal is also returned inline, not just written (allow
+        // for last-ULP float round-trip drift through the written JSON text).
+        assert_eq!(
+            structured["findings_journal"]["schema_version"],
+            written["schema_version"]
+        );
+        assert_eq!(
+            structured["findings_journal"]["findings"][0]["id"],
+            written["findings"][0]["id"]
+        );
+        assert_eq!(
+            structured["findings_journal"]["findings"][0]["paired"]["verdict"],
+            written["findings"][0]["paired"]["verdict"]
+        );
+    }
+
+    #[test]
+    fn runs_compare_findings_journal_is_empty_inside_the_noise_floor() {
+        let db = crate::test_fixtures::temp_db("mcp-noise-floor");
+        crate::test_fixtures::seed_paired_inside_noise_floor(&db);
+
+        let response = crucible_runs_compare(json!({
+            "db": db.display().to_string(),
+            "benchmark": crate::test_fixtures::BENCHMARK,
+            "left": crate::test_fixtures::LEFT_MODEL,
+            "right": crate::test_fixtures::RIGHT_MODEL,
+            "include_findings": true,
+        }))
+        .expect("crucible_runs_compare succeeds");
+
+        let structured = &response["structuredContent"];
+        assert_eq!(structured["comparison_kind"], "paired_mcnemar");
+        assert_eq!(
+            structured["findings_journal"]["findings"]
+                .as_array()
+                .expect("findings array")
+                .len(),
+            0,
+            "an inside-noise-floor paired comparison must mint no finding records: {structured}"
+        );
     }
 }
