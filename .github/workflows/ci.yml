@@ -12,7 +12,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
+  fast:
+    name: Fast gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Run fast repo gate
+        run: ./scripts/check.sh --fast
+
+  slow:
+    name: Slow gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -22,5 +42,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run repo gate
-        run: ./scripts/check.sh
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Run slow repo gate
+        run: ./scripts/check.sh --slow
