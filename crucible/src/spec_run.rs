@@ -10,6 +10,8 @@ use std::collections::HashSet;
 use std::io::BufRead;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -624,6 +626,13 @@ pub(crate) fn check_prompt_regexes(tasks: &[PromptBenchmarkTask]) -> anyhow::Res
     Ok(())
 }
 
+/// Bounded worker width for concurrent OpenRouter calls across a prompt
+/// benchmark's tasks. These calls are network-bound (waiting on the model
+/// provider), not CPU-bound, so a small fixed width is the right knob — high
+/// enough to erase most of the linear wall-clock cost, low enough not to
+/// hammer OpenRouter's per-key rate limits.
+const PROMPT_TASK_CONCURRENCY: usize = 4;
+
 fn run_prompt_benchmark_with_client(
     spec: &EvalSpec,
     runner: &RunnerSpec,
@@ -631,7 +640,7 @@ fn run_prompt_benchmark_with_client(
     out: &Path,
     config: &PromptModelConfig,
     tasks: &[PromptBenchmarkTask],
-    model_client: &dyn ModelClient,
+    model_client: &(dyn ModelClient + Sync),
 ) -> anyhow::Result<EvalReport> {
     if config.provider != ModelProvider::OpenRouter {
         anyhow::bail!(
@@ -643,46 +652,8 @@ fn run_prompt_benchmark_with_client(
         anyhow::bail!("prompt_benchmark corpus must declare at least one task");
     }
 
-    let mut task_results = Vec::new();
-    let mut passed = 0u64;
-
-    for task in tasks {
-        let user_prompt = prompt_text_for_task(spec_path, task)?;
-        let started = Instant::now();
-        let response = model_client.complete(ModelRequest {
-            model: &config.model,
-            system_prompt: &config.system_prompt,
-            user_prompt: &user_prompt,
-            max_output_units: config.max_output_units,
-            temperature: config.temperature,
-        })?;
-        let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-        let task_passed = prompt_expectation_passes(&response.output, &task.expectation)
-            .with_context(|| format!("grading prompt task {:?}", task.task_id))?;
-        if task_passed {
-            passed += 1;
-        }
-
-        let expectation_value = expectation_value(&task.expectation);
-        task_results.push(PromptTaskResult {
-            task_id: task.task_id.clone(),
-            class: task.class.clone(),
-            context_file: task.context_file.clone(),
-            prompt_hash: stable_hash(&[&config.system_prompt, &user_prompt]),
-            rubric_hash: stable_hash(&[expectation_kind(&task.expectation), &expectation_value]),
-            expectation: task.expectation.clone(),
-            passed: task_passed,
-            output: response.output,
-            latency_ms,
-            response_id: response.response_id,
-            requested_model: config.model.clone(),
-            response_model: response.response_model,
-            input_units: response.input_units,
-            output_units: response.output_units,
-            total_units: response.total_units,
-            cost_usd: response.cost_usd,
-        });
-    }
+    let task_results = run_prompt_tasks_concurrently(spec_path, config, tasks, model_client)?;
+    let passed = task_results.iter().filter(|result| result.passed).count() as u64;
 
     let score = wilson_score("prompt_rubric_pass_rate", passed, tasks.len() as u64);
     let evidence_path = out.join("prompt-run.json");
@@ -725,6 +696,94 @@ fn run_prompt_benchmark_with_client(
                 tasks.len(), config.provider, config.model
             ),
         ],
+    })
+}
+
+/// Execute every prompt task's model call with up to
+/// [`PROMPT_TASK_CONCURRENCY`] calls in flight at once, returning results in
+/// the caller's task order regardless of which worker finished first.
+///
+/// Workers pull the next unclaimed task index off a shared atomic counter
+/// (simple work-stealing) rather than a static chunk-per-thread split, so one
+/// slow task doesn't stall a worker that could otherwise pick up more work.
+/// The first task error observed while collecting results still aborts the
+/// whole run with no evidence written — the same contract the old sequential
+/// loop had — though a handful of already-in-flight sibling calls may
+/// complete (and spend) before that error surfaces; that trade is inherent to
+/// running calls concurrently and is bounded by the concurrency width.
+fn run_prompt_tasks_concurrently(
+    spec_path: &Path,
+    config: &PromptModelConfig,
+    tasks: &[PromptBenchmarkTask],
+    model_client: &(dyn ModelClient + Sync),
+) -> anyhow::Result<Vec<PromptTaskResult>> {
+    let concurrency = PROMPT_TASK_CONCURRENCY.min(tasks.len()).max(1);
+    let next_index = AtomicUsize::new(0);
+    let slots: Vec<Mutex<Option<anyhow::Result<PromptTaskResult>>>> =
+        (0..tasks.len()).map(|_| Mutex::new(None)).collect();
+
+    thread::scope(|scope| {
+        for _ in 0..concurrency {
+            scope.spawn(|| loop {
+                let idx = next_index.fetch_add(1, Ordering::SeqCst);
+                if idx >= tasks.len() {
+                    return;
+                }
+                let outcome = run_one_prompt_task(spec_path, config, &tasks[idx], model_client);
+                *slots[idx]
+                    .lock()
+                    .expect("prompt task result slot mutex poisoned") = Some(outcome);
+            });
+        }
+    });
+
+    slots
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .expect("prompt task result slot mutex poisoned")
+                .expect("every prompt task index is claimed by exactly one worker")
+        })
+        .collect()
+}
+
+fn run_one_prompt_task(
+    spec_path: &Path,
+    config: &PromptModelConfig,
+    task: &PromptBenchmarkTask,
+    model_client: &dyn ModelClient,
+) -> anyhow::Result<PromptTaskResult> {
+    let user_prompt = prompt_text_for_task(spec_path, task)?;
+    let started = Instant::now();
+    let response = model_client.complete(ModelRequest {
+        model: &config.model,
+        system_prompt: &config.system_prompt,
+        user_prompt: &user_prompt,
+        max_output_units: config.max_output_units,
+        temperature: config.temperature,
+    })?;
+    let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    let task_passed = prompt_expectation_passes(&response.output, &task.expectation)
+        .with_context(|| format!("grading prompt task {:?}", task.task_id))?;
+
+    let expectation_value = expectation_value(&task.expectation);
+    Ok(PromptTaskResult {
+        task_id: task.task_id.clone(),
+        class: task.class.clone(),
+        context_file: task.context_file.clone(),
+        prompt_hash: stable_hash(&[&config.system_prompt, &user_prompt]),
+        rubric_hash: stable_hash(&[expectation_kind(&task.expectation), &expectation_value]),
+        expectation: task.expectation.clone(),
+        passed: task_passed,
+        output: response.output,
+        latency_ms,
+        response_id: response.response_id,
+        requested_model: config.model.clone(),
+        response_model: response.response_model,
+        input_units: response.input_units,
+        output_units: response.output_units,
+        total_units: response.total_units,
+        cost_usd: response.cost_usd,
     })
 }
 
@@ -2335,6 +2394,151 @@ mod tests {
         assert_eq!(evidence["tasks"][0]["class"], "format_adherence");
         assert_eq!(evidence["tasks"][0]["total_tokens"], 10);
         assert_eq!(evidence["max_output_units"], 8);
+    }
+
+    /// A model client that proves calls actually overlap in time: it counts
+    /// in-flight calls, records the high-water mark, then sleeps briefly
+    /// before answering. Every implementor field is an atomic, so this is
+    /// `Sync` without any interior-mutability trickery — safe to share across
+    /// worker threads the way the real `OpenRouterClient` is.
+    struct ConcurrencyProbeClient {
+        in_flight: std::sync::atomic::AtomicUsize,
+        max_in_flight: std::sync::atomic::AtomicUsize,
+        call_delay: Duration,
+        output: &'static str,
+    }
+
+    impl ConcurrencyProbeClient {
+        fn new(call_delay: Duration, output: &'static str) -> Self {
+            Self {
+                in_flight: std::sync::atomic::AtomicUsize::new(0),
+                max_in_flight: std::sync::atomic::AtomicUsize::new(0),
+                call_delay,
+                output,
+            }
+        }
+
+        fn max_in_flight(&self) -> usize {
+            self.max_in_flight.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl ModelClient for ConcurrencyProbeClient {
+        fn complete(&self, request: ModelRequest<'_>) -> anyhow::Result<ModelResponse> {
+            use std::sync::atomic::Ordering;
+            let now_in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight
+                .fetch_max(now_in_flight, Ordering::SeqCst);
+            thread::sleep(self.call_delay);
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            Ok(ModelResponse {
+                output: self.output.to_string(),
+                response_id: Some(format!("probe:{}", request.model)),
+                response_model: Some(request.model.to_string()),
+                input_units: Some(1),
+                output_units: Some(1),
+                total_units: Some(2),
+                cost_usd: Some(0.0),
+            })
+        }
+    }
+
+    fn prompt_benchmark_task(task_id: &str) -> PromptBenchmarkTask {
+        PromptBenchmarkTask {
+            task_id: task_id.to_string(),
+            class: None,
+            context_file: None,
+            prompt: format!("Reply with exactly: probe-ok ({task_id})"),
+            expectation: PromptExpectation::Exact {
+                value: "probe-ok".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn prompt_benchmark_runs_task_model_calls_with_bounded_concurrency() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-prompt-concurrency-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("prompt-concurrency.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = EvalSpec {
+            schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
+            id: "prompt-concurrency".to_string(),
+            task: "prompt-concurrency".to_string(),
+            inputs: String::new(),
+            outputs: String::new(),
+            fixtures: Vec::new(),
+            graders: crucible_core::GraderManifest::default(),
+            baselines: Vec::new(),
+            aggregation: AggregationMethod::Proportion,
+            uncertainty: crucible_core::UncertaintyRule::default(),
+            decision: String::new(),
+            runner: None,
+        };
+        let task_ids = ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"];
+        let tasks: Vec<PromptBenchmarkTask> = task_ids
+            .iter()
+            .map(|id| prompt_benchmark_task(id))
+            .collect();
+        let config = PromptModelConfig {
+            provider: ModelProvider::OpenRouter,
+            model: "test/model".to_string(),
+            system_prompt: "Answer exactly.".to_string(),
+            credential_env: "OPENROUTER_API_KEY".to_string(),
+            max_output_units: Some(8),
+            temperature: Some(0),
+        };
+        let runner = RunnerSpec {
+            kind: RunnerKind::PromptBenchmark,
+            corpus: CorpusSpec::PromptBenchmark {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+
+        // 8 tasks * 40ms each: fully sequential takes >= 320ms; bounded
+        // concurrency (width > 1) should clear well under that.
+        let client = ConcurrencyProbeClient::new(Duration::from_millis(40), "probe-ok");
+        let started = Instant::now();
+        let report = run_prompt_benchmark_with_client(
+            &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
+        )
+        .expect("prompt benchmark runs concurrently");
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            report.score.successes, 8,
+            "every task's fixed output passes"
+        );
+        assert_eq!(report.score.n, 8);
+        assert!(
+            client.max_in_flight() >= 2,
+            "expected overlapping in-flight calls, saw a high-water mark of {}",
+            client.max_in_flight()
+        );
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "8 tasks at 40ms each ran in {elapsed:?}; sequential execution would take >= 320ms, \
+             bounded concurrency should clear this well under 250ms"
+        );
+
+        let evidence = std::fs::read_to_string(temp.join("prompt-run.json"))
+            .expect("prompt evidence is written");
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        let evidence_tasks = evidence["tasks"].as_array().unwrap();
+        assert_eq!(evidence_tasks.len(), 8);
+        // Task order in the persisted evidence matches input order regardless
+        // of which worker thread finished first.
+        let ids: Vec<&str> = evidence_tasks
+            .iter()
+            .map(|task| task["task_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, task_ids.to_vec());
     }
 
     #[test]

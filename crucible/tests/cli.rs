@@ -1640,6 +1640,46 @@ fn serve_exposes_specs_runs_trends_and_run_detail_over_http() {
     stop_child(child);
 }
 
+/// crucible-904: the accept loop must not let one slow/stuck client starve
+/// every other viewer. A connection that opens a TCP stream and never
+/// finishes sending its request line blocks a single-threaded accept loop
+/// forever (`HttpRequest::read` sits in `read_line` with no data and no EOF);
+/// a genuinely concurrent server keeps answering other requests while that
+/// connection just sits there.
+#[test]
+fn serve_answers_other_requests_while_one_client_never_finishes_its_request() {
+    let root = temp_root("serve-concurrency");
+    let db = root.join("runs.sqlite");
+    let (child, port) = spawn_serve(&db, &repo_fixture("evals"), None);
+
+    // Open a connection and deliberately send nothing — no request line, no
+    // shutdown. The old single-threaded accept loop would still be inside
+    // `handle_connection` for this connection when the second request below
+    // arrives, and would never call `accept()` again to pick it up.
+    let stuck = TcpStream::connect(("127.0.0.1", port)).expect("open a stuck connection");
+    // Give a sequential accept loop time to actually pick this connection up
+    // and block on it, so the reproduction isn't a timing coin flip.
+    std::thread::sleep(Duration::from_millis(200));
+
+    let started = std::time::Instant::now();
+    let body = http_get(port, "/api/specs");
+    let elapsed = started.elapsed();
+
+    assert!(
+        body.contains("schema_version"),
+        "the concurrent request still gets a real response: {body}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "a concurrent request answered in {elapsed:?} while a stuck client held a connection \
+         open; a single-threaded accept loop would block for the full 2s client read timeout \
+         (or hang until the stuck connection's own timeout) instead"
+    );
+
+    drop(stuck);
+    stop_child(child);
+}
+
 /// crucible-031: `crucible serve` must mount the same live writeback loop
 /// `adjudication-panel --serve` runs as a separate process — not just
 /// render-compose a read-only projection of an existing queue artifact. A

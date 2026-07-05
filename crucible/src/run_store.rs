@@ -53,6 +53,13 @@ pub struct RunListFilter<'a> {
     pub model: Option<&'a str>,
     pub since_unix_ms: Option<i64>,
     pub until_unix_ms: Option<i64>,
+    /// Cap on the number of rows returned. `None` is unconstrained (every
+    /// matching row comes back, the historical no-pagination behavior) —
+    /// callers that want a bounded page set this explicitly.
+    pub limit: Option<i64>,
+    /// Rows to skip before the first returned row, applied after `ORDER BY`.
+    /// Ignored (treated as 0) when `limit` is `None`.
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -68,6 +75,10 @@ pub struct RunList {
     pub since_unix_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<i64>,
     pub runs: Vec<StoredRun>,
 }
 
@@ -566,6 +577,10 @@ fn lexical_normalize(path: &Path) -> PathBuf {
 
 pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
     let conn = open_initialized(db_path)?;
+    // SQLite treats `LIMIT -1` as "no limit" while still honoring OFFSET, so a
+    // `None` limit stays a true full scan (unchanged historical behavior) and
+    // a `Some` limit bounds the query at the SQL layer rather than filtering
+    // a fully-materialized Rust `Vec` after the fact.
     let mut stmt = conn
         .prepare(
             "SELECT run_id, invocation_id, benchmark_id, title, runner_kind,
@@ -578,7 +593,8 @@ pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
                AND (?3 IS NULL OR model = ?3)
                AND (?4 IS NULL OR created_at_unix_ms >= ?4)
                AND (?5 IS NULL OR created_at_unix_ms <= ?5)
-             ORDER BY created_at_unix_ms DESC, run_id DESC",
+             ORDER BY created_at_unix_ms DESC, run_id DESC
+             LIMIT COALESCE(?6, -1) OFFSET COALESCE(?7, 0)",
         )
         .context("preparing run list query")?;
     let rows = stmt
@@ -588,7 +604,9 @@ pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
                 filter.config,
                 filter.model,
                 filter.since_unix_ms,
-                filter.until_unix_ms
+                filter.until_unix_ms,
+                filter.limit,
+                filter.offset,
             ],
             row_to_stored_run,
         )
@@ -604,6 +622,8 @@ pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
         model: filter.model.map(str::to_string),
         since_unix_ms: filter.since_unix_ms,
         until_unix_ms: filter.until_unix_ms,
+        limit: filter.limit,
+        offset: filter.offset,
         runs: rows,
     })
 }
@@ -874,6 +894,14 @@ fn paired_mcnemar_refs(
     ))
 }
 
+/// How long a connection blocks-and-retries on `SQLITE_BUSY` before giving up,
+/// rather than failing the instant a concurrent reader/writer holds the lock.
+/// Every runner invocation, `crucible runs` query, and `serve` request opens
+/// its own short-lived [`Connection`] against the same on-disk file (see
+/// [`open_initialized`]), so concurrent access is routine, not exceptional,
+/// once `serve`'s accept loop stops serializing requests.
+const RUN_LEDGER_BUSY_TIMEOUT_MS: u64 = 5_000;
+
 fn open_initialized(db_path: &Path) -> Result<Connection> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)
@@ -881,6 +909,11 @@ fn open_initialized(db_path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(db_path)
         .with_context(|| format!("opening run database {}", db_path.display()))?;
+    // Explicit, not relying on rusqlite's own internal default: self-documents
+    // the contention-tolerance contract here and survives a future rusqlite
+    // upgrade that might change (or drop) its implicit default.
+    conn.busy_timeout(std::time::Duration::from_millis(RUN_LEDGER_BUSY_TIMEOUT_MS))
+        .context("setting sqlite busy_timeout")?;
     init_schema(&conn)?;
     Ok(conn)
 }
@@ -2117,6 +2150,120 @@ mod tests {
     }
 
     #[test]
+    fn list_runs_respects_limit_and_offset() {
+        let root = temp_dir("pagination");
+        let db = root.join("runs.sqlite");
+
+        // Five distinct runs under the same benchmark, persisted in order
+        // model-0 .. model-4; created_at_unix_ms ties break on run_id DESC
+        // (see the ORDER BY in list_runs), so seed a strictly increasing
+        // ordinal into the config id via the model slug to make the expected
+        // page order unambiguous without depending on wall-clock timing.
+        for i in 0..5 {
+            let report = prompt_report(&root, &format!("model-{i}"), true);
+            persist_report(&db, &report).expect("persist report");
+        }
+
+        let unpaged = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list all runs");
+        assert_eq!(
+            unpaged.runs.len(),
+            5,
+            "no limit set means every matching row still comes back, unchanged from before pagination existed"
+        );
+
+        let page_one = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                limit: Some(2),
+                offset: Some(0),
+                ..Default::default()
+            },
+        )
+        .expect("list first page");
+        assert_eq!(page_one.runs.len(), 2, "limit=2 returns exactly 2 rows");
+
+        let page_two = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                limit: Some(2),
+                offset: Some(2),
+                ..Default::default()
+            },
+        )
+        .expect("list second page");
+        assert_eq!(
+            page_two.runs.len(),
+            2,
+            "offset=2, limit=2 returns the next 2 rows"
+        );
+        assert_ne!(
+            page_one.runs[0].run_id, page_two.runs[0].run_id,
+            "the second page does not repeat the first page's rows"
+        );
+        assert_ne!(
+            page_one.runs[1].run_id, page_two.runs[0].run_id,
+            "the second page does not repeat the first page's rows"
+        );
+
+        let page_three = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                limit: Some(2),
+                offset: Some(4),
+                ..Default::default()
+            },
+        )
+        .expect("list third (partial) page");
+        assert_eq!(
+            page_three.runs.len(),
+            1,
+            "the last page only has the one remaining row"
+        );
+
+        let page_four = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                limit: Some(2),
+                offset: Some(6),
+                ..Default::default()
+            },
+        )
+        .expect("list past the end");
+        assert!(
+            page_four.runs.is_empty(),
+            "an offset past the last row returns no rows, not an error"
+        );
+
+        // Every row across the pages accounts for all 5 without duplicates.
+        let mut paged_ids: Vec<&str> = page_one
+            .runs
+            .iter()
+            .chain(page_two.runs.iter())
+            .chain(page_three.runs.iter())
+            .map(|run| run.run_id.as_str())
+            .collect();
+        paged_ids.sort_unstable();
+        let mut unpaged_ids: Vec<&str> =
+            unpaged.runs.iter().map(|run| run.run_id.as_str()).collect();
+        unpaged_ids.sort_unstable();
+        assert_eq!(
+            paged_ids, unpaged_ids,
+            "paging through with limit=2 covers exactly the same rows as the unpaged list"
+        );
+    }
+
+    #[test]
     fn omitted_prompt_temperature_stays_absent_in_the_card() {
         let root = temp_dir("no-temperature");
         let db = root.join("runs.sqlite");
@@ -2336,6 +2483,26 @@ mod tests {
             .expect_err("absolute repo-local DB outside runs is rejected");
         validate_db_write_path(Path::new("runs/local/crucible-runs.sqlite"))
             .expect("repo-local DB under runs is allowed");
+    }
+
+    #[test]
+    fn opening_the_run_ledger_sets_a_nonzero_busy_timeout() {
+        // Every `open_initialized` call opens its own short-lived Connection
+        // (list_runs, show_run, persist_report, compare_configs each open
+        // independently), so concurrent readers/writers against the same
+        // sqlite file are a real, not theoretical, contention path. Without a
+        // busy_timeout pragma, SQLITE_BUSY surfaces immediately instead of
+        // rusqlite retrying for a bounded window.
+        let root = temp_dir("busy-timeout");
+        let db = root.join("runs.sqlite");
+        let conn = open_initialized(&db).expect("open a fresh run ledger");
+        let busy_timeout_ms: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("read the busy_timeout pragma back");
+        assert_eq!(
+            busy_timeout_ms, RUN_LEDGER_BUSY_TIMEOUT_MS as i64,
+            "run ledger connections must set the explicit busy_timeout, not rely on an implicit default"
+        );
     }
 
     #[test]
