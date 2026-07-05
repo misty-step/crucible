@@ -22,6 +22,13 @@
 //! - [`adapter`] — projects Cerberus [`Finding`]s onto Daedalus [`KeyFinding`]
 //!   rows ([`findings_from_artifact`], [`to_key_findings`]) so a review and a
 //!   key can be compared on equal terms.
+//! - [`import`] — the opposite direction from [`export`]: projects an
+//!   externally-authored eval/benchmark definition onto a Crucible
+//!   [`EvalSpec`], total and honest like [`adapter`]. The first supported
+//!   format is a Promptfoo-style YAML config ([`parse_promptfoo_config`],
+//!   [`project_promptfoo`]) onto the `prompt_benchmark` runner; every test
+//!   case that cannot be mapped cleanly is reported in
+//!   [`PromptfooImportReport::skipped_tests`], never silently dropped.
 //! - [`mod@grade`] — deterministic pre-graders ([`schema_valid`], [`dedup`],
 //!   [`key_match`], [`grade`](grade::grade)) that partition a candidate review
 //!   against an answer key into matched / disputed / missed before any model or
@@ -95,6 +102,7 @@ pub mod calibration;
 pub mod dashboard;
 pub mod export;
 pub mod grade;
+pub mod import;
 pub mod judgment;
 pub mod key;
 pub mod label;
@@ -123,6 +131,10 @@ pub use export::{
 pub use grade::{
     dedup, grade, key_match, location_agrees, recoverable_misses, schema_valid, GradeResult, Match,
     LINE_TOLERANCE,
+};
+pub use import::{
+    parse_promptfoo_config, project_promptfoo, PromptfooAssertion, PromptfooConfig,
+    PromptfooImportError, PromptfooImportReport, PromptfooTest, SkippedTest,
 };
 pub use judgment::{
     apply_label, build_queue, GradeSummary, JudgmentItem, JudgmentQueue, LabelConditions,

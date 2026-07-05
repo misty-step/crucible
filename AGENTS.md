@@ -27,12 +27,21 @@
   valid `EvalSpec` from flags or a guided `--interactive` prompt flow for
   `key_recall`/`prompt_benchmark`, running the same validation `crucible
   validate` performs before saving — the brainstorm/design/define lifecycle
-  stage no longer requires hand-writing JSON. See `SKILL.md` for the exact
-  commands. Do not invent a broad platform stack ahead of real usage; open
-  work lives in `backlog.d/` (deterministic grader dispatch beyond the
-  required-kind check, judge-calibration model-family separation, baseline
-  comparison wiring, the phone-adjudication epic's remaining UI polish,
-  `agentic_judge` authoring in `crucible author`).
+  stage no longer requires hand-writing JSON. `crucible import <adapter>
+  <source>` (crucible-026) is the other direction: it projects an
+  externally-authored eval/benchmark definition onto a valid `EvalSpec`
+  through the same validate-then-save gate — the first adapter, `promptfoo`,
+  projects a Promptfoo-style YAML config onto the `prompt_benchmark` runner,
+  reporting (never silently dropping) any test case it cannot map cleanly.
+  See `SKILL.md` for the exact commands. Do not invent a broad platform stack
+  ahead of real usage; open work lives in `backlog.d/` (deterministic grader
+  dispatch beyond the required-kind check, judge-calibration model-family
+  separation, baseline comparison wiring, the phone-adjudication epic's
+  remaining UI polish, `agentic_judge` authoring in `crucible author`, an MCP
+  `crucible_import` tool mirroring `crucible_author`, and a second import
+  adapter — e.g. a Threshold/Daedalus arena format — once the `key_recall`
+  runner has a way to execute fresh candidate output rather than only
+  grading already-produced trials).
 - Boundary (rechartered 2026-06-29, refreshed 2026-07-01): Crucible owns the
   eval/benchmark as a durable artifact — definition, design, implementation,
   selected execution, calibration, run records, judging, reporting, and export.

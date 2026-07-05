@@ -10,4 +10,5 @@ description = "Deterministic core for Crucible's code-review eval: Cerberus arti
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 thiserror.workspace = true
