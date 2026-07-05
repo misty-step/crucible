@@ -153,6 +153,12 @@ pub struct RunRecord {
     /// Eval spec path, when this came from a declared spec.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec_path: Option<String>,
+    /// Pointer to this run's persisted [`crate::Trace`] artifact, when the
+    /// runner populated one (backlog 030). `None` for runner kinds that have
+    /// not yet been wired to emit a trace — the same absent-by-default shape
+    /// as `evidence_path`/`spec_path` on an older run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_path: Option<String>,
     /// Artifact pointers associated with this run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<String>,
@@ -332,6 +338,7 @@ mod tests {
             run_report: "runs/local/bench/run-report.json".to_string(),
             evidence_path: None,
             spec_path: None,
+            trace_path: None,
             artifacts: Vec::new(),
             score: RunScore {
                 metric: "m".to_string(),
@@ -385,6 +392,7 @@ mod tests {
             run_report: "runs/local/prompt-smoke/run-report.json".to_string(),
             evidence_path: Some("runs/local/prompt-smoke/prompt-run.json".to_string()),
             spec_path: Some("evals/prompt-smoke-v0.json".to_string()),
+            trace_path: None,
             artifacts: vec![
                 "evals/prompt-smoke-v0.json".to_string(),
                 "runs/local/prompt-smoke/prompt-run.json".to_string(),

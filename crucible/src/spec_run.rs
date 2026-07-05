@@ -21,9 +21,11 @@ use crucible_core::{
     shares_model_family, to_key_findings, AgenticJudgeConfig, AgenticJudgeTask, AggregationMethod,
     CalibrationRecord, CerberusReceiptTask, ConfusionMatrix, CorpusSpec, EvalSpec, ExpectedKey,
     GraderKind, IntervalMethod, KeyFinding, ModelProvider, PromptBenchmarkTask, PromptExpectation,
-    PromptModelConfig, RunnerKind, RunnerSpec, CALIBRATION_RECORD_SCHEMA,
+    PromptModelConfig, RunnerKind, RunnerSpec, Trace, TraceStep, CALIBRATION_RECORD_SCHEMA,
+    TRACE_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::eval_run::{EvalReport, RunReport, Score, RUN_REPORT_SCHEMA};
 use crate::wilson_score;
@@ -909,6 +911,13 @@ fn run_agentic_judge_with_client(
     let mut total_cost_usd = 0.0f64;
     let mut any_cost_recorded = false;
     let mut total_latency_ms: u64 = 0;
+    // Ordered record of what actually happened, task by task (backlog 030):
+    // a judge_call, its parsed verdict, and — for calibration tasks — the
+    // agreement/mismatch/unknown check against `expected_pass`. This is what
+    // makes a failed or UNKNOWN-verdict run inspectable without re-running
+    // the judge.
+    let mut trace_steps: Vec<TraceStep> = Vec::new();
+    let mut trace_sequence: u64 = 0;
 
     for task in tasks {
         let user_prompt = format!(
@@ -936,6 +945,39 @@ fn run_agentic_judge_with_client(
             )
         })?;
         let rubric_hash = stable_hash(&[&task.rubric]);
+        let verdict_str = match verdict {
+            JudgeVerdict::Pass => "pass",
+            JudgeVerdict::Fail => "fail",
+            JudgeVerdict::Unknown => "unknown",
+        };
+
+        push_trace_step(
+            &mut trace_steps,
+            &mut trace_sequence,
+            "judge_call",
+            &task.task_id,
+            serde_json::json!({
+                "model": config.model,
+                "rubric": task.rubric,
+                "candidate": task.candidate,
+                "latency_ms": latency_ms,
+                "cost_usd": response.cost_usd,
+                "response_id": response.response_id,
+            }),
+            None,
+        );
+        push_trace_step(
+            &mut trace_steps,
+            &mut trace_sequence,
+            "verdict_parsed",
+            &task.task_id,
+            serde_json::json!({
+                "raw_output": response.output,
+                "verdict": verdict_str,
+                "expected_pass": task.expected_pass,
+            }),
+            Some(verdict_str),
+        );
 
         match (task.expected_pass, verdict) {
             (Some(_), JudgeVerdict::Unknown) => {
@@ -945,6 +987,17 @@ fn run_agentic_judge_with_client(
                 // `expected_pass`. Excluded from the agreement/κ measurement.
                 unknown_calibration += 1;
                 calibration_rubric_hashes.push(rubric_hash.clone());
+                push_trace_step(
+                    &mut trace_steps,
+                    &mut trace_sequence,
+                    "calibration_check",
+                    &task.task_id,
+                    serde_json::json!({
+                        "expected_pass": task.expected_pass,
+                        "judge_verdict": "unknown",
+                    }),
+                    Some("unknown"),
+                );
                 canary_notes.push(format!(
                     "calibration task {:?} returned UNKNOWN — diagnostic, excluded from the agreement measurement.",
                     task.task_id
@@ -955,7 +1008,20 @@ fn run_agentic_judge_with_client(
                     .as_bool()
                     .expect("Unknown is handled by the arm above");
                 calibration_rubric_hashes.push(rubric_hash.clone());
-                if expected != verdict_bool {
+                let matched = expected == verdict_bool;
+                push_trace_step(
+                    &mut trace_steps,
+                    &mut trace_sequence,
+                    "calibration_check",
+                    &task.task_id,
+                    serde_json::json!({
+                        "expected_pass": expected,
+                        "judge_verdict": verdict_bool,
+                        "refuse_on_mismatch": task.refuse_on_mismatch,
+                    }),
+                    Some(if matched { "match" } else { "mismatch" }),
+                );
+                if !matched {
                     if task.refuse_on_mismatch {
                         anyhow::bail!(
                             "judge-gaming guard tripped on task {:?}: expected verdict {expected} but the judge said {verdict}; refusing to trust this run",
@@ -995,11 +1061,7 @@ fn run_agentic_judge_with_client(
             prompt_hash: stable_hash(&[&judge_system_prompt, &user_prompt]),
             rubric_hash,
             expected_pass: task.expected_pass,
-            verdict: match verdict {
-                JudgeVerdict::Pass => "pass",
-                JudgeVerdict::Fail => "fail",
-                JudgeVerdict::Unknown => "unknown",
-            },
+            verdict: verdict_str,
             // Legacy bool mirror of `verdict`, kept for the shared
             // prompt/judge evidence ingestion path in `run_store.rs` which
             // requires every task to carry a `passed` bool. `Unknown` reads
@@ -1088,6 +1150,19 @@ fn run_agentic_judge_with_client(
         },
     )?;
 
+    // Persist the ordered trace alongside the evidence — same
+    // artifact-pointer discipline as `evidence_path`/`spec_path`: a pointer
+    // in `artifacts`, not a parallel storage mechanism (backlog 030).
+    let trace_path = out.join("agentic-judge-trace.json");
+    write_json(
+        &trace_path,
+        &Trace {
+            schema_version: TRACE_SCHEMA.to_string(),
+            subject_id: spec_id(spec, spec_path),
+            steps: trace_steps,
+        },
+    )?;
+
     let mut notes = vec![
         "Executed from a Crucible-authored agentic judge runner with a live model boundary (GraderKind::Agentic, backlog 012)."
             .to_string(),
@@ -1137,6 +1212,7 @@ fn run_agentic_judge_with_client(
         artifacts: vec![
             spec_path.display().to_string(),
             evidence_path.display().to_string(),
+            trace_path.display().to_string(),
         ],
         notes,
     })
@@ -1713,6 +1789,40 @@ fn expectation_value(expectation: &PromptExpectation) -> String {
             timeout_ms,
         } => format!("timeout={}:{}", timeout_ms.unwrap_or(3000), test_source),
     }
+}
+
+/// Current wall-clock time as an RFC 3339 string, for a [`TraceStep`]'s
+/// `timestamp`. `Trace`/`TraceStep` themselves never read the clock (the
+/// same reproducibility discipline as `Provenance`/`EvaluationCard`) — only
+/// the runner, which already owns the run's non-reproducible side effects
+/// (the live model call), supplies it.
+fn now_rfc3339() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_default()
+}
+
+/// Append one ordered [`TraceStep`] to `steps`, stamping it with the next
+/// `sequence` value and the current time. Centralizes the "sequence is
+/// gapless and ascending from 0" invariant the trace consumers rely on
+/// (backlog 030) so no call site has to track the counter by hand.
+fn push_trace_step(
+    steps: &mut Vec<TraceStep>,
+    sequence: &mut u64,
+    kind: &str,
+    label: &str,
+    detail: serde_json::Value,
+    outcome: Option<&str>,
+) {
+    steps.push(TraceStep {
+        sequence: *sequence,
+        timestamp: now_rfc3339(),
+        kind: kind.to_string(),
+        label: label.to_string(),
+        detail,
+        outcome: outcome.map(str::to_string),
+    });
+    *sequence += 1;
 }
 
 fn stable_hash(parts: &[&str]) -> String {
@@ -3343,6 +3453,175 @@ mod tests {
         assert_eq!(evidence["judge_stats"]["failure_rate"], 0.0);
         assert!(evidence["judge_stats"]["total_cost_usd"].is_number());
         assert!(evidence["judge_stats"]["total_latency_ms"].is_u64());
+    }
+
+    #[test]
+    fn agentic_judge_unknown_verdict_produces_an_inspectable_trace() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-trace-unknown-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-trace-unknown.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        let tasks = vec![
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "A correct answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+            },
+            AgenticJudgeTask {
+                task_id: "real-2-ambiguous".to_string(),
+                candidate: "An underspecified answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec![
+            "VERDICT: PASS\nreal",
+            "VERDICT: UNKNOWN\nnot enough information in the rubric to decide",
+        ]);
+
+        let report = run_agentic_judge_with_client(
+            &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
+        )
+        .expect("an UNKNOWN scored verdict does not abort the run");
+
+        let trace_path = report
+            .artifacts
+            .iter()
+            .find(|path| path.ends_with("agentic-judge-trace.json"))
+            .expect("run artifacts include a trace pointer");
+        let trace_json = std::fs::read_to_string(trace_path).expect("read trace artifact");
+        let trace: crucible_core::Trace =
+            serde_json::from_str(&trace_json).expect("trace parses as crucible_core::Trace");
+
+        assert_eq!(trace.schema_version, crucible_core::TRACE_SCHEMA);
+        assert!(
+            !trace.steps.is_empty(),
+            "a real run leaves a nonempty trace"
+        );
+        for (index, step) in trace.steps.iter().enumerate() {
+            assert_eq!(
+                step.sequence, index as u64,
+                "steps are ordered by an ascending sequence, gapless from 0"
+            );
+            assert!(!step.kind.is_empty(), "every step names a kind");
+        }
+
+        // The task that got an honest UNKNOWN must be inspectable: a
+        // verdict_parsed step labeled for that task, outcome "unknown", and
+        // enough detail (the judge's raw output) to see *why* without
+        // re-running the judge call.
+        let unknown_step = trace
+            .steps
+            .iter()
+            .find(|step| {
+                step.kind == "verdict_parsed"
+                    && step.label == "real-2-ambiguous"
+                    && step.outcome.as_deref() == Some("unknown")
+            })
+            .expect("an inspectable verdict_parsed step for the UNKNOWN task");
+        let detail_text = unknown_step.detail.to_string();
+        assert!(
+            detail_text.contains("not enough information"),
+            "trace detail carries the judge's raw output for a no-re-run diagnosis: {detail_text}"
+        );
+
+        // The failing/ambiguous step is exactly what `failure_steps` surfaces.
+        let failures: Vec<&str> = trace
+            .failure_steps()
+            .map(|step| step.label.as_str())
+            .collect();
+        assert_eq!(
+            failures,
+            vec!["real-2-ambiguous"],
+            "failure_steps surfaces only the UNKNOWN task's step: {failures:?}"
+        );
+
+        // A judge_call step precedes its verdict_parsed step for the same task.
+        let call_index = trace
+            .steps
+            .iter()
+            .position(|step| step.kind == "judge_call" && step.label == "real-2-ambiguous")
+            .expect("a judge_call step for the UNKNOWN task");
+        let verdict_index = trace
+            .steps
+            .iter()
+            .position(|step| step.kind == "verdict_parsed" && step.label == "real-2-ambiguous")
+            .expect("a verdict_parsed step for the UNKNOWN task");
+        assert!(
+            call_index < verdict_index,
+            "the call precedes its parsed verdict in trace order"
+        );
+    }
+
+    #[test]
+    fn agentic_judge_passing_run_trace_is_structurally_sound() {
+        let temp =
+            std::env::temp_dir().join(format!("crucible-judge-trace-pass-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-trace-pass.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        let tasks = vec![AgenticJudgeTask {
+            task_id: "real-1".to_string(),
+            candidate: "A correct answer.".to_string(),
+            rubric: "Must be correct.".to_string(),
+            expected_pass: None,
+            refuse_on_mismatch: false,
+        }];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec!["VERDICT: PASS\nreal"]);
+
+        let report = run_agentic_judge_with_client(
+            &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
+        )
+        .expect("agentic judge runs");
+
+        let trace_path = report
+            .artifacts
+            .iter()
+            .find(|path| path.ends_with("agentic-judge-trace.json"))
+            .expect("run artifacts include a trace pointer");
+        let trace: crucible_core::Trace = serde_json::from_str(
+            &std::fs::read_to_string(trace_path).expect("read trace artifact"),
+        )
+        .expect("trace parses");
+
+        assert!(!trace.steps.is_empty());
+        assert_eq!(
+            trace.failure_steps().count(),
+            0,
+            "a clean pass has no failure steps"
+        );
+        assert!(trace
+            .steps
+            .iter()
+            .any(|step| step.kind == "verdict_parsed" && step.outcome.as_deref() == Some("pass")));
     }
 
     #[test]

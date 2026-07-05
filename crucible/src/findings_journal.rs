@@ -427,6 +427,7 @@ mod tests {
             run_report: "runs/local/test/run-report.json".to_string(),
             evidence_path: Some("runs/local/test/prompt-run.json".to_string()),
             spec_path: Some("evals/prompt-smoke-v0.json".to_string()),
+            trace_path: None,
             score_metric: "prompt_rubric_pass_rate".to_string(),
             successes,
             n,
