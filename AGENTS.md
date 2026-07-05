@@ -8,7 +8,10 @@
   `EvalSpec`s through `crucible run`/MCP `crucible_run`, including live BYOK
   OpenRouter model calls; every run persists to a SQLite ledger
   (`runs/local/crucible-runs.sqlite`) queryable via `crucible runs
-  list/show/compare` (CLI + MCP). `crucible validate`/MCP `crucible_validate`
+  list/show/compare/history/pivot` (CLI + MCP) — config identity now carries
+  explicit `harness`/`tool_allowlist` fields (`backlog.d/027-*`), `history`
+  is one config's score trend over time, `pivot` is one benchmark's latest
+  run per model narrowable to one harness. `crucible validate`/MCP `crucible_validate`
   checks a spec's `{valid, runnable, errors, warnings}` before it runs, and the
   runner refuses (not silently ignores) an unsupported `aggregation`,
   `uncertainty.method`/`confidence`, or a missing grader of the kind the
