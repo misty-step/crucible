@@ -364,7 +364,7 @@ the browser.
 - `013` — one scorer, one crate
 - `014` — agent-first surfaces and honest specs
 - `015` — first real Cerberus review-quality benchmark
-- `016` — publicable hygiene and fleet integration
+- `016` — publicable hygiene and fleet integration (done)
 
 ## Gate
 
@@ -377,3 +377,9 @@ The repo gate is:
 It runs the credential leak scan, `cargo fmt`, clippy with `-D warnings`, tests,
 build, and rustdoc with warnings denied. `make check` delegates to the same
 script.
+
+Published GitHub releases separately trigger `misty-step/landmark@v1`
+(`.github/workflows/landmark-release.yml`, `landmark-manual-tag.yml`) in
+`synthesis-only` mode, configured by `.landmark.yml` at the repo root, to
+synthesize release notes from the commit/PR history since the prior tag. That
+workflow is release-only and does not replace or gate `./scripts/check.sh`.

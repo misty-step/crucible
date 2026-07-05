@@ -1,6 +1,6 @@
 # Keep Crucible publicable and integrated with the factory fleet
 
-Priority: P2 · Status: in-progress · Estimate: M (epic)
+Priority: P2 · Status: done · Estimate: M (epic)
 
 ## Goal
 
@@ -18,7 +18,7 @@ Crucible harder for cold agents, public readers, or the factory fleet to use.
 - [x] Publicable policy holds: MIT license present, no instance data, personal
   paths, tailnet names, or raw run records in tracked files except deliberate
   fixture paths.
-- [ ] Landmark release intelligence remains wired and documented.
+- [x] Landmark release intelligence remains wired and documented.
 
 ## Verification System
 
@@ -84,3 +84,52 @@ person and carries a project milestone, and the backlog note itself says "do
 not close it silently... if GitHub project policy wants labels instead" —
 labeling + explaining is the disposition an overnight lane can make safely;
 closing an assigned, milestoned issue is a call for a human.
+
+**Progress 2026-07-04 (Powder crucible-016 re-verification):** re-checked all
+five Oracle lines against the live repo rather than trusting the prior
+checkmarks, since a lot has shipped since (`crucible author`, `crucible
+doctor`, MCP tools, glossary, README restructure from crucible-906, brand work
+from crucible-033).
+
+- Line 1 (docs agree on current state) was actually **not** fully true despite
+  the pre-existing checkmark: `VISION.md`'s "Early Shape" paragraph still said
+  Crucible's "next job" was to "own the engine: author benchmarks, make real
+  model calls, record runs, collect human labels..., calibrate agentic
+  judges..." — all of which had since shipped (`crucible author`, the
+  OpenRouter-backed `prompt_benchmark`/`agentic_judge` runners, the SQLite run
+  ledger, the adjudication panel's live writeback, and `CalibrationRecord`).
+  A "Sources" bullet also asserted "no live model-call engine yet" as of
+  2026-07-01, contradicted by `AGENTS.md`/README/SKILL, which document that
+  engine as real. Fixed both in `VISION.md` (rewrote the stale paragraph past
+  tense, appended a dated 2026-07-04 Sources bullet correcting the record
+  without deleting the original).
+- Line 2 (flagship spec path marker) re-verified: `evals/pr-review-key-recall-v0.json`
+  still hardcodes `../../daedalus/arenas/pr-review-v0` and
+  `../../daedalus/runs/.../trials.jsonl`, and still has no schema-level
+  `local_only` marker — but `crucible validate` still emits the named warning
+  on that exact condition and `SKILL.md` still documents it in prose, so the
+  original disposition (tooling + docs marker, not a schema field) holds.
+  `backlog.d/032-threshold-corpus-path-aliases.md` tracks the more ambitious
+  "actually resolve on a machine with `threshold` but no `daedalus`" follow-up
+  and is still `Status: pending` — correctly scoped separately, not redone
+  here.
+- Line 3 (go-council residue) re-verified via `gh issue view 15`: still
+  labeled `wontfix` with the same explanatory comment, left open per the
+  documented human-decision rationale. No other open issues reference
+  go-council. Nothing to change.
+- Line 4 (publicable policy) re-verified: `LICENSE` is MIT/Misty Step LLC,
+  `./scripts/leak-scan.sh` reports clean, and `git grep` for `/Users/` and
+  the operator's usernames across tracked files returns no hits. Nothing to
+  change.
+- Line 5 (Landmark) was genuinely still open: `.landmark.yml` plus
+  `.github/workflows/landmark-release.yml` and `landmark-manual-tag.yml` wire
+  `misty-step/landmark@v1` in `synthesis-only` mode on release, but no doc
+  mentioned it. Added a short paragraph to README.md's Gate section (matching
+  the convention already used in the `powder` repo's README) naming the
+  workflow, its config, and that it is release-only and does not replace
+  `./scripts/check.sh`.
+
+Children item 5 ("add a small hygiene check if these traps recur") remains
+unstarted — out of scope for this pass since it isn't one of the five Oracle
+acceptance lines; left as a residual follow-up, not invented into new work
+here.
