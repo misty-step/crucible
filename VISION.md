@@ -177,12 +177,14 @@ are waiting. Verified on 2026-07-01: Threshold's `daedalus` checkout has six liv
 (`pr-review-v0`, `pr-review-v1`, `pr-review-v2`, `pr-review-security-v0`,
 `pr-review-correctness-v0`, and `pr-review-master-v0`); no live arenas currently
 exist under the old `pr-review-{verification,product,simplification}` names.
-Cerberus produces structured findings via review artifacts, and Crucible already
-has a deterministic grade/adjudicate/export loop plus a static panel. Crucible's
-next job is to own the engine: author benchmarks, make real model calls, record
-runs, collect human labels through a working writeback surface, calibrate
-agentic judges against those labels, and emit Harbor-importable benchmark tasks
-and run records Threshold can consume.
+Cerberus produces structured findings via review artifacts, and Crucible now
+owns the engine end to end: `crucible author` assembles benchmarks, `crucible
+run` makes real model calls across the `prompt_benchmark` and `agentic_judge`
+tiers and records every run in a queryable ledger, the adjudication panel's
+live writeback loop collects human labels, judge calibration is measured
+against those labels, and `crucible export` emits Harbor-importable benchmark
+tasks and run records Threshold can consume. See `AGENTS.md`/`SKILL.md` for
+the exact command surface and what is still open.
 
 Next families after that:
 
@@ -244,6 +246,14 @@ Next families after that:
   `pr-review-{verification,product,simplification}` names are not live arenas;
   Crucible has Rust core/CLI/MCP grade/adjudicate/export/run receipts, but no
   live model-call engine yet.
+- Live-repo evidence (2026-07-04): the live model-call engine described as
+  outstanding above has since shipped, the same day it was written —
+  `crucible run` executes `prompt_benchmark` and `agentic_judge` specs through
+  real OpenRouter calls, `crucible author` assembles specs without hand-written
+  JSON, and the adjudication panel's writeback loop (mounted directly inside
+  `crucible serve`) collects human labels. Do not read the 2026-07-01 bullet
+  above as current state; `AGENTS.md`/`SKILL.md` carry the live command
+  surface.
 - Eval-OS intake (2026-07-02): the "What Crucible Should Do" list named export
   but never import, despite the operator's verbatim want to "IMPORT
   benchmarks/evals others have defined and run them locally"
