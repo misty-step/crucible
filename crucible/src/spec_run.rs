@@ -2519,6 +2519,8 @@ mod tests {
             credential_env: "OPENROUTER_API_KEY".to_string(),
             max_output_units: Some(8),
             temperature: Some(0),
+            harness: None,
+            tool_allowlist: Vec::new(),
         };
         let runner = RunnerSpec {
             kind: RunnerKind::PromptBenchmark,

@@ -1263,6 +1263,143 @@ fn runs_list_filters_by_config_model_and_date() {
     assert!(compare["paired"].is_null());
 }
 
+/// Backlog 027: `runs list --harness` narrows the ledger by the new axis
+/// (zero matches here, since the fixture never records one — the same
+/// smoke-level assertion `runs_list_filters_by_config_model_and_date` makes
+/// for the other filters), and `runs history`/`runs pivot` expose the new
+/// time-series and cross-axis query surface over the real binary and a real
+/// SQLite ledger, not just the `run_store` unit tests.
+#[test]
+fn runs_history_and_pivot_query_the_real_ledger_over_the_cli() {
+    let root = temp_root("run-db-history-pivot");
+    let db = root.join("runs.sqlite");
+    let spec = fixture("specs/key-recall-fixture.json");
+
+    let run = |out_name: &str| {
+        let out_dir = root.join(out_name);
+        let out = crucible()
+            .arg("run")
+            .arg(&spec)
+            .arg("--out")
+            .arg(&out_dir)
+            .arg("--db")
+            .arg(&db)
+            .arg("--json")
+            .output()
+            .expect("crucible binary runs");
+        assert!(
+            out.status.success(),
+            "run must persist; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    // Two runs of the identical declared spec/config over time — exactly the
+    // repeated-run shape score_history's trend line and pivot's dedup-by-model
+    // both need to prove something over more than one row.
+    run("out-1");
+    run("out-2");
+
+    let harness_filtered = crucible()
+        .arg("runs")
+        .arg("list")
+        .arg("--db")
+        .arg(&db)
+        .arg("--harness")
+        .arg("codex")
+        .arg("--json")
+        .output()
+        .expect("crucible runs list --harness executes");
+    assert!(harness_filtered.status.success());
+    let harness_filtered: serde_json::Value =
+        serde_json::from_slice(&harness_filtered.stdout).expect("runs list --harness emits JSON");
+    assert_eq!(
+        harness_filtered["runs"]
+            .as_array()
+            .expect("runs array")
+            .len(),
+        0,
+        "key_recall runs never declare a harness, so any --harness filter excludes them all"
+    );
+
+    let history = crucible()
+        .arg("runs")
+        .arg("history")
+        .arg("--db")
+        .arg(&db)
+        .arg("--benchmark")
+        .arg("key-recall-fixture")
+        .arg("--config")
+        .arg("probe")
+        .arg("--json")
+        .output()
+        .expect("crucible runs history executes");
+    assert!(
+        history.status.success(),
+        "runs history exits 0; stderr: {}",
+        String::from_utf8_lossy(&history.stderr)
+    );
+    let history: serde_json::Value =
+        serde_json::from_slice(&history.stdout).expect("runs history emits JSON");
+    assert_eq!(history["benchmark"], "key-recall-fixture");
+    assert_eq!(history["config_query"], "probe");
+    let points = history["points"].as_array().expect("points array");
+    assert_eq!(points.len(), 2, "both persisted runs show up in the history");
+    assert!(
+        points[0]["created_at_unix_ms"].as_i64().unwrap()
+            <= points[1]["created_at_unix_ms"].as_i64().unwrap(),
+        "history is ordered oldest to newest: {points:?}"
+    );
+
+    let pivot = crucible()
+        .arg("runs")
+        .arg("pivot")
+        .arg("--db")
+        .arg(&db)
+        .arg("--benchmark")
+        .arg("key-recall-fixture")
+        .arg("--json")
+        .output()
+        .expect("crucible runs pivot executes");
+    assert!(
+        pivot.status.success(),
+        "runs pivot exits 0; stderr: {}",
+        String::from_utf8_lossy(&pivot.stderr)
+    );
+    let pivot: serde_json::Value =
+        serde_json::from_slice(&pivot.stdout).expect("runs pivot emits JSON");
+    assert_eq!(pivot["benchmark"], "key-recall-fixture");
+    assert!(pivot["harness"].is_null(), "harness omitted when not narrowed");
+    let rows = pivot["rows"].as_array().expect("rows array");
+    assert_eq!(
+        rows.len(),
+        1,
+        "key_recall runs share model=null, so both runs dedup into one pivot row: {rows:?}"
+    );
+    assert!(rows[0]["model"].is_null());
+
+    let pivot_no_match = crucible()
+        .arg("runs")
+        .arg("pivot")
+        .arg("--db")
+        .arg(&db)
+        .arg("--benchmark")
+        .arg("key-recall-fixture")
+        .arg("--harness")
+        .arg("codex")
+        .arg("--json")
+        .output()
+        .expect("crucible runs pivot --harness executes");
+    assert!(pivot_no_match.status.success());
+    let pivot_no_match: serde_json::Value =
+        serde_json::from_slice(&pivot_no_match.stdout).expect("runs pivot --harness emits JSON");
+    assert_eq!(pivot_no_match["harness"], "codex");
+    assert_eq!(
+        pivot_no_match["rows"].as_array().expect("rows array").len(),
+        0,
+        "narrowing to an unrecorded harness excludes every run"
+    );
+}
+
 /// Backlog `023`: pass^k task consistency must pair through the same
 /// `PairedComparison`/`DeltaVerdict` McNemar kernel `compare_configs` already
 /// uses for prompt-benchmark runs — not just report each run's independent

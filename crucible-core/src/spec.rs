@@ -779,6 +779,7 @@ mod tests {
             judge_prompt: "Grade it.".to_string(),
             credential_env: "OPENROUTER_API_KEY".to_string(),
             temperature: None,
+            generator_model: None,
             harness: Some("codex".to_string()),
             tool_allowlist: vec!["apply_patch".to_string()],
         };

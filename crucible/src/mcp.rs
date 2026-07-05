@@ -406,6 +406,10 @@ fn tool_defs() -> Value {
                         "type": "string",
                         "description": "Model slug to filter on."
                     },
+                    "harness": {
+                        "type": "string",
+                        "description": "Agent harness identity to filter on, e.g. claude-code or codex (backlog 027)."
+                    },
                     "since": {
                         "type": "string",
                         "description": "Only runs created at or after this RFC3339 timestamp or YYYY-MM-DD date."
@@ -500,6 +504,50 @@ fn tool_defs() -> Value {
                     }
                 }
             }
+        },
+        {
+            "name": "crucible_runs_history",
+            "description": "Time-series score history for one benchmark/config or model slug, ordered oldest to newest — the longitudinal trend line backlog 027 adds. config matches either the stored config_id or the stored model, same either-match rule crucible_runs_compare's left/right use.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["benchmark", "config"],
+                "properties": {
+                    "db": {
+                        "type": "string",
+                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                    },
+                    "benchmark": {
+                        "type": "string",
+                        "description": "Benchmark id to trend."
+                    },
+                    "config": {
+                        "type": "string",
+                        "description": "Config id or model slug to trend."
+                    }
+                }
+            }
+        },
+        {
+            "name": "crucible_runs_pivot",
+            "description": "Cross-axis pivot: one benchmark's latest stored run per model, optionally narrowed to one harness — \"this benchmark, this harness, across all models\" (backlog 027).",
+            "inputSchema": {
+                "type": "object",
+                "required": ["benchmark"],
+                "properties": {
+                    "db": {
+                        "type": "string",
+                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                    },
+                    "benchmark": {
+                        "type": "string",
+                        "description": "Benchmark id to pivot."
+                    },
+                    "harness": {
+                        "type": "string",
+                        "description": "Agent harness identity to narrow to, e.g. claude-code or codex. Omit to pivot across every harness recorded for the benchmark."
+                    }
+                }
+            }
         }
     ])
 }
@@ -525,6 +573,8 @@ fn call_tool(params: &Value) -> Result<Value> {
         "crucible_runs_show" => crucible_runs_show(arguments),
         "crucible_runs_compare" => crucible_runs_compare(arguments),
         "crucible_runs_judge_status" => crucible_runs_judge_status(arguments),
+        "crucible_runs_history" => crucible_runs_history(arguments),
+        "crucible_runs_pivot" => crucible_runs_pivot(arguments),
         other => Err(anyhow!("unknown tool: {other}")),
     }
 }
@@ -779,6 +829,7 @@ struct RunsListArgs {
     benchmark: Option<String>,
     config: Option<String>,
     model: Option<String>,
+    harness: Option<String>,
     since: Option<String>,
     until: Option<String>,
     limit: Option<i64>,
@@ -805,6 +856,7 @@ fn crucible_runs_list(arguments: Value) -> Result<Value> {
         benchmark: args.benchmark.as_deref(),
         config: args.config.as_deref(),
         model: args.model.as_deref(),
+        harness: args.harness.as_deref(),
         since_unix_ms,
         until_unix_ms,
         limit: args.limit,
@@ -929,6 +981,46 @@ fn crucible_runs_compare(arguments: Value) -> Result<Value> {
     }))
 }
 
+#[derive(Debug, Deserialize)]
+struct RunsHistoryArgs {
+    db: Option<PathBuf>,
+    benchmark: String,
+    config: String,
+}
+
+fn crucible_runs_history(arguments: Value) -> Result<Value> {
+    let args: RunsHistoryArgs =
+        serde_json::from_value(arguments).context("parse crucible_runs_history arguments")?;
+    let db = args
+        .db
+        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let history = run_store::score_history(&db, &args.benchmark, &args.config)?;
+    Ok(json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&history)? }],
+        "structuredContent": history
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct RunsPivotArgs {
+    db: Option<PathBuf>,
+    benchmark: String,
+    harness: Option<String>,
+}
+
+fn crucible_runs_pivot(arguments: Value) -> Result<Value> {
+    let args: RunsPivotArgs =
+        serde_json::from_value(arguments).context("parse crucible_runs_pivot arguments")?;
+    let db = args
+        .db
+        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let pivot = run_store::pivot_by_model(&db, &args.benchmark, args.harness.as_deref())?;
+    Ok(json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&pivot)? }],
+        "structuredContent": pivot
+    }))
+}
+
 fn parse_run_eval(raw: Option<&str>) -> Result<RunEval> {
     match raw.unwrap_or(RunEval::All.id()) {
         "all" => Ok(RunEval::All),
@@ -981,7 +1073,9 @@ mod tests {
                 "crucible_runs_list",
                 "crucible_runs_show",
                 "crucible_runs_compare",
-                "crucible_runs_judge_status"
+                "crucible_runs_judge_status",
+                "crucible_runs_history",
+                "crucible_runs_pivot"
             ]
         );
     }
@@ -1215,6 +1309,77 @@ mod tests {
                 .len(),
             0,
             "an inside-noise-floor paired comparison must mint no finding records: {structured}"
+        );
+    }
+
+    #[test]
+    fn runs_history_returns_the_seeded_models_score_points() {
+        let db = crate::test_fixtures::temp_db("mcp-history");
+        crate::test_fixtures::seed_paired_signal(&db);
+
+        let response = crucible_runs_history(json!({
+            "db": db.display().to_string(),
+            "benchmark": crate::test_fixtures::BENCHMARK,
+            "config": crate::test_fixtures::LEFT_MODEL,
+        }))
+        .expect("crucible_runs_history succeeds");
+
+        let structured = &response["structuredContent"];
+        assert_eq!(structured["benchmark"], crate::test_fixtures::BENCHMARK);
+        assert_eq!(structured["config_query"], crate::test_fixtures::LEFT_MODEL);
+        let points = structured["points"].as_array().expect("points array");
+        assert_eq!(points.len(), 1, "one seeded run for the left model: {structured}");
+        assert_eq!(points[0]["successes"], 1);
+        assert_eq!(points[0]["n"], 10);
+    }
+
+    #[test]
+    fn runs_history_requires_benchmark_and_config() {
+        let db = crate::test_fixtures::temp_db("mcp-history-missing-args");
+        let err = crucible_runs_history(json!({ "db": db.display().to_string() }))
+            .expect_err("benchmark and config are required");
+        assert!(
+            format!("{err:#}").contains("missing field"),
+            "error names the missing required field: {err:#}"
+        );
+    }
+
+    #[test]
+    fn runs_pivot_returns_one_row_per_seeded_model() {
+        let db = crate::test_fixtures::temp_db("mcp-pivot");
+        crate::test_fixtures::seed_paired_signal(&db);
+
+        let response = crucible_runs_pivot(json!({
+            "db": db.display().to_string(),
+            "benchmark": crate::test_fixtures::BENCHMARK,
+        }))
+        .expect("crucible_runs_pivot succeeds");
+
+        let structured = &response["structuredContent"];
+        assert_eq!(structured["benchmark"], crate::test_fixtures::BENCHMARK);
+        assert!(structured.get("harness").is_none(), "harness omitted when not narrowed: {structured}");
+        let rows = structured["rows"].as_array().expect("rows array");
+        assert_eq!(rows.len(), 2, "one row per seeded model: {structured}");
+    }
+
+    #[test]
+    fn runs_pivot_narrows_to_a_harness_with_zero_rows_when_none_match() {
+        let db = crate::test_fixtures::temp_db("mcp-pivot-no-match");
+        crate::test_fixtures::seed_paired_signal(&db);
+
+        let response = crucible_runs_pivot(json!({
+            "db": db.display().to_string(),
+            "benchmark": crate::test_fixtures::BENCHMARK,
+            "harness": "codex",
+        }))
+        .expect("crucible_runs_pivot succeeds");
+
+        let structured = &response["structuredContent"];
+        assert_eq!(structured["harness"], "codex");
+        assert_eq!(
+            structured["rows"].as_array().expect("rows array").len(),
+            0,
+            "the seeded fixture never declared a harness, so a codex-narrowed pivot is empty: {structured}"
         );
     }
 }
