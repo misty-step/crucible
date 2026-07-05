@@ -362,6 +362,14 @@ enum RunsCommand {
         /// Only runs created at or before this RFC3339 timestamp or YYYY-MM-DD date.
         #[arg(long, value_name = "TIMESTAMP")]
         until: Option<String>,
+        /// Cap the number of rows returned. Omit for every matching row (the
+        /// pre-pagination default).
+        #[arg(long, value_name = "N")]
+        limit: Option<i64>,
+        /// Rows to skip before the first returned row; combine with --limit
+        /// to page through a large run ledger.
+        #[arg(long, value_name = "N")]
+        offset: Option<i64>,
         /// Emit stable JSON instead of a readable table.
         #[arg(long)]
         json: bool,
@@ -633,6 +641,8 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             model,
             since,
             until,
+            limit,
+            offset,
             json,
         } => {
             let since_unix_ms = since
@@ -649,6 +659,8 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
                 model: model.as_deref(),
                 since_unix_ms,
                 until_unix_ms,
+                limit,
+                offset,
             };
             let list = run_store::list_runs(&db, filter)?;
             if json {

@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread;
 
 use anyhow::{Context, Result};
 use crucible_core::{CorpusSpec, EvalSpec};
@@ -41,6 +43,13 @@ pub fn serve(opts: ServeOptions) -> Result<()> {
     println!("crucible serve: http://127.0.0.1:{bound_port}");
     std::io::stdout().flush().ok();
 
+    // One thread per connection: a slow, stuck, or merely chatty viewer must
+    // not stall every other request behind it in the accept loop. This is a
+    // localhost-only, single-operator dev workbench (bearer-gated mutating
+    // routes), not an internet-facing service under load, so unbounded
+    // thread-per-connection is the right amount of complexity — a pooled or
+    // async design would be solving a load problem this server doesn't have.
+    let opts = Arc::new(opts);
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(stream) => stream,
@@ -49,9 +58,12 @@ pub fn serve(opts: ServeOptions) -> Result<()> {
                 continue;
             }
         };
-        if let Err(err) = handle_connection(stream, &opts) {
-            eprintln!("crucible serve: connection error: {err:#}");
-        }
+        let opts = Arc::clone(&opts);
+        thread::spawn(move || {
+            if let Err(err) = handle_connection(stream, &opts) {
+                eprintln!("crucible serve: connection error: {err:#}");
+            }
+        });
     }
     Ok(())
 }
@@ -854,6 +866,10 @@ struct RunFilters {
     model: Option<String>,
     since: Option<String>,
     until: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    offset: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -880,6 +896,8 @@ fn runs_response(db_path: &Path, query: &HashMap<String, String>) -> Result<Runs
         model: nonempty_query(query, "model"),
         since: nonempty_query(query, "since"),
         until: nonempty_query(query, "until"),
+        limit: parse_i64_query(query, "limit")?,
+        offset: parse_i64_query(query, "offset")?,
     };
     let since_unix_ms = filters
         .since
@@ -899,8 +917,15 @@ fn runs_response(db_path: &Path, query: &HashMap<String, String>) -> Result<Runs
             model: filters.model.as_deref(),
             since_unix_ms,
             until_unix_ms,
+            limit: filters.limit,
+            offset: filters.offset,
         },
     )?;
+    // Trendlines are derived from exactly this response's rows: an unpaged
+    // request (the default, `limit`/`offset` both absent) still draws every
+    // point, unchanged from before pagination existed; an explicit paged
+    // request draws only that page's points, which is the expected
+    // pagination contract, not a regression.
     let trendlines = trendlines(&list.runs);
     Ok(RunsResponse {
         schema_version: RUNS_SCHEMA,
@@ -909,6 +934,16 @@ fn runs_response(db_path: &Path, query: &HashMap<String, String>) -> Result<Runs
         runs: list.runs,
         trendlines,
     })
+}
+
+fn parse_i64_query(query: &HashMap<String, String>, key: &str) -> Result<Option<i64>> {
+    nonempty_query(query, key)
+        .map(|value| {
+            value.parse::<i64>().with_context(|| {
+                format!("query parameter {key:?} must be an integer, got {value:?}")
+            })
+        })
+        .transpose()
 }
 
 fn trendlines(runs: &[run_store::StoredRun]) -> Vec<Trendline> {

@@ -404,6 +404,14 @@ fn tool_defs() -> Value {
                     "until": {
                         "type": "string",
                         "description": "Only runs created at or before this RFC3339 timestamp or YYYY-MM-DD date."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Cap the number of rows returned. Omitted means every matching row (the pre-pagination default)."
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Rows to skip before the first returned row; combine with limit to page through a large run ledger."
                     }
                 }
             }
@@ -740,6 +748,8 @@ struct RunsListArgs {
     model: Option<String>,
     since: Option<String>,
     until: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 fn crucible_runs_list(arguments: Value) -> Result<Value> {
@@ -764,6 +774,8 @@ fn crucible_runs_list(arguments: Value) -> Result<Value> {
         model: args.model.as_deref(),
         since_unix_ms,
         until_unix_ms,
+        limit: args.limit,
+        offset: args.offset,
     };
     let list = run_store::list_runs(&db, filter)?;
     Ok(json!({
