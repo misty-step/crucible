@@ -115,6 +115,55 @@ The same flag surface is exposed over MCP as `crucible_author` (see
 new benchmark through CLI and MCP without hand-writing JSON or needing a
 human to explain an undocumented step.
 
+## Import An External Benchmark (No Shadow Format)
+
+`crucible import <adapter> <source>` projects an externally-authored
+eval/benchmark definition into a valid `EvalSpec`, run through the exact same
+validate-then-save gate `crucible author` uses — the missing "import"
+direction `VISION.md` names alongside export (backlog/Powder crucible-026).
+The first (and, for now, only) adapter is `promptfoo`, projecting a
+[Promptfoo](https://promptfoo.dev)-style YAML eval config onto the
+`prompt_benchmark` runner Crucible already owns and executes:
+
+```sh
+cargo run -p crucible -- import promptfoo path/to/promptfooconfig.yaml \
+  --out evals/promptfoo-import-v0.json \
+  --json
+```
+
+Total and honest, matching `crucible-core/src/adapter.rs`'s contract: every
+test case in the source config is accounted for in the printed report —
+either imported as a runnable task, or named in `skipped_tests` with exactly
+why (more than one assertion — a Crucible task supports exactly one
+`PromptExpectation`; an unsupported assertion type like `is-json`,
+`javascript`, `python`, `similar`, or `llm-rubric`; an unresolved `$ref`
+template; an unresolved `{{var}}` placeholder; a `vars` array — matrix
+expansion is not supported). Nothing is silently dropped or silently
+guessed. A config naming more than one provider or prompt template is
+honored for its first entry (one Crucible spec runs one model against one
+template); every other entry is named in `skipped_providers`/
+`skipped_prompts`. `--model <SLUG>` overrides the OpenRouter model slug the
+config's provider(s) mapped to — use it when the source names a provider
+Crucible cannot map, or to point the imported spec at a different model than
+the source declared. When zero test cases can be imported, the command
+refuses to write anything and prints every skip reason so the operator sees
+why, not just that nothing came through — see `crucible-core/src/import.rs`
+for the full projection contract.
+
+The assembled spec runs through the ordinary pipeline with no shadow format:
+
+```sh
+cargo run -p crucible -- validate evals/promptfoo-import-v0.json --json
+
+OPENROUTER_API_KEY=... \
+cargo run -p crucible -- run evals/promptfoo-import-v0.json \
+  --model openrouter/auto \
+  --out runs/local/promptfoo-import \
+  --json
+
+cargo run -p crucible -- runs list --benchmark <imported-id> --json
+```
+
 ## Validate A Spec Before Running
 
 Check a declared spec is an executable contract — no sibling checkout, no

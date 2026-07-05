@@ -66,6 +66,16 @@
 //!   validation `crucible validate` performs, and only writes the spec file
 //!   when it is valid (backlog/Powder crucible-942 — the brainstorm/design/
 //!   define lifecycle stage previously had no guided surface at all).
+//! - `crucible import promptfoo <CONFIG> [--out <PATH>] [--model <SLUG>]
+//!   [--force] [--json]` (crucible-026) projects an externally-authored
+//!   Promptfoo-style YAML eval config into a valid
+//!   [`EvalSpec`](crucible_core::EvalSpec) — the missing "import" direction
+//!   `VISION.md` names alongside export — through the same validate-then-save
+//!   gate `crucible author` uses. Every source test case is accounted for:
+//!   it either becomes a runnable `prompt_benchmark` task or is named in the
+//!   printed report as skipped, with why (an unsupported assertion type, more
+//!   than one assertion, an unresolved `$ref`/`{{var}}`, ...) — never
+//!   silently dropped. See [`crucible_core::import`] for the projection.
 //! - `crucible doctor [--json]` (crucible-911) is the push-button,
 //!   verified-live onboarding check: it proves the CLI runs, the MCP server
 //!   initializes and lists tools, `crucible serve` binds a port and answers
@@ -108,11 +118,13 @@ mod dashboard_html;
 mod doctor;
 mod eval_run;
 mod findings_journal;
+mod import;
 mod mcp;
 mod run_fanout;
 mod run_store;
 mod serve;
 mod spec_run;
+mod spec_save;
 #[cfg(test)]
 mod test_fixtures;
 mod validate;
@@ -327,6 +339,14 @@ enum Command {
     /// (crucible-942). Boxed: `AuthorArgs` carries every runner kind's flags
     /// at once, making it by far the largest `Command` variant.
     Author(Box<author::AuthorArgs>),
+    /// Import an externally-authored eval/benchmark definition, projecting it
+    /// into a valid EvalSpec through the same validate-then-save gate
+    /// `crucible author` uses (backlog/Powder crucible-026). Nested by
+    /// adapter — `promptfoo` is the first and, for now, only one.
+    Import {
+        #[command(subcommand)]
+        adapter: ImportAdapter,
+    },
     /// Push-button, verified-live onboarding check (crucible-911): confirms
     /// the CLI runs, MCP initializes and lists tools, `serve` binds a port
     /// and answers `/api/specs`, and the run ledger can be created under
@@ -337,6 +357,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum ImportAdapter {
+    /// Import a Promptfoo-style YAML eval config into a Crucible
+    /// `prompt_benchmark` EvalSpec, run through the same validate-then-save
+    /// gate `crucible author` uses. Test cases that cannot be mapped cleanly
+    /// (multiple assertions, an unsupported assertion type, an unresolved
+    /// `$ref` template or `{{var}}`) are reported, never silently dropped.
+    Promptfoo(import::PromptfooImportArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -542,6 +572,9 @@ fn main() -> ExitCode {
         } => run_adjudication_panel(&queue, &out, serve, port, labels.as_deref()),
         Command::Mcp => mcp::run_stdio(),
         Command::Author(args) => author::run(*args),
+        Command::Import { adapter } => match adapter {
+            ImportAdapter::Promptfoo(args) => import::run(args),
+        },
         Command::Doctor { json } => run_doctor(json),
     };
     match result {

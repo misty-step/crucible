@@ -1,0 +1,50 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "promptfoo-getting-started",
+  "task": "promptfoo-import",
+  "inputs": "Imported from promptfoo config crucible-core/tests/fixtures/promptfoo/getting-started-promptfooconfig.yaml (Getting started)",
+  "outputs": "Deterministic rubric pass/fail per imported promptfoo test case",
+  "graders": {
+    "graders": [
+      {
+        "id": "deterministic_rubric",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "runner": {
+    "kind": "prompt_benchmark",
+    "corpus": {
+      "source": "prompt_benchmark",
+      "config": {
+        "provider": "open_router",
+        "model": "openai/gpt-5.5",
+        "system_prompt": "",
+        "credential_env": "OPENROUTER_API_KEY"
+      },
+      "tasks": [
+        {
+          "task_id": "test-0",
+          "prompt": "Convert the following English text to French: Hello world",
+          "expectation": {
+            "kind": "contains",
+            "value": "Bonjour le monde"
+          }
+        },
+        {
+          "task_id": "test-1",
+          "prompt": "Convert the following English text to Spanish: Where is the library?",
+          "expectation": {
+            "kind": "case_insensitive_contains",
+            "value": "Dónde está la biblioteca"
+          }
+        }
+      ]
+    }
+  }
+}
