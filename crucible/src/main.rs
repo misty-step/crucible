@@ -118,6 +118,7 @@ mod dashboard_html;
 mod doctor;
 mod eval_run;
 mod findings_journal;
+mod harbor_import;
 mod import;
 mod mcp;
 mod run_fanout;
@@ -367,6 +368,12 @@ enum ImportAdapter {
     /// (multiple assertions, an unsupported assertion type, an unresolved
     /// `$ref` template or `{{var}}`) are reported, never silently dropped.
     Promptfoo(import::PromptfooImportArgs),
+    /// Import a local directory of Harbor task directories into a Crucible
+    /// `harbor_task` EvalSpec (backlog/Powder crucible-034), scoped to a
+    /// representative CPU-only smoke subset — not the full Terminal-Bench 2.0
+    /// dataset, which is a follow-up card. Every directory entry is either
+    /// imported or reported as skipped, with why, never silently dropped.
+    Harbor(harbor_import::HarborImportArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -574,6 +581,7 @@ fn main() -> ExitCode {
         Command::Author(args) => author::run(*args),
         Command::Import { adapter } => match adapter {
             ImportAdapter::Promptfoo(args) => import::run(args),
+            ImportAdapter::Harbor(args) => harbor_import::run(args),
         },
         Command::Doctor { json } => run_doctor(json),
     };
@@ -641,12 +649,14 @@ fn run_eval(
                 .display()
         );
         println!(
-            "  stored   {}  ({} run row{}, {} prompt task row{})",
+            "  stored   {}  ({} run row{}, {} prompt task row{}, {} harbor task row{})",
             stored.db,
             stored.run_records,
             plural(stored.run_records),
             stored.prompt_task_results,
-            plural(stored.prompt_task_results)
+            plural(stored.prompt_task_results),
+            stored.harbor_task_results,
+            plural(stored.harbor_task_results)
         );
     }
     Ok(())
@@ -925,6 +935,9 @@ fn print_run_detail(detail: &run_store::RunDetail) {
     }
     if !detail.prompt_tasks.is_empty() {
         println!("  prompt task rows {}", detail.prompt_tasks.len());
+    }
+    if !detail.harbor_tasks.is_empty() {
+        println!("  harbor task rows {}", detail.harbor_tasks.len());
     }
 }
 

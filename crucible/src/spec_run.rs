@@ -20,9 +20,9 @@ use crucible_core::{
     agreement, cohen_kappa, findings_from_artifact, judge_licence_key, schema_valid,
     shares_model_family, to_key_findings, AgenticJudgeConfig, AgenticJudgeTask, AggregationMethod,
     CalibrationRecord, CerberusReceiptTask, ConfusionMatrix, CorpusSpec, EvalSpec, ExpectedKey,
-    GraderKind, IntervalMethod, KeyFinding, ModelProvider, PromptBenchmarkTask, PromptExpectation,
-    PromptModelConfig, RunnerKind, RunnerSpec, Trace, TraceStep, CALIBRATION_RECORD_SCHEMA,
-    TRACE_SCHEMA,
+    GraderKind, HarborRunConfig, HarborTaskSpec, IntervalMethod, KeyFinding, ModelProvider,
+    PromptBenchmarkTask, PromptExpectation, PromptModelConfig, RunnerKind, RunnerSpec, Trace,
+    TraceStep, CALIBRATION_RECORD_SCHEMA, TRACE_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -103,7 +103,9 @@ fn default_output_dir_for_spec(spec: &EvalSpec, spec_path: &Path) -> PathBuf {
 /// `agentic_judge` makes the live judge call `GraderKind::Agentic` names.
 pub(crate) fn required_grader_kind(runner_kind: RunnerKind) -> GraderKind {
     match runner_kind {
-        RunnerKind::KeyRecall | RunnerKind::PromptBenchmark => GraderKind::Deterministic,
+        RunnerKind::KeyRecall | RunnerKind::PromptBenchmark | RunnerKind::HarborTask => {
+            GraderKind::Deterministic
+        }
         RunnerKind::AgenticJudge => GraderKind::Agentic,
     }
 }
@@ -166,6 +168,7 @@ fn runner_kind_label(kind: RunnerKind) -> &'static str {
         RunnerKind::KeyRecall => "key_recall",
         RunnerKind::PromptBenchmark => "prompt_benchmark",
         RunnerKind::AgenticJudge => "agentic_judge",
+        RunnerKind::HarborTask => "harbor_task",
     }
 }
 
@@ -183,6 +186,7 @@ fn run_runner(
         RunnerKind::KeyRecall => run_key_recall(spec, runner, spec_path, out),
         RunnerKind::PromptBenchmark => run_prompt_benchmark(spec, runner, spec_path, out, options),
         RunnerKind::AgenticJudge => run_agentic_judge(spec, runner, spec_path, out),
+        RunnerKind::HarborTask => run_harbor_task(spec, runner, spec_path, out),
     }
 }
 
@@ -214,7 +218,9 @@ fn run_key_recall(
             candidate_id,
             tasks,
         } => run_key_recall_cerberus_receipts(spec, runner, spec_path, out, candidate_id, tasks),
-        CorpusSpec::PromptBenchmark { .. } | CorpusSpec::AgenticJudge { .. } => {
+        CorpusSpec::PromptBenchmark { .. }
+        | CorpusSpec::AgenticJudge { .. }
+        | CorpusSpec::HarborTasks { .. } => {
             anyhow::bail!("key_recall runner requires a key-recall corpus source")
         }
     }
@@ -553,6 +559,434 @@ fn run_key_recall_cerberus_receipts(
             ),
         ],
     })
+}
+
+/// Default per-task `harbor run` wall-clock budget: Harbor's own task.toml
+/// declares independent ~600s timeouts for environment build, agent setup,
+/// agent execution, and verification, so a worst-case task can spend several
+/// times that before Harbor itself gives up. 30 minutes gives real tasks room
+/// without letting a wedged container hang the whole benchmark run.
+const HARBOR_DEFAULT_JOB_TIMEOUT_MS: u64 = 1_800_000;
+
+fn run_harbor_task(
+    spec: &EvalSpec,
+    runner: &RunnerSpec,
+    spec_path: &Path,
+    out: &Path,
+) -> anyhow::Result<EvalReport> {
+    preflight_spec(spec, RunnerKind::HarborTask)?;
+
+    let CorpusSpec::HarborTasks { config, tasks } = &runner.corpus else {
+        anyhow::bail!("harbor_task runner requires corpus.source=harbor_tasks");
+    };
+    if tasks.is_empty() {
+        anyhow::bail!("harbor_tasks corpus must declare at least one task");
+    }
+    check_harbor_available()?;
+
+    let jobs_root = out.join("harbor-jobs");
+    let mut task_results = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        task_results.push(run_one_harbor_task(spec_path, config, task, &jobs_root)?);
+    }
+
+    let passed = task_results.iter().filter(|result| result.passed).count() as u64;
+    let score = wilson_score("harbor_reward_pass_rate", passed, tasks.len() as u64);
+    let evidence_path = out.join("harbor-run.json");
+    write_json(
+        &evidence_path,
+        &HarborRunEvidence {
+            schema_version: "crucible.harbor_run_evidence.v1",
+            spec_id: spec_id(spec, spec_path),
+            spec: spec_path.display().to_string(),
+            runner: runner.kind,
+            agent: config.agent.clone(),
+            model: config.model.clone(),
+            score: &score,
+            totals: PromptTotals {
+                tasks: tasks.len() as u64,
+                passed,
+                failed: tasks.len() as u64 - passed,
+            },
+            tasks: &task_results,
+        },
+    )?;
+
+    Ok(EvalReport {
+        id: spec_id(spec, spec_path),
+        title: if spec.task.is_empty() {
+            "Harbor task benchmark".to_string()
+        } else {
+            spec.task.clone()
+        },
+        score,
+        artifacts: vec![spec_path.display().to_string(), evidence_path.display().to_string()],
+        notes: vec![
+            "Executed from a Crucible-authored harbor_task runner, shelling out to the `harbor` CLI per task (backlog/Powder crucible-034).".to_string(),
+            format!(
+                "Ran {} Harbor task(s) under agent {:?} and graded on Harbor's own verifier reward (>= 1.0 counted as pass).",
+                tasks.len(), config.agent
+            ),
+        ],
+    })
+}
+
+/// Refuse before spawning any subprocess when `harbor` or Docker aren't on
+/// this machine, with an actionable message instead of a raw spawn failure or
+/// a confusing mid-run Docker error.
+fn check_harbor_available() -> anyhow::Result<()> {
+    let harbor_ok = Command::new("harbor")
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !harbor_ok {
+        anyhow::bail!(
+            "harbor_task runner requires the `harbor` CLI on PATH (e.g. `uv tool install harbor` or `pip install harbor`); `harbor --version` did not succeed"
+        );
+    }
+    let docker_ok = Command::new("docker")
+        .arg("info")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !docker_ok {
+        anyhow::bail!(
+            "harbor_task runner requires a running Docker daemon (e.g. Colima); `docker info` did not succeed"
+        );
+    }
+    Ok(())
+}
+
+/// Refuse a task directory outside `$HOME`: Colima's default configuration
+/// only bind-mounts `$HOME` into its Docker VM, so a task directory outside it
+/// resolves as empty inside the container and Harbor fails with
+/// `RewardFileNotFoundError` — a confusing failure far from its real cause.
+/// Caught here, before any subprocess spawns.
+fn require_under_home(resolved: &Path) -> anyhow::Result<()> {
+    let home = std::env::var("HOME").context(
+        "harbor_task runner requires $HOME to be set (Colima mounts $HOME, not arbitrary paths)",
+    )?;
+    let home = canonicalize_existing(Path::new(&home));
+    if !resolved.starts_with(&home) {
+        anyhow::bail!(
+            "harbor task_dir {} resolves outside $HOME ({}); Colima only bind-mounts $HOME into its Docker VM, so a task directory elsewhere fails inside the container with RewardFileNotFoundError — move the task (and this checkout) under $HOME",
+            resolved.display(),
+            home.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_one_harbor_task(
+    spec_path: &Path,
+    config: &HarborRunConfig,
+    task: &HarborTaskSpec,
+    jobs_root: &Path,
+) -> anyhow::Result<HarborTaskResult> {
+    let task_dir = resolve_spec_path(spec_path, &task.task_dir);
+    if !task_dir.exists() {
+        anyhow::bail!(
+            "harbor task {:?} declares task_dir {} which does not exist",
+            task.task_id,
+            task_dir.display()
+        );
+    }
+    require_under_home(&task_dir)?;
+
+    let jobs_dir = jobs_root.join(&task.task_id);
+    std::fs::create_dir_all(&jobs_dir)
+        .with_context(|| format!("creating harbor jobs directory {}", jobs_dir.display()))?;
+    const JOB_NAME: &str = "run";
+    let job_dir = jobs_dir.join(JOB_NAME);
+    if job_dir.exists() {
+        std::fs::remove_dir_all(&job_dir).with_context(|| {
+            format!("clearing stale harbor job directory {}", job_dir.display())
+        })?;
+    }
+
+    let mut command = Command::new("harbor");
+    command
+        .arg("run")
+        .arg("-p")
+        .arg(&task_dir)
+        .arg("-a")
+        .arg(&config.agent)
+        .arg("-o")
+        .arg(&jobs_dir)
+        .arg("--job-name")
+        .arg(JOB_NAME)
+        // Auto-confirm host-environment-access prompts: this subprocess has
+        // no interactive stdin, so an unconfirmed prompt would otherwise hang
+        // until the timeout below kills it rather than failing fast.
+        .arg("-y");
+    if let Some(model) = &config.model {
+        command.arg("-m").arg(model);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let started = Instant::now();
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("spawning `harbor run` for task {:?}", task.task_id))?;
+    let timeout_ms = config
+        .job_timeout_ms
+        .unwrap_or(HARBOR_DEFAULT_JOB_TIMEOUT_MS);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let timed_out = loop {
+        if let Some(_status) = child
+            .try_wait()
+            .context("checking harbor run subprocess status")?
+        {
+            break false;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break true;
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    let output = child
+        .wait_with_output()
+        .context("collecting harbor run subprocess output")?;
+    let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+
+    let log_path = jobs_dir.join("harbor-run.log");
+    std::fs::write(
+        &log_path,
+        format!(
+            "exit_status={:?}\ntimed_out={timed_out}\n--- stdout ---\n{}\n--- stderr ---\n{}\n",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ),
+    )
+    .with_context(|| format!("writing harbor run log {}", log_path.display()))?;
+
+    if timed_out {
+        anyhow::bail!(
+            "harbor run for task {:?} did not finish within {timeout_ms}ms and was killed; see {}",
+            task.task_id,
+            log_path.display()
+        );
+    }
+
+    let trial_result = read_harbor_trial_result(&job_dir).with_context(|| {
+        format!(
+            "reading harbor trial result for task {:?} under {}",
+            task.task_id,
+            job_dir.display()
+        )
+    })?;
+    let trial_dir = trial_result.trial_dir;
+    let result_json = trial_result.result_json;
+
+    let outcome = derive_harbor_outcome(&result_json, &task.task_id)?;
+    let exception = outcome.exception;
+    let reward = outcome.reward;
+    let reward_breakdown = outcome.reward_breakdown;
+    let passed = outcome.passed;
+
+    let harbor_task_ref = result_json
+        .get("task_name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&task.task_dir)
+        .to_string();
+
+    let verifier_summary =
+        std::fs::read_to_string(trial_dir.join("verifier").join("test-stdout.txt"))
+            .ok()
+            .map(|text| truncate_for_summary(&text, 2000));
+
+    let mut artifacts = Vec::new();
+    for candidate in ["verifier/reward.txt", "verifier/test-stdout.txt"] {
+        let path = trial_dir.join(candidate);
+        if path.exists() {
+            artifacts.push(path.display().to_string());
+        }
+    }
+    let artifacts_manifest = trial_dir.join("artifacts").join("manifest.json");
+    if artifacts_manifest.exists() {
+        artifacts.push(artifacts_manifest.display().to_string());
+    }
+
+    Ok(HarborTaskResult {
+        task_id: task.task_id.clone(),
+        task_dir: task_dir.display().to_string(),
+        agent: config.agent.clone(),
+        harbor_task_ref,
+        passed,
+        reward,
+        reward_breakdown,
+        latency_ms,
+        verifier_summary,
+        artifacts,
+        exception,
+        evidence_json: result_json,
+    })
+}
+
+#[derive(Debug)]
+struct HarborOutcome {
+    passed: bool,
+    reward: f64,
+    reward_breakdown: serde_json::Value,
+    exception: Option<serde_json::Value>,
+}
+
+/// Derive pass/fail and the primary reward from one Harbor trial `result.json`
+/// (pure function over already-parsed JSON, so this is testable without
+/// spawning `harbor` or Docker). `exception_info` non-null always fails the
+/// task regardless of any reward value Harbor still reported. Otherwise the
+/// primary reward is `verifier_result.rewards["reward"]` — Harbor's own
+/// convention, also the shape this runner's fixtures declare — falling back
+/// to the sole entry when a task names its reward differently but declares
+/// only one; a task with several differently-named rewards and no `"reward"`
+/// key is refused rather than silently guessing which one is primary.
+/// `passed` requires the primary reward to be `>= 1.0` (full credit) — partial
+/// reward is recorded on the row but does not count toward the Wilson
+/// proportion score `preflight_spec` requires for this runner.
+fn derive_harbor_outcome(
+    result_json: &serde_json::Value,
+    task_id: &str,
+) -> anyhow::Result<HarborOutcome> {
+    let exception = result_json
+        .get("exception_info")
+        .filter(|v| !v.is_null())
+        .cloned();
+    let rewards = result_json
+        .get("verifier_result")
+        .and_then(|v| v.get("rewards"))
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let reward_breakdown = serde_json::Value::Object(rewards.clone());
+    if exception.is_some() {
+        return Ok(HarborOutcome {
+            passed: false,
+            reward: 0.0,
+            reward_breakdown,
+            exception,
+        });
+    }
+    let reward = match rewards.get("reward").and_then(serde_json::Value::as_f64) {
+        Some(reward) => reward,
+        None if rewards.len() == 1 => rewards
+            .values()
+            .next()
+            .and_then(serde_json::Value::as_f64)
+            .with_context(|| {
+                format!(
+                    "task {task_id:?}: harbor verifier_result.rewards' sole entry is not numeric: {rewards:?}"
+                )
+            })?,
+        None => anyhow::bail!(
+            "task {task_id:?}: harbor verifier_result.rewards names no \"reward\" key and has {} entries, so the primary reward is ambiguous: {rewards:?}",
+            rewards.len()
+        ),
+    };
+    Ok(HarborOutcome {
+        passed: reward >= 1.0,
+        reward,
+        reward_breakdown,
+        exception: None,
+    })
+}
+
+fn truncate_for_summary(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max_chars).collect();
+    format!("{truncated}\n...[truncated]")
+}
+
+#[derive(Debug)]
+struct HarborTrialResult {
+    trial_dir: PathBuf,
+    result_json: serde_json::Value,
+}
+
+/// Locate and read the single trial's `result.json` under a Harbor job
+/// directory. One `harbor run -p <task_dir>` invocation with the default
+/// single attempt produces exactly one trial subdirectory; anything else (no
+/// subdirectory, or more than one) is reported as a distinct, named error
+/// rather than silently picking one.
+fn read_harbor_trial_result(job_dir: &Path) -> anyhow::Result<HarborTrialResult> {
+    let mut trial_dirs = Vec::new();
+    for entry in std::fs::read_dir(job_dir)
+        .with_context(|| format!("reading harbor job directory {}", job_dir.display()))?
+    {
+        let entry = entry.context("reading harbor job directory entry")?;
+        if entry
+            .file_type()
+            .context("reading entry file type")?
+            .is_dir()
+        {
+            trial_dirs.push(entry.path());
+        }
+    }
+    match trial_dirs.len() {
+        0 => anyhow::bail!("no trial subdirectory found under {}", job_dir.display()),
+        1 => {}
+        n => anyhow::bail!(
+            "expected exactly one trial subdirectory under {} (single task, single attempt), found {n}",
+            job_dir.display()
+        ),
+    }
+    let trial_dir = trial_dirs.remove(0);
+    let result_path = trial_dir.join("result.json");
+    let bytes = std::fs::read(&result_path)
+        .with_context(|| format!("reading harbor trial result {}", result_path.display()))?;
+    let result_json: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing harbor trial result {}", result_path.display()))?;
+    Ok(HarborTrialResult {
+        trial_dir,
+        result_json,
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct HarborRunEvidence<'a> {
+    schema_version: &'static str,
+    spec_id: String,
+    spec: String,
+    runner: RunnerKind,
+    agent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    score: &'a Score,
+    totals: PromptTotals,
+    tasks: &'a [HarborTaskResult],
+}
+
+#[derive(Debug, Serialize)]
+struct HarborTaskResult {
+    task_id: String,
+    task_dir: String,
+    agent: String,
+    harbor_task_ref: String,
+    passed: bool,
+    reward: f64,
+    reward_breakdown: serde_json::Value,
+    latency_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verifier_summary: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    artifacts: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exception: Option<serde_json::Value>,
+    evidence_json: serde_json::Value,
 }
 
 fn run_prompt_benchmark(
@@ -2209,6 +2643,152 @@ fn is_zero_usize(value: &usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_for_summary_leaves_short_text_untouched() {
+        assert_eq!(truncate_for_summary("hello harbor", 2000), "hello harbor");
+    }
+
+    #[test]
+    fn truncate_for_summary_truncates_and_marks_long_text() {
+        let long = "a".repeat(50);
+        let truncated = truncate_for_summary(&long, 10);
+        assert_eq!(truncated, format!("{}\n...[truncated]", "a".repeat(10)));
+    }
+
+    #[test]
+    fn derive_harbor_outcome_reads_full_reward_as_passed() {
+        let result_json = serde_json::json!({
+            "exception_info": null,
+            "verifier_result": { "rewards": { "reward": 1.0 } }
+        });
+        let outcome = derive_harbor_outcome(&result_json, "crucible-smoke").unwrap();
+        assert!(outcome.passed);
+        assert_eq!(outcome.reward, 1.0);
+        assert!(outcome.exception.is_none());
+        assert_eq!(outcome.reward_breakdown, serde_json::json!({"reward": 1.0}));
+    }
+
+    #[test]
+    fn derive_harbor_outcome_partial_reward_is_not_a_pass() {
+        let result_json = serde_json::json!({
+            "exception_info": null,
+            "verifier_result": { "rewards": { "reward": 0.5 } }
+        });
+        let outcome = derive_harbor_outcome(&result_json, "partial-task").unwrap();
+        assert!(!outcome.passed);
+        assert_eq!(outcome.reward, 0.5);
+    }
+
+    #[test]
+    fn derive_harbor_outcome_exception_always_fails_regardless_of_reward() {
+        // Even if Harbor still reported a reward alongside an exception, a
+        // non-null exception_info is an unconditional fail (the agent or
+        // environment crashed; the reward, if any, isn't trustworthy).
+        let result_json = serde_json::json!({
+            "exception_info": {"exception_type": "TimeoutError", "exception_message": "agent timed out"},
+            "verifier_result": { "rewards": { "reward": 1.0 } }
+        });
+        let outcome = derive_harbor_outcome(&result_json, "wedged-task").unwrap();
+        assert!(!outcome.passed);
+        assert_eq!(outcome.reward, 0.0);
+        assert!(outcome.exception.is_some());
+    }
+
+    #[test]
+    fn derive_harbor_outcome_falls_back_to_sole_reward_when_unnamed_reward() {
+        // Real fixture shape names the key "reward", but a task that names
+        // its single reward differently should still resolve unambiguously.
+        let result_json = serde_json::json!({
+            "exception_info": null,
+            "verifier_result": { "rewards": { "custom_score": 1.0 } }
+        });
+        let outcome = derive_harbor_outcome(&result_json, "custom-task").unwrap();
+        assert!(outcome.passed);
+        assert_eq!(outcome.reward, 1.0);
+    }
+
+    #[test]
+    fn derive_harbor_outcome_refuses_ambiguous_multi_reward_without_primary_key() {
+        let result_json = serde_json::json!({
+            "exception_info": null,
+            "verifier_result": { "rewards": { "speed": 0.9, "correctness": 1.0 } }
+        });
+        let err = derive_harbor_outcome(&result_json, "multi-reward-task").unwrap_err();
+        assert!(
+            err.to_string().contains("multi-reward-task"),
+            "error should name the task: {err}"
+        );
+    }
+
+    #[test]
+    fn derive_harbor_outcome_refuses_when_rewards_map_is_empty() {
+        let result_json = serde_json::json!({
+            "exception_info": null,
+            "verifier_result": { "rewards": {} }
+        });
+        let err = derive_harbor_outcome(&result_json, "empty-rewards-task").unwrap_err();
+        assert!(err.to_string().contains("empty-rewards-task"));
+    }
+
+    #[test]
+    fn require_under_home_accepts_a_path_under_home() {
+        let home = std::env::var("HOME").expect("HOME must be set to run this test");
+        let under_home = Path::new(&home).join("crucible-harbor-test-marker-that-need-not-exist");
+        // require_under_home only checks path containment via prefix
+        // comparison against the canonicalized $HOME, not existence.
+        assert!(require_under_home(&under_home).is_ok());
+    }
+
+    #[test]
+    fn require_under_home_refuses_a_path_outside_home() {
+        let err = require_under_home(Path::new("/etc/definitely-not-under-home")).unwrap_err();
+        assert!(err.to_string().contains("$HOME") || err.to_string().contains("Colima"));
+    }
+
+    #[test]
+    fn read_harbor_trial_result_reads_the_single_trial_subdirectory() {
+        let dir = unique_temp_dir("crucible-harbor-trial-test").expect("temp dir");
+        let trial_dir = dir.join("crucible-smoke__abc123");
+        std::fs::create_dir_all(&trial_dir).unwrap();
+        std::fs::write(
+            trial_dir.join("result.json"),
+            serde_json::json!({"task_name": "misty-step/crucible-smoke"}).to_string(),
+        )
+        .unwrap();
+
+        let result = read_harbor_trial_result(&dir).unwrap();
+        assert_eq!(result.trial_dir, trial_dir);
+        assert_eq!(
+            result
+                .result_json
+                .get("task_name")
+                .and_then(serde_json::Value::as_str),
+            Some("misty-step/crucible-smoke")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_harbor_trial_result_refuses_when_no_trial_subdirectory_exists() {
+        let dir = unique_temp_dir("crucible-harbor-empty-job-test").expect("temp dir");
+        let err = read_harbor_trial_result(&dir).unwrap_err();
+        assert!(err.to_string().contains("no trial subdirectory"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_harbor_trial_result_refuses_when_multiple_trial_subdirectories_exist() {
+        let dir = unique_temp_dir("crucible-harbor-multi-trial-test").expect("temp dir");
+        for name in ["trial-a", "trial-b"] {
+            let trial_dir = dir.join(name);
+            std::fs::create_dir_all(&trial_dir).unwrap();
+            std::fs::write(trial_dir.join("result.json"), "{}").unwrap();
+        }
+        let err = read_harbor_trial_result(&dir).unwrap_err();
+        assert!(err.to_string().contains("exactly one trial subdirectory"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     struct FakeModelClient {
         output: &'static str,

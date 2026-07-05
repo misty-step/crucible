@@ -745,6 +745,10 @@ fn verifier_summary(spec: &EvalSpec) -> String {
                 "Deterministic scorer key: matches produced findings against expected rows."
                     .to_string()
             }
+            Some(CorpusSpec::HarborTasks { .. }) => {
+                "Deterministic scorer key: Harbor's own verifier reward, parsed from the trial result."
+                    .to_string()
+            }
             _ => "Deterministic verifier declared.".to_string(),
         }
     } else {
@@ -788,6 +792,12 @@ fn runner_plain_summary(corpus: &CorpusSpec) -> String {
             config.provider,
             config.model
         ),
+        CorpusSpec::HarborTasks { config, tasks } => format!(
+            "Runs {} Harbor task{} in a local Docker container via agent {}.",
+            tasks.len(),
+            plural(tasks.len()),
+            config.agent
+        ),
     }
 }
 
@@ -811,6 +821,7 @@ fn corpus_task_count(corpus: &CorpusSpec) -> Option<usize> {
         CorpusSpec::PromptBenchmark { tasks, .. } => Some(tasks.len()),
         CorpusSpec::AgenticJudge { tasks, .. } => Some(tasks.len()),
         CorpusSpec::CerberusReceiptBundles { tasks, .. } => Some(tasks.len()),
+        CorpusSpec::HarborTasks { tasks, .. } => Some(tasks.len()),
         CorpusSpec::DaedalusTrials { tasks, .. } if !tasks.is_empty() => Some(tasks.len()),
         CorpusSpec::DaedalusTrials { .. } => None,
     }
@@ -825,6 +836,9 @@ fn corpus_task_ids(corpus: &CorpusSpec) -> Vec<String> {
             tasks.iter().map(|task| task.task_id.clone()).collect()
         }
         CorpusSpec::CerberusReceiptBundles { tasks, .. } => {
+            tasks.iter().map(|task| task.task_id.clone()).collect()
+        }
+        CorpusSpec::HarborTasks { tasks, .. } => {
             tasks.iter().map(|task| task.task_id.clone()).collect()
         }
         CorpusSpec::DaedalusTrials { tasks, .. } => tasks.clone(),
@@ -896,6 +910,9 @@ fn corpus_summary(corpus: &CorpusSpec) -> String {
         }
         CorpusSpec::AgenticJudge { config, tasks } => {
             format!("agentic_judge model={} tasks={}", config.model, tasks.len())
+        }
+        CorpusSpec::HarborTasks { config, tasks } => {
+            format!("harbor_tasks agent={} tasks={}", config.agent, tasks.len())
         }
     }
 }

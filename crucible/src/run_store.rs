@@ -43,6 +43,7 @@ pub struct PersistedReport {
     pub run_report: String,
     pub run_records: usize,
     pub prompt_task_results: usize,
+    pub harbor_task_results: usize,
 }
 
 /// Filter for [`list_runs`]. `None` fields are unconstrained.
@@ -131,6 +132,8 @@ pub struct RunDetail {
     pub run: StoredRun,
     pub artifacts: Vec<StoredArtifact>,
     pub prompt_tasks: Vec<StoredPromptTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub harbor_tasks: Vec<StoredHarborTask>,
     pub run_record: Option<Value>,
     pub evaluation_card: Option<Value>,
     pub eval_json: Value,
@@ -140,6 +143,25 @@ pub struct RunDetail {
 pub struct StoredArtifact {
     pub path: String,
     pub kind: String,
+}
+
+/// A per-task outcome that Crucible's paired comparison discipline
+/// ([`paired_mcnemar`]) can join on, independent of which runner kind produced
+/// it. Implemented by every runner-kind-specific stored row that carries a
+/// real pass/fail bit ([`StoredPromptTask`], [`StoredHarborTask`]) — not by
+/// `KeyRecall`/`AgenticJudge` evidence, which has no per-task stored row today.
+pub(crate) trait TaskOutcome {
+    fn task_id(&self) -> &str;
+    fn passed(&self) -> bool;
+}
+
+impl<T: TaskOutcome + ?Sized> TaskOutcome for &T {
+    fn task_id(&self) -> &str {
+        (**self).task_id()
+    }
+    fn passed(&self) -> bool {
+        (**self).passed()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -163,6 +185,44 @@ pub struct StoredPromptTask {
     pub cost_usd: Option<f64>,
     pub output_text: Option<String>,
     pub evidence_json: Value,
+}
+
+impl TaskOutcome for StoredPromptTask {
+    fn task_id(&self) -> &str {
+        &self.task_id
+    }
+    fn passed(&self) -> bool {
+        self.passed
+    }
+}
+
+/// One Harbor task's stored outcome (backlog/Powder crucible-034). Distinct
+/// from [`StoredPromptTask`]: a Harbor trial's reward is a named map (not a
+/// single API-call token/cost shape), and Harbor's own result schema exposes
+/// no raw container exit code — `reward_breakdown_json` and `reward` are the
+/// honest fields, not `exit_code`/`response_id`/`prompt_hash`.
+#[derive(Debug, Serialize)]
+pub struct StoredHarborTask {
+    pub task_id: String,
+    pub passed: bool,
+    pub reward: f64,
+    pub reward_breakdown_json: Value,
+    pub agent_name: String,
+    pub harbor_task_ref: String,
+    pub latency_ms: Option<u64>,
+    pub verifier_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<String>,
+    pub evidence_json: Value,
+}
+
+impl TaskOutcome for StoredHarborTask {
+    fn task_id(&self) -> &str {
+        &self.task_id
+    }
+    fn passed(&self) -> bool {
+        self.passed
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -223,6 +283,9 @@ struct EvidenceMetadata {
     /// the same shape [`StoredRun::tool_allowlist`] parses back out of.
     tool_allowlist: Option<String>,
     prompt_tasks: Vec<PromptTaskInsert>,
+    /// Per-task Harbor outcomes, present when the evidence is
+    /// `crucible.harbor_run_evidence.v1` (backlog/Powder crucible-034).
+    harbor_tasks: Vec<HarborTaskInsert>,
     /// A judge's calibration measurement from this run, when the evidence is
     /// `crucible.agentic_judge_evidence.v1` and carries a non-null
     /// `calibration` (backlog 029). Upserted into `judge_licences` so a
@@ -295,6 +358,20 @@ struct PromptTaskInsert {
     evidence_json: String,
 }
 
+#[derive(Debug, Clone)]
+struct HarborTaskInsert {
+    task_id: String,
+    passed: bool,
+    reward: f64,
+    reward_breakdown_json: String,
+    agent_name: String,
+    harbor_task_ref: String,
+    latency_ms: Option<u64>,
+    verifier_summary: Option<String>,
+    artifacts_json: String,
+    evidence_json: String,
+}
+
 /// Persist a run report and all recognized evidence into the SQLite ledger.
 pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedReport> {
     validate_db_write_path(db_path)?;
@@ -327,6 +404,7 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
     .context("inserting run invocation")?;
 
     let mut prompt_task_results = 0usize;
+    let mut harbor_task_results = 0usize;
     for (index, eval) in report.evals.iter().enumerate() {
         let metadata = extract_metadata(eval)?;
         let run_id = format!("{}:{}", invocation_id, eval.id);
@@ -457,6 +535,33 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
             .context("inserting prompt task result")?;
             prompt_task_results += 1;
         }
+
+        for task in metadata.harbor_tasks {
+            tx.execute(
+                "INSERT INTO harbor_task_results (
+                    run_id, task_id, passed, reward, reward_breakdown_json,
+                    agent_name, harbor_task_ref, latency_ms, verifier_summary,
+                    artifacts_json, evidence_json
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+                )",
+                params![
+                    run_id,
+                    task.task_id,
+                    if task.passed { 1i64 } else { 0i64 },
+                    task.reward,
+                    task.reward_breakdown_json,
+                    task.agent_name,
+                    task.harbor_task_ref,
+                    opt_i64(task.latency_ms)?,
+                    task.verifier_summary,
+                    task.artifacts_json,
+                    task.evidence_json
+                ],
+            )
+            .context("inserting harbor task result")?;
+            harbor_task_results += 1;
+        }
     }
 
     tx.commit().context("committing run-store transaction")?;
@@ -468,6 +573,7 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
         run_report: run_report_path,
         run_records: report.evals.len(),
         prompt_task_results,
+        harbor_task_results,
     })
 }
 
@@ -690,6 +796,7 @@ pub fn show_run(db_path: &Path, run_id: &str) -> Result<RunDetail> {
 
     let artifacts = query_artifacts(&conn, run_id)?;
     let prompt_tasks = query_prompt_tasks(&conn, run_id)?;
+    let harbor_tasks = query_harbor_tasks(&conn, run_id)?;
     let materialization = query_materialization(&conn, run_id)?;
 
     Ok(RunDetail {
@@ -698,6 +805,7 @@ pub fn show_run(db_path: &Path, run_id: &str) -> Result<RunDetail> {
         run,
         artifacts,
         prompt_tasks,
+        harbor_tasks,
         run_record: materialization
             .as_ref()
             .map(|materialization| materialization.run_record.clone()),
@@ -807,22 +915,40 @@ pub fn compare_configs(
 
     let left_tasks = query_prompt_tasks(&conn, &left_run.run_id)?;
     let right_tasks = query_prompt_tasks(&conn, &right_run.run_id)?;
-    let (paired, common_tasks) = match paired_mcnemar(&left_tasks, &right_tasks, alpha) {
+    let (mut paired, mut common_tasks) = match paired_mcnemar(&left_tasks, &right_tasks, alpha) {
         Some((outcome, n)) => (Some(outcome), n),
         None => (None, 0),
     };
     let class_breakdowns = compare_by_class(&left_tasks, &right_tasks, alpha);
 
-    let (comparison_kind, note): (&'static str, &'static str) = if paired.is_some() {
-        (
+    // No shared prompt-task rows (e.g. both runs are `harbor_task` runs,
+    // which carry no prompt_task_results rows): fall back to Harbor's own
+    // per-task rows over the same generalized join, rather than dropping to
+    // the unpaired descriptive delta when a real paired comparison exists.
+    let mut used_harbor_tasks = false;
+    if paired.is_none() {
+        let left_harbor_tasks = query_harbor_tasks(&conn, &left_run.run_id)?;
+        let right_harbor_tasks = query_harbor_tasks(&conn, &right_run.run_id)?;
+        if let Some((outcome, n)) = paired_mcnemar(&left_harbor_tasks, &right_harbor_tasks, alpha) {
+            paired = Some(outcome);
+            common_tasks = n;
+            used_harbor_tasks = true;
+        }
+    }
+
+    let (comparison_kind, note): (&'static str, &'static str) = match (paired.is_some(), used_harbor_tasks) {
+        (true, true) => (
+            "paired_mcnemar",
+            "Paired McNemar comparison over Harbor task outcomes common to both runs; see paired.verdict for the noise-floor decision.",
+        ),
+        (true, false) => (
             "paired_mcnemar",
             "Paired McNemar comparison over per-task outcomes common to both runs (prompt tasks or pass^k task consistency); see paired.verdict for the noise-floor decision.",
-        )
-    } else {
-        (
+        ),
+        (false, _) => (
             "latest_unpaired_descriptive_delta",
             "This compares the latest matching run per config/model and does not assert statistical significance.",
-        )
+        ),
     };
 
     Ok(ConfigComparison {
@@ -915,11 +1041,15 @@ pub fn pivot_by_model(db_path: &Path, benchmark: &str, harness: Option<&str>) ->
     })
 }
 
-/// McNemar outcome over the prompt task ids common to both sides, or `None`
-/// when either side has no indexed prompt tasks or the two share none.
-fn paired_mcnemar(
-    left: &[StoredPromptTask],
-    right: &[StoredPromptTask],
+/// McNemar outcome over the task ids common to both sides, or `None` when
+/// either side is empty or the two share no task id. Generic over
+/// [`TaskOutcome`] (backlog/Powder crucible-034) so the same join/pairing
+/// logic serves every runner kind with a real per-task stored row —
+/// [`StoredPromptTask`] and [`StoredHarborTask`] today — rather than being
+/// duplicated per kind or hardcoded to one.
+fn paired_mcnemar<T: TaskOutcome>(
+    left: &[T],
+    right: &[T],
     alpha: f64,
 ) -> Option<(McnemarOutcome, usize)> {
     if left.is_empty() || right.is_empty() {
@@ -927,18 +1057,18 @@ fn paired_mcnemar(
     }
     let right_by_task: HashMap<&str, bool> = right
         .iter()
-        .map(|task| (task.task_id.as_str(), task.passed))
+        .map(|task| (task.task_id(), task.passed()))
         .collect();
 
     let mut b: u64 = 0; // left passed, right failed
     let mut c: u64 = 0; // left failed, right passed
     let mut common = 0usize;
     for task in left {
-        let Some(&right_passed) = right_by_task.get(task.task_id.as_str()) else {
+        let Some(&right_passed) = right_by_task.get(task.task_id()) else {
             continue;
         };
         common += 1;
-        match (task.passed, right_passed) {
+        match (task.passed(), right_passed) {
             (true, false) => b += 1,
             (false, true) => c += 1,
             _ => {}
@@ -996,8 +1126,7 @@ fn compare_by_class(
                 (Some(left), Some(right)) => Some(right - left),
                 _ => None,
             };
-            let (paired, common_tasks) = match paired_mcnemar_refs(&left_tasks, &right_tasks, alpha)
-            {
+            let (paired, common_tasks) = match paired_mcnemar(&left_tasks, &right_tasks, alpha) {
                 Some((outcome, n)) => (Some(outcome), n),
                 None => (None, 0),
             };
@@ -1027,50 +1156,6 @@ fn proportion_point(successes: u64, n: u64) -> Option<f64> {
     } else {
         Some(successes as f64 / n as f64)
     }
-}
-
-fn paired_mcnemar_refs(
-    left: &[&StoredPromptTask],
-    right: &[&StoredPromptTask],
-    alpha: f64,
-) -> Option<(McnemarOutcome, usize)> {
-    if left.is_empty() || right.is_empty() {
-        return None;
-    }
-    let right_by_task: HashMap<&str, bool> = right
-        .iter()
-        .map(|task| (task.task_id.as_str(), task.passed))
-        .collect();
-
-    let mut b: u64 = 0;
-    let mut c: u64 = 0;
-    let mut common = 0usize;
-    for task in left {
-        let Some(&right_passed) = right_by_task.get(task.task_id.as_str()) else {
-            continue;
-        };
-        common += 1;
-        match (task.passed, right_passed) {
-            (true, false) => b += 1,
-            (false, true) => c += 1,
-            _ => {}
-        }
-    }
-    if common == 0 {
-        return None;
-    }
-
-    let cmp = PairedComparison::mcnemar(b, c);
-    Some((
-        McnemarOutcome {
-            b: cmp.b,
-            c: cmp.c,
-            statistic: cmp.statistic,
-            p_value: cmp.p_value,
-            verdict: cmp.verdict(alpha),
-        },
-        common,
-    ))
 }
 
 /// How long a connection blocks-and-retries on `SQLITE_BUSY` before giving up,
@@ -1172,6 +1257,21 @@ fn init_schema(conn: &Connection) -> Result<()> {
             total_tokens INTEGER,
             cost_usd REAL,
             output_text TEXT,
+            evidence_json TEXT NOT NULL,
+            PRIMARY KEY (run_id, task_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS harbor_task_results (
+            run_id TEXT NOT NULL REFERENCES run_records(run_id) ON DELETE CASCADE,
+            task_id TEXT NOT NULL,
+            passed INTEGER NOT NULL,
+            reward REAL NOT NULL,
+            reward_breakdown_json TEXT NOT NULL,
+            agent_name TEXT NOT NULL,
+            harbor_task_ref TEXT NOT NULL,
+            latency_ms INTEGER,
+            verifier_summary TEXT,
+            artifacts_json TEXT NOT NULL,
             evidence_json TEXT NOT NULL,
             PRIMARY KEY (run_id, task_id)
         );
@@ -1327,6 +1427,8 @@ fn extract_metadata(eval: &EvalReport) -> Result<EvidenceMetadata> {
                 merge_prompt_metadata(&mut metadata, artifact, &value, "judge")?;
             } else if value["schema_version"] == "crucible.spec_run_evidence.v1" {
                 merge_spec_metadata(&mut metadata, artifact, &value);
+            } else if value["schema_version"] == "crucible.harbor_run_evidence.v1" {
+                merge_harbor_metadata(&mut metadata, artifact, &value);
             } else if value["schema_version"] == TRACE_SCHEMA {
                 metadata.trace_path = Some(artifact.to_string());
             }
@@ -1595,6 +1697,90 @@ fn merge_pass_k_task_rows(metadata: &mut EvidenceMetadata, value: &Value) {
     }
 }
 
+/// Extract config/harness/task-row metadata from a `harbor_task` runner's
+/// `crucible.harbor_run_evidence.v1` artifact (backlog/Powder crucible-034).
+/// Harbor's `--agent` selection *is* the harness identity concept
+/// [`EvidenceMetadata::harness`] already tracks for prompt/judge runs (a real
+/// coding agent executing inside the container, not just a model call), so it
+/// is recorded there rather than left unset. Best-effort like
+/// [`merge_spec_metadata`]: a task row missing an expected field is skipped
+/// rather than failing the whole run's persistence.
+fn merge_harbor_metadata(metadata: &mut EvidenceMetadata, artifact: &str, value: &Value) {
+    metadata.runner_kind = value
+        .get("runner")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(metadata.runner_kind.take());
+    metadata.model = value
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(metadata.model.take());
+    metadata.spec_path = value
+        .get("spec")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(metadata.spec_path.take());
+    metadata.evidence_path = Some(artifact.to_string());
+
+    let agent = value
+        .get("agent")
+        .and_then(Value::as_str)
+        .unwrap_or("agent")
+        .to_string();
+    metadata.harness = Some(agent.clone());
+    let model = metadata.model.as_deref().unwrap_or("default");
+    metadata.config_id = Some(format!("harbor:{agent}:{model}"));
+
+    let Some(tasks) = value.get("tasks").and_then(Value::as_array) else {
+        return;
+    };
+    for task in tasks {
+        let Some(task_id) = task.get("task_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let passed = task.get("passed").and_then(Value::as_bool).unwrap_or(false);
+        let reward = task.get("reward").and_then(Value::as_f64).unwrap_or(0.0);
+        let reward_breakdown_json = task
+            .get("reward_breakdown")
+            .cloned()
+            .unwrap_or(Value::Null)
+            .to_string();
+        let agent_name = task
+            .get("agent")
+            .and_then(Value::as_str)
+            .unwrap_or(&agent)
+            .to_string();
+        let harbor_task_ref = task
+            .get("harbor_task_ref")
+            .and_then(Value::as_str)
+            .unwrap_or(task_id)
+            .to_string();
+        let latency_ms = task.get("latency_ms").and_then(Value::as_u64);
+        let verifier_summary = task
+            .get("verifier_summary")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let artifacts_json = task
+            .get("artifacts")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()))
+            .to_string();
+        metadata.harbor_tasks.push(HarborTaskInsert {
+            task_id: task_id.to_string(),
+            passed,
+            reward,
+            reward_breakdown_json,
+            agent_name,
+            harbor_task_ref,
+            latency_ms,
+            verifier_summary,
+            artifacts_json,
+            evidence_json: task.to_string(),
+        });
+    }
+}
+
 fn read_json_artifact(path: &Path) -> Result<Value> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading run evidence artifact {}", path.display()))?;
@@ -1697,6 +1883,43 @@ fn query_prompt_tasks(conn: &Connection, run_id: &str) -> Result<Vec<StoredPromp
         .context("querying prompt tasks")?
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("reading prompt task rows")?;
+    Ok(tasks)
+}
+
+fn query_harbor_tasks(conn: &Connection, run_id: &str) -> Result<Vec<StoredHarborTask>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT task_id, passed, reward, reward_breakdown_json, agent_name,
+                harbor_task_ref, latency_ms, verifier_summary, artifacts_json, evidence_json
+             FROM harbor_task_results
+             WHERE run_id = ?1
+             ORDER BY task_id",
+        )
+        .context("preparing harbor task query")?;
+    let tasks = stmt
+        .query_map(params![run_id], |row| {
+            let reward_breakdown_json: String = row.get(3)?;
+            let artifacts_json: String = row.get(8)?;
+            let evidence_json: String = row.get(9)?;
+            Ok(StoredHarborTask {
+                task_id: row.get(0)?,
+                passed: row.get::<_, i64>(1)? != 0,
+                reward: row.get(2)?,
+                reward_breakdown_json: serde_json::from_str(&reward_breakdown_json)
+                    .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,
+                agent_name: row.get(4)?,
+                harbor_task_ref: row.get(5)?,
+                latency_ms: opt_i64_to_u64(row.get(6)?),
+                verifier_summary: row.get(7)?,
+                artifacts: serde_json::from_str(&artifacts_json)
+                    .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,
+                evidence_json: serde_json::from_str(&evidence_json)
+                    .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,
+            })
+        })
+        .context("querying harbor tasks")?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("reading harbor task rows")?;
     Ok(tasks)
 }
 
@@ -2003,6 +2226,89 @@ mod tests {
                 },
                 artifacts: vec![
                     root.join("prompt-smoke-v0.json").display().to_string(),
+                    evidence_path.display().to_string(),
+                ],
+                notes: Vec::new(),
+            }],
+        }
+    }
+
+    /// Fabricated `crucible.harbor_run_evidence.v1` evidence — no real
+    /// `harbor`/Docker subprocess involved, matching this file's existing
+    /// prompt/judge fixture style (persistence and pairing are tested against
+    /// the evidence shape, not against a live Harbor run; that's covered by
+    /// the crucible-034 receipt's separate live smoke transcript).
+    fn harbor_report(root: &Path, agent: &str, task_id: &str, passed: bool) -> RunReport {
+        let out = root.join(format!("harbor-{agent}-{task_id}"));
+        std::fs::create_dir_all(&out).expect("create output dir");
+        std::fs::write(
+            root.join("harbor-smoke-v0.json"),
+            r#"{"schema_version":"crucible.eval_spec.v1","task":"harbor-smoke"}"#,
+        )
+        .expect("write spec artifact");
+        let reward = if passed { 1.0 } else { 0.0 };
+        let harbor_evidence = serde_json::json!({
+            "schema_version": "crucible.harbor_run_evidence.v1",
+            "spec_id": "harbor-smoke-v0",
+            "spec": root.join("harbor-smoke-v0.json").display().to_string(),
+            "runner": "harbor_task",
+            "agent": agent,
+            "score": {
+                "metric": "harbor_reward_pass_rate",
+                "successes": if passed { 1 } else { 0 },
+                "n": 1,
+                "point": if passed { 1.0 } else { 0.0 },
+                "lower": 0.0,
+                "upper": 1.0,
+                "confidence": 0.95,
+                "method": "Wilson"
+            },
+            "totals": {
+                "tasks": 1,
+                "passed": if passed { 1 } else { 0 },
+                "failed": if passed { 0 } else { 1 }
+            },
+            "tasks": [{
+                "task_id": task_id,
+                "task_dir": "/tmp/does-not-matter",
+                "agent": agent,
+                "harbor_task_ref": format!("misty-step/{task_id}"),
+                "passed": passed,
+                "reward": reward,
+                "reward_breakdown": {"reward": reward},
+                "latency_ms": 13000,
+                "verifier_summary": if passed { "1" } else { "0" },
+                "evidence_json": {"task_name": format!("misty-step/{task_id}")}
+            }]
+        });
+        let evidence_path = out.join("harbor-run.json");
+        std::fs::write(
+            &evidence_path,
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&harbor_evidence).unwrap()
+            ),
+        )
+        .expect("write harbor evidence");
+
+        RunReport {
+            schema_version: RUN_REPORT_SCHEMA,
+            output_dir: out.display().to_string(),
+            evals: vec![EvalReport {
+                id: "harbor-smoke-v0".to_string(),
+                title: "Harbor smoke".to_string(),
+                score: Score {
+                    metric: "harbor_reward_pass_rate",
+                    successes: if passed { 1 } else { 0 },
+                    n: 1,
+                    point: Some(if passed { 1.0 } else { 0.0 }),
+                    lower: 0.0,
+                    upper: 1.0,
+                    confidence: 0.95,
+                    method: "Wilson",
+                },
+                artifacts: vec![
+                    root.join("harbor-smoke-v0.json").display().to_string(),
                     evidence_path.display().to_string(),
                 ],
                 notes: Vec::new(),
@@ -2417,6 +2723,114 @@ mod tests {
         assert_eq!(record["benchmark_id"], "prompt-smoke-v0");
         assert_eq!(record["score"]["metric"], "prompt_rubric_pass_rate");
         assert_eq!(record["evaluation_card"], *card);
+    }
+
+    #[test]
+    fn persists_harbor_run_rows_and_artifact_pointers() {
+        let root = temp_dir("persist-harbor");
+        let db = root.join("runs.sqlite");
+        let report = harbor_report(&root, "oracle", "crucible-smoke", true);
+        let receipt = persist_report(&db, &report).expect("persist report");
+
+        assert_eq!(receipt.run_records, 1);
+        assert_eq!(receipt.prompt_task_results, 0);
+        assert_eq!(receipt.harbor_task_results, 1);
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("harbor-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        assert_eq!(list.runs.len(), 1);
+        assert_eq!(list.runs[0].runner_kind, "harbor_task");
+        assert_eq!(list.runs[0].score_metric, "harbor_reward_pass_rate");
+        // Harbor's --agent selection is recorded as the harness identity —
+        // the same concept prompt/judge runs already track for their model
+        // harness, applied honestly to a real coding agent in a container.
+        assert_eq!(list.runs[0].harness.as_deref(), Some("oracle"));
+        assert!(
+            list.runs[0].config_id.starts_with("harbor:oracle:"),
+            "harbor config id names the agent: {}",
+            list.runs[0].config_id
+        );
+
+        let detail = show_run(&db, &list.runs[0].run_id).expect("show run");
+        assert_eq!(detail.prompt_tasks.len(), 0);
+        assert_eq!(detail.harbor_tasks.len(), 1);
+        let task = &detail.harbor_tasks[0];
+        assert_eq!(task.task_id, "crucible-smoke");
+        assert!(task.passed);
+        assert_eq!(task.reward, 1.0);
+        assert_eq!(
+            task.reward_breakdown_json,
+            serde_json::json!({"reward": 1.0})
+        );
+        assert_eq!(task.agent_name, "oracle");
+        assert_eq!(task.harbor_task_ref, "misty-step/crucible-smoke");
+        assert_eq!(task.latency_ms, Some(13000));
+        assert_eq!(task.verifier_summary.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn compares_harbor_runs_by_paired_mcnemar_over_shared_task_ids() {
+        // Both runs use the fixed task id "crucible-smoke", and neither run
+        // has any prompt_task_results rows — this exercises the fallback path
+        // in compare_configs that reads harbor_task_results through the same
+        // generalized paired_mcnemar<T: TaskOutcome> prompt runs use.
+        let root = temp_dir("compare-harbor");
+        let db = root.join("runs.sqlite");
+        persist_report(
+            &db,
+            &harbor_report(&root, "oracle", "crucible-smoke", false),
+        )
+        .expect("persist left");
+        persist_report(
+            &db,
+            &harbor_report(&root, "claude-code", "crucible-smoke", true),
+        )
+        .expect("persist right");
+
+        let comparison = compare_configs(
+            &db,
+            "harbor-smoke-v0",
+            "harbor:oracle:default",
+            "harbor:claude-code:default",
+            0.05,
+        )
+        .expect("compare configs");
+        assert_eq!(comparison.comparison_kind, "paired_mcnemar");
+        assert_eq!(comparison.common_tasks, 1);
+        let paired = comparison.paired.expect("paired outcome present");
+        // left failed & right passed on the one shared task: b = 0, c = 1.
+        assert_eq!(paired.b, 0);
+        assert_eq!(paired.c, 1);
+    }
+
+    #[test]
+    fn compares_harbor_runs_without_shared_task_ids_falls_back_to_unpaired_delta() {
+        let root = temp_dir("compare-harbor-no-overlap");
+        let db = root.join("runs.sqlite");
+        persist_report(&db, &harbor_report(&root, "oracle", "task-a", true)).expect("persist left");
+        persist_report(&db, &harbor_report(&root, "claude-code", "task-b", true))
+            .expect("persist right");
+
+        let comparison = compare_configs(
+            &db,
+            "harbor-smoke-v0",
+            "harbor:oracle:default",
+            "harbor:claude-code:default",
+            0.05,
+        )
+        .expect("compare configs");
+        assert_eq!(
+            comparison.comparison_kind,
+            "latest_unpaired_descriptive_delta"
+        );
+        assert_eq!(comparison.common_tasks, 0);
+        assert!(comparison.paired.is_none());
     }
 
     #[test]

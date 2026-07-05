@@ -164,6 +164,13 @@ pub enum RunnerKind {
     /// must declare an `Agentic` grader in [`EvalSpec::graders`] or the runner
     /// refuses before making a call.
     AgenticJudge,
+    /// Execute one or more Harbor-framework tasks (Terminal-Bench 2.0's
+    /// official harness) in a local Docker container via the `harbor` CLI
+    /// subprocess, and grade on Harbor's own verifier reward (backlog/Powder
+    /// crucible-034). Deterministic in Crucible's sense: the pass/fail bit
+    /// comes from Harbor's own test script, not a model judge — no `Agentic`
+    /// grader required.
+    HarborTask,
 }
 
 /// One executable runner declaration inside an [`EvalSpec`].
@@ -367,6 +374,41 @@ pub struct AgenticJudgeTask {
     pub refuse_on_mismatch: bool,
 }
 
+/// Shared Harbor invocation config for a `harbor_task` runner's corpus
+/// (backlog/Powder crucible-034): the agent and (optional) model every task in
+/// the corpus runs with, one `harbor run` subprocess per task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarborRunConfig {
+    /// Harbor agent name, e.g. `oracle` (applies the task's reference
+    /// solution, zero model cost) or a real coding agent Harbor ships
+    /// (`claude-code`, `codex`, ...).
+    pub agent: String,
+    /// Model slug passed to Harbor's `--model`, when the agent needs one.
+    /// `None` for agents like `oracle` that don't call a model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Per-task subprocess wall-clock budget in milliseconds before the
+    /// runner kills the `harbor run` child and records the task as failed.
+    /// Defaults to Harbor's own task-level 600s timeout when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_timeout_ms: Option<u64>,
+}
+
+/// One Harbor task directory to execute (backlog/Powder crucible-034).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarborTaskSpec {
+    /// Stable task id in the benchmark.
+    pub task_id: String,
+    /// Path to a Harbor task directory (containing `task.toml`), absolute or
+    /// relative to the spec file. Harbor requires this path (and the spec's
+    /// own checkout) to live under `$HOME`: Colima's default config only
+    /// bind-mounts `$HOME` into its Docker VM, so a task directory outside it
+    /// resolves as empty inside the container and fails with
+    /// `RewardFileNotFoundError` — a Harbor/Colima interaction, not a runner
+    /// bug. The runner refuses before spawning `harbor` when this isn't met.
+    pub task_dir: String,
+}
+
 /// The source of examples and candidate outputs for a declared runner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
@@ -413,6 +455,14 @@ pub enum CorpusSpec {
         config: AgenticJudgeConfig,
         /// Candidate outputs and calibration probes to judge.
         tasks: Vec<AgenticJudgeTask>,
+    },
+    /// Local Harbor task directories executed via the `harbor` CLI (backlog/
+    /// Powder crucible-034).
+    HarborTasks {
+        /// Shared agent/model config every task in this corpus runs with.
+        config: HarborRunConfig,
+        /// Harbor task directories to execute.
+        tasks: Vec<HarborTaskSpec>,
     },
 }
 
@@ -769,6 +819,67 @@ mod tests {
         let config: PromptModelConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.harness, None);
         assert!(config.tool_allowlist.is_empty());
+    }
+
+    #[test]
+    fn harbor_tasks_corpus_round_trips() {
+        let corpus = CorpusSpec::HarborTasks {
+            config: HarborRunConfig {
+                agent: "oracle".to_string(),
+                model: None,
+                job_timeout_ms: None,
+            },
+            tasks: vec![HarborTaskSpec {
+                task_id: "crucible-smoke".to_string(),
+                task_dir: "../harbor-tasks/crucible-smoke".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&corpus).unwrap();
+        assert!(
+            json.contains(r#""source":"harbor_tasks""#),
+            "corpus source is stable: {json}"
+        );
+        assert!(
+            !json.contains("model") && !json.contains("job_timeout_ms"),
+            "absent model/job_timeout_ms are omitted, not written as null: {json}"
+        );
+        let back: CorpusSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, corpus);
+    }
+
+    #[test]
+    fn harbor_run_config_round_trips_model_and_timeout() {
+        let config = HarborRunConfig {
+            agent: "claude-code".to_string(),
+            model: Some("anthropic/claude-opus-4".to_string()),
+            job_timeout_ms: Some(120_000),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(
+            json.contains(r#""model":"anthropic/claude-opus-4""#),
+            "{json}"
+        );
+        assert!(json.contains(r#""job_timeout_ms":120000"#), "{json}");
+        let back: HarborRunConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, config);
+    }
+
+    #[test]
+    fn harbor_run_config_without_model_or_timeout_deserializes_with_defaults() {
+        let json = r#"{"agent": "oracle"}"#;
+        let config: HarborRunConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.model, None);
+        assert_eq!(config.job_timeout_ms, None);
+    }
+
+    #[test]
+    fn harbor_task_kind_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&RunnerKind::HarborTask).unwrap(),
+            "\"harbor_task\""
+        );
+        let k: RunnerKind = serde_json::from_str("\"harbor_task\"").unwrap();
+        assert_eq!(k, RunnerKind::HarborTask);
     }
 
     #[test]
