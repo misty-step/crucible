@@ -280,6 +280,18 @@ config/model, Wilson intervals shown, no significance claim.
 (`crucible.evaluation_card.v1`). Use this to inspect the persisted
 reproducibility card for a run without scraping `prompt-run.json`.
 
+**Trace (backlog 030):** an agentic-judge run also persists a
+`crucible.trace.v1` artifact — the ordered `judge_call`/`verdict_parsed`/
+`calibration_check` steps that produced its verdict, with per-step
+timestamps and raw detail (rubric, candidate, judge output). `runs show`
+lists it as an `artifact` of kind `trace` and `run_record.trace_path` (also
+in `runs list`'s `trace_path` field) points straight at the file — the same
+pointer discipline as `evidence_path`/`spec_path`, no separate query. Read
+the file directly (or filter its `steps` for a `"fail"`/`"unknown"` `outcome`,
+what `crucible_core::Trace::failure_steps()` does in Rust) to see *why* a
+failed or `UNKNOWN`-verdict candidate got its verdict without re-running the
+judge call. `prompt_benchmark`/`key_recall` runs do not populate a trace yet.
+
 **Config identity, longitudinal history, and cross-axis pivots (backlog
 027):** `PromptModelConfig`/`AgenticJudgeConfig` carry optional `harness`
 (agent framework identity, e.g. `claude-code`/`codex`) and `tool_allowlist`

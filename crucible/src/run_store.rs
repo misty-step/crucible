@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use crucible_core::{
     EvalSpec, EvaluationCard, FixtureRef, McnemarOutcome, PairedComparison, Provenance, RunRecord,
-    RunScore, EVALUATION_CARD_SCHEMA, RUN_RECORD_SCHEMA,
+    RunScore, EVALUATION_CARD_SCHEMA, RUN_RECORD_SCHEMA, TRACE_SCHEMA,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
@@ -101,6 +101,11 @@ pub struct StoredRun {
     pub run_report: String,
     pub evidence_path: Option<String>,
     pub spec_path: Option<String>,
+    /// Pointer to this run's persisted `crucible.trace.v1` artifact (backlog
+    /// 030), when the runner populated one. `None` for a runner kind not yet
+    /// wired to emit a trace, or a run predating this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_path: Option<String>,
     pub score_metric: String,
     pub successes: u64,
     pub n: u64,
@@ -207,6 +212,9 @@ struct EvidenceMetadata {
     model: Option<String>,
     evidence_path: Option<String>,
     spec_path: Option<String>,
+    /// Pointer to a `crucible.trace.v1` artifact recognized among this run's
+    /// artifacts (backlog 030). `None` when no artifact carries that schema.
+    trace_path: Option<String>,
     temperature: Option<f64>,
     max_output_units: Option<u64>,
     /// Agent harness identity, e.g. `claude-code` (backlog 027).
@@ -352,10 +360,10 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric, successes,
                 n, point, lower, upper, confidence, score_method, eval_json,
-                harness, tool_allowlist
+                harness, tool_allowlist, trace_path
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
+                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
             )",
             params![
                 run_id,
@@ -382,7 +390,8 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 eval.score.method,
                 eval_json,
                 metadata.harness,
-                metadata.tool_allowlist
+                metadata.tool_allowlist,
+                metadata.trace_path
             ],
         )
         .with_context(|| format!("inserting run record for {}", eval.id))?;
@@ -607,7 +616,7 @@ pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
-                harness, tool_allowlist
+                harness, tool_allowlist, trace_path
              FROM run_records
              WHERE (?1 IS NULL OR benchmark_id = ?1)
                AND (?2 IS NULL OR config_id = ?2)
@@ -660,7 +669,7 @@ pub fn show_run(db_path: &Path, run_id: &str) -> Result<RunDetail> {
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
-                harness, tool_allowlist
+                harness, tool_allowlist, trace_path
              FROM run_records
              WHERE run_id = ?1",
             params![run_id],
@@ -873,7 +882,7 @@ pub fn pivot_by_model(db_path: &Path, benchmark: &str, harness: Option<&str>) ->
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
-                harness, tool_allowlist
+                harness, tool_allowlist, trace_path
              FROM run_records
              WHERE benchmark_id = ?1 AND (?2 IS NULL OR harness = ?2)
              ORDER BY created_at_unix_ms DESC, run_id DESC",
@@ -1197,15 +1206,17 @@ fn init_schema(conn: &Connection) -> Result<()> {
     ensure_column(conn, "prompt_task_results", "task_class", "TEXT")?;
     ensure_column(conn, "run_records", "harness", "TEXT")?;
     ensure_column(conn, "run_records", "tool_allowlist", "TEXT")?;
+    ensure_column(conn, "run_records", "trace_path", "TEXT")?;
     Ok(())
 }
 
 /// Add `column` to `table` if an older ledger predates it — the same
 /// additive migration shape for every column this run-store has grown after
 /// its first release (`prompt_task_results.task_class`, then backlog 027's
-/// `run_records.harness`/`run_records.tool_allowlist`): `CREATE TABLE IF NOT
-/// EXISTS` never widens an existing table, so a reopened pre-existing ledger
-/// needs this explicit `ALTER TABLE` check instead.
+/// `run_records.harness`/`run_records.tool_allowlist`, then backlog 030's
+/// `run_records.trace_path`): `CREATE TABLE IF NOT EXISTS` never widens an
+/// existing table, so a reopened pre-existing ledger needs this explicit
+/// `ALTER TABLE` check instead.
 fn ensure_column(conn: &Connection, table: &str, column: &str, decl_type: &str) -> Result<()> {
     let mut stmt = conn
         .prepare(&format!("PRAGMA table_info({table})"))
@@ -1287,6 +1298,7 @@ fn materialize_run_record(input: &MaterializeInput<'_>) -> Result<(RunRecord, Ev
         run_report: input.run_report_path.to_string(),
         evidence_path: input.metadata.evidence_path.clone(),
         spec_path: input.metadata.spec_path.clone(),
+        trace_path: input.metadata.trace_path.clone(),
         artifacts: input.eval.artifacts.clone(),
         score: RunScore {
             metric: input.eval.score.metric.to_string(),
@@ -1315,6 +1327,8 @@ fn extract_metadata(eval: &EvalReport) -> Result<EvidenceMetadata> {
                 merge_prompt_metadata(&mut metadata, artifact, &value, "judge")?;
             } else if value["schema_version"] == "crucible.spec_run_evidence.v1" {
                 merge_spec_metadata(&mut metadata, artifact, &value);
+            } else if value["schema_version"] == TRACE_SCHEMA {
+                metadata.trace_path = Some(artifact.to_string());
             }
         }
     }
@@ -1613,6 +1627,7 @@ fn row_to_stored_run(row: &Row<'_>) -> rusqlite::Result<StoredRun> {
         method: row.get(20)?,
         harness: row.get(21)?,
         tool_allowlist: parse_tool_allowlist(tool_allowlist_json.as_deref()),
+        trace_path: row.get(23)?,
     })
 }
 
@@ -1718,7 +1733,7 @@ fn latest_for_config(conn: &Connection, benchmark: &str, config: &str) -> Result
             config_id, provider, model, created_at_unix_ms, output_dir,
             run_report_path, evidence_path, spec_path, score_metric,
             successes, n, point, lower, upper, confidence, score_method,
-            harness, tool_allowlist
+            harness, tool_allowlist, trace_path
          FROM run_records
          WHERE benchmark_id = ?1 AND (config_id = ?2 OR model = ?2)
          ORDER BY created_at_unix_ms DESC, run_id DESC
@@ -1738,6 +1753,8 @@ fn artifact_kind(path: &str) -> &'static str {
         "task_results"
     } else if path.ends_with("run-report.json") {
         "run_report"
+    } else if path.ends_with("-trace.json") {
+        "trace"
     } else if path.ends_with(".json") {
         "json"
     } else if path.ends_with(".html") {
@@ -2052,6 +2069,32 @@ mod tests {
         )
         .expect("write agentic judge evidence");
 
+        // The trace artifact `run_agentic_judge_with_client` writes alongside
+        // its evidence (backlog 030) — enough here to prove the run-store
+        // recognizes and points to it, not a full step-by-step fixture.
+        let trace = serde_json::json!({
+            "schema_version": "crucible.trace.v1",
+            "subject_id": "agentic-judge-smoke",
+            "steps": [{
+                "sequence": 0,
+                "kind": "judge_call",
+                "label": "real-1",
+                "detail": {"model": model},
+            }, {
+                "sequence": 1,
+                "kind": "verdict_parsed",
+                "label": "real-1",
+                "detail": {"raw_output": if verdict { "VERDICT: PASS\ngood" } else { "VERDICT: FAIL\nbad" }},
+                "outcome": if verdict { "pass" } else { "fail" },
+            }],
+        });
+        let trace_path = out.join("agentic-judge-trace.json");
+        std::fs::write(
+            &trace_path,
+            format!("{}\n", serde_json::to_string_pretty(&trace).unwrap()),
+        )
+        .expect("write agentic judge trace");
+
         RunReport {
             schema_version: RUN_REPORT_SCHEMA,
             output_dir: out.display().to_string(),
@@ -2071,6 +2114,7 @@ mod tests {
                 artifacts: vec![
                     root.join("agentic-judge-smoke.json").display().to_string(),
                     evidence_path.display().to_string(),
+                    trace_path.display().to_string(),
                 ],
                 notes: Vec::new(),
             }],
@@ -2241,6 +2285,67 @@ mod tests {
         );
         assert_eq!(card["provenance"]["prompt_hash"], "fnv1a64:judge-prompt");
         assert_eq!(card["provenance"]["rubric_hash"], "fnv1a64:judge-rubric");
+    }
+
+    #[test]
+    fn a_run_with_a_trace_artifact_is_inspectable_via_show_run_without_rereading_the_evidence() {
+        // Backlog 030's CLI/MCP inspection path: `crucible runs show` (and
+        // the MCP `crucible_runs_show` tool that calls the same
+        // `show_run`) must point at a run's trace the same way it already
+        // points at `evidence_path`/`spec_path` — no separate viewer, just
+        // the artifact-pointer discipline the rest of the ledger uses.
+        let root = temp_dir("judge-trace-persist");
+        let db = root.join("runs.sqlite");
+        let report = agentic_judge_report(&root, "test/judge-model", false);
+        persist_report(&db, &report).expect("persist judge report with a trace artifact");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("agentic-judge-smoke"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        assert_eq!(list.runs.len(), 1);
+        assert!(
+            list.runs[0].trace_path.is_some(),
+            "list_runs surfaces the recognized trace pointer"
+        );
+
+        let detail = show_run(&db, &list.runs[0].run_id).expect("show run");
+        assert!(
+            detail
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.kind == "trace"
+                    && artifact.path.ends_with("agentic-judge-trace.json")),
+            "the trace artifact is listed with kind \"trace\": {:?}",
+            detail.artifacts
+        );
+        assert!(
+            detail.run.trace_path.is_some(),
+            "the stored run row carries a trace_path pointer"
+        );
+        let run_record = detail
+            .run_record
+            .as_ref()
+            .expect("run record is materialized");
+        assert_eq!(
+            run_record["trace_path"].as_str(),
+            detail.run.trace_path.as_deref(),
+            "the durable RunRecord's trace_path matches the queried row"
+        );
+
+        // Follow the pointer: the trace is a real, parseable
+        // `crucible.trace.v1` artifact with the failed verdict inspectable
+        // without re-running the judge call.
+        let trace_path = detail.run.trace_path.expect("trace_path is present");
+        let trace: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace_path).expect("read trace file"))
+                .expect("trace file is valid JSON");
+        assert_eq!(trace["schema_version"], "crucible.trace.v1");
+        assert_eq!(trace["steps"][1]["outcome"], "fail");
     }
 
     #[test]

@@ -53,6 +53,11 @@
 //! - [`calibration`] — a [`CalibrationRecord`] that *records* (does not compute)
 //!   the [`measure`] outputs gating a model/agentic judge: agreement, κ, a
 //!   [`ConfusionMatrix`], the unlock threshold, and whether it unlocked.
+//! - [`trace`] — a [`Trace`]: the ordered [`TraceStep`] sequence a runner
+//!   emits while producing one verdict (a judge call, a parsed verdict, a
+//!   calibration check today; a tool call or agent step for a future runner
+//!   kind), so "why did this candidate fail" is answerable from the
+//!   persisted artifact without re-running it (backlog 030).
 //! - [`spec`] — the declarative [`EvalSpec`]: task, fixtures by [`FixtureRef`],
 //!   a closed-enum [`GraderManifest`] of deterministic / agentic / human graders
 //!   ([`GraderKind`]), optional runner/corpus declaration ([`RunnerSpec`],
@@ -101,6 +106,7 @@ pub mod label;
 pub mod measure;
 pub mod provenance;
 pub mod spec;
+pub mod trace;
 
 pub use adapter::{findings_from_artifact, to_key_findings};
 pub use adjudication::{Disposition, Verdict};
@@ -144,3 +150,4 @@ pub use spec::{
     ModelProvider, PairedDelta, PromptBenchmarkTask, PromptExpectation, PromptModelConfig,
     RunnerKind, RunnerSpec, UncertaintyRule, EVAL_SPEC_SCHEMA,
 };
+pub use trace::{Trace, TraceStep, TRACE_SCHEMA};

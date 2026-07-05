@@ -19,7 +19,13 @@
   (`backlog.d/012-*`) is real: a live judge call, a `CalibrationRecord`
   measuring judge-vs-deterministic agreement on labeled calibration tasks, and
   a judge-gaming canary that hard-refuses a run (no evidence persisted) if the
-  judge rubber-stamps a known-bad candidate. The adjudication panel has a real
+  judge rubber-stamps a known-bad candidate. The agentic-judge runner also
+  persists a `Trace` (`crucible-core::trace`, `backlog.d/030-*`) — an ordered
+  judge_call/verdict_parsed/calibration_check step sequence pointed to from
+  `run_records.trace_path` and surfaced via `runs list/show`/MCP the same way
+  `evidence_path`/`spec_path` are, so a failed or UNKNOWN-verdict run is
+  inspectable without re-running it; `prompt_benchmark`/`key_recall` are not
+  yet wired to emit one. The adjudication panel has a real
   writeback loop (`adjudication-panel --serve`, `backlog.d/005-*`) — a small
   local HTTP server that persists Keep/Nit/Wrong/Noise taps as
   `crucible.label.v1` labels through the same `apply_label` path
