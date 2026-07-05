@@ -2807,7 +2807,10 @@ mod tests {
         assert_eq!(list.runs.len(), 1);
         let run = &list.runs[0];
         assert_eq!(run.harness.as_deref(), Some("claude-code"));
-        assert_eq!(run.tool_allowlist, vec!["bash".to_string(), "web_search".to_string()]);
+        assert_eq!(
+            run.tool_allowlist,
+            vec!["bash".to_string(), "web_search".to_string()]
+        );
         assert!(
             run.config_id.contains("harness=claude-code"),
             "config identity encodes the recorded harness: {}",
@@ -2915,13 +2918,16 @@ mod tests {
         set_created_at(&db, run_ids[1], 1_000);
         set_created_at(&db, run_ids[2], 2_000);
 
-        let history =
-            score_history(&db, "prompt-smoke-v0", "test/model-a").expect("score history");
+        let history = score_history(&db, "prompt-smoke-v0", "test/model-a").expect("score history");
         assert_eq!(history.benchmark, "prompt-smoke-v0");
         assert_eq!(history.config_query, "test/model-a");
         assert_eq!(history.points.len(), 3);
         assert_eq!(
-            history.points.iter().map(|p| p.created_at_unix_ms).collect::<Vec<_>>(),
+            history
+                .points
+                .iter()
+                .map(|p| p.created_at_unix_ms)
+                .collect::<Vec<_>>(),
             vec![1_000, 2_000, 3_000],
             "points are ordered oldest to newest, not insertion order"
         );
@@ -2977,7 +2983,8 @@ mod tests {
         assert_eq!(list.runs.len(), 2);
         // list_runs orders DESC, so [0] is whichever was inserted last; force
         // an explicit, unambiguous ordering regardless of real-clock timing.
-        let (older_run_id, newer_run_id) = (list.runs[1].run_id.clone(), list.runs[0].run_id.clone());
+        let (older_run_id, newer_run_id) =
+            (list.runs[1].run_id.clone(), list.runs[0].run_id.clone());
         set_created_at(&db, &older_run_id, 1_000);
         set_created_at(&db, &newer_run_id, 2_000);
 
@@ -2997,7 +3004,10 @@ mod tests {
             .map(|row| (row.model.as_deref().unwrap(), row))
             .collect();
         assert_eq!(by_model["test/model-a"].latest_run.run_id, newer_run_id);
-        assert_eq!(by_model["test/model-b"].latest_run.model.as_deref(), Some("test/model-b"));
+        assert_eq!(
+            by_model["test/model-b"].latest_run.model.as_deref(),
+            Some("test/model-b")
+        );
     }
 
     #[test]
@@ -3012,8 +3022,8 @@ mod tests {
         set_harness_and_tools(&codex, "codex", &["apply_patch"]);
         persist_report(&db, &codex).expect("persist codex run");
 
-        let pivot = pivot_by_model(&db, "prompt-smoke-v0", Some("codex"))
-            .expect("pivot narrowed to codex");
+        let pivot =
+            pivot_by_model(&db, "prompt-smoke-v0", Some("codex")).expect("pivot narrowed to codex");
         assert_eq!(pivot.harness.as_deref(), Some("codex"));
         assert_eq!(pivot.rows.len(), 1);
         assert_eq!(pivot.rows[0].model.as_deref(), Some("test/model-b"));

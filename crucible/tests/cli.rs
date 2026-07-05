@@ -1343,7 +1343,11 @@ fn runs_history_and_pivot_query_the_real_ledger_over_the_cli() {
     assert_eq!(history["benchmark"], "key-recall-fixture");
     assert_eq!(history["config_query"], "probe");
     let points = history["points"].as_array().expect("points array");
-    assert_eq!(points.len(), 2, "both persisted runs show up in the history");
+    assert_eq!(
+        points.len(),
+        2,
+        "both persisted runs show up in the history"
+    );
     assert!(
         points[0]["created_at_unix_ms"].as_i64().unwrap()
             <= points[1]["created_at_unix_ms"].as_i64().unwrap(),
@@ -1368,7 +1372,10 @@ fn runs_history_and_pivot_query_the_real_ledger_over_the_cli() {
     let pivot: serde_json::Value =
         serde_json::from_slice(&pivot.stdout).expect("runs pivot emits JSON");
     assert_eq!(pivot["benchmark"], "key-recall-fixture");
-    assert!(pivot["harness"].is_null(), "harness omitted when not narrowed");
+    assert!(
+        pivot["harness"].is_null(),
+        "harness omitted when not narrowed"
+    );
     let rows = pivot["rows"].as_array().expect("rows array");
     assert_eq!(
         rows.len(),

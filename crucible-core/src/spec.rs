@@ -785,7 +785,10 @@ mod tests {
         };
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains(r#""harness":"codex""#), "{json}");
-        assert!(json.contains(r#""tool_allowlist":["apply_patch"]"#), "{json}");
+        assert!(
+            json.contains(r#""tool_allowlist":["apply_patch"]"#),
+            "{json}"
+        );
         let back: AgenticJudgeConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back, config);
     }

@@ -1328,7 +1328,11 @@ mod tests {
         assert_eq!(structured["benchmark"], crate::test_fixtures::BENCHMARK);
         assert_eq!(structured["config_query"], crate::test_fixtures::LEFT_MODEL);
         let points = structured["points"].as_array().expect("points array");
-        assert_eq!(points.len(), 1, "one seeded run for the left model: {structured}");
+        assert_eq!(
+            points.len(),
+            1,
+            "one seeded run for the left model: {structured}"
+        );
         assert_eq!(points[0]["successes"], 1);
         assert_eq!(points[0]["n"], 10);
     }
@@ -1357,7 +1361,10 @@ mod tests {
 
         let structured = &response["structuredContent"];
         assert_eq!(structured["benchmark"], crate::test_fixtures::BENCHMARK);
-        assert!(structured.get("harness").is_none(), "harness omitted when not narrowed: {structured}");
+        assert!(
+            structured.get("harness").is_none(),
+            "harness omitted when not narrowed: {structured}"
+        );
         let rows = structured["rows"].as_array().expect("rows array");
         assert_eq!(rows.len(), 2, "one row per seeded model: {structured}");
     }
