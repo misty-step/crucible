@@ -280,6 +280,37 @@ config/model, Wilson intervals shown, no significance claim.
 (`crucible.evaluation_card.v1`). Use this to inspect the persisted
 reproducibility card for a run without scraping `prompt-run.json`.
 
+**Config identity, longitudinal history, and cross-axis pivots (backlog
+027):** `PromptModelConfig`/`AgenticJudgeConfig` carry optional `harness`
+(agent framework identity, e.g. `claude-code`/`codex`) and `tool_allowlist`
+(tools available during the run) fields — set them via `crucible author
+--prompt-harness <NAME> --prompt-tool <ID>` (repeatable). Both default to
+absent/empty so older specs and runs keep loading and their `config_id`
+strings stay byte-for-byte unchanged. `runs list --harness <NAME>` filters
+by the new axis alongside `--benchmark`/`--config`/`--model`/`--since`/
+`--until`. Two new queries read the ledger's growing history:
+
+```sh
+# One config/model's score history, oldest first — the longitudinal trend
+# line a single config's run-over-run trajectory needs.
+cargo run -p crucible -- runs history \
+  --benchmark prompt-smoke-v0 \
+  --config openrouter/auto \
+  --json
+
+# One benchmark's latest run per model, optionally narrowed to one harness —
+# "this benchmark, this harness, across all models".
+cargo run -p crucible -- runs pivot \
+  --benchmark prompt-smoke-v0 \
+  --harness claude-code \
+  --json
+```
+
+Both are also MCP tools (`crucible_runs_history`, `crucible_runs_pivot`) and
+`crucible serve` routes (`GET /api/history?benchmark=&config=`, `GET
+/api/pivot?benchmark=&harness=`), reading the exact same `run_store` queries
+as the CLI — no parallel query machinery.
+
 **Backup/restore:** the ledger is one file, `runs/local/crucible-runs.sqlite`
 by default (`--db <PATH>` for any other location) — fully gitignored, so
 backing it up is not a repo concern. Copy the file while no `crucible run`/

@@ -105,6 +105,26 @@ fn route(request: &HttpRequest, opts: &ServeOptions) -> Result<HttpResponse> {
                 Err(err) => Err(err),
             }
         }),
+        ("GET", "/api/history") => protected(request, || {
+            match history_query_response(&opts.db_path, &request.query) {
+                Ok(response) => HttpResponse::json_ok(&response),
+                Err(err) if is_history_request_error(&err) => Ok(HttpResponse::json(
+                    400,
+                    &json!({ "error": err.to_string() }),
+                )),
+                Err(err) => Err(err),
+            }
+        }),
+        ("GET", "/api/pivot") => protected(request, || {
+            match pivot_query_response(&opts.db_path, &request.query) {
+                Ok(response) => HttpResponse::json_ok(&response),
+                Err(err) if is_pivot_request_error(&err) => Ok(HttpResponse::json(
+                    400,
+                    &json!({ "error": err.to_string() }),
+                )),
+                Err(err) => Err(err),
+            }
+        }),
         ("POST", "/api/run") => protected(request, || {
             match run_spec_response(&opts.db_path, &opts.specs_dir, &request.body) {
                 Ok(response) => HttpResponse::json_ok(&response),
@@ -374,6 +394,48 @@ fn compare_query_response(
         comparison,
         findings_journal,
     })
+}
+
+fn is_history_request_error(err: &anyhow::Error) -> bool {
+    err.to_string().contains("query param")
+}
+
+/// `?benchmark=&config=` over the server's configured run ledger — the same
+/// time-series `run_store::score_history` and `crucible runs history` return
+/// (backlog 027).
+fn history_query_response(
+    db_path: &Path,
+    query: &HashMap<String, String>,
+) -> Result<run_store::ScoreHistory> {
+    let benchmark = query
+        .get("benchmark")
+        .filter(|value| !value.is_empty())
+        .context("missing benchmark query param")?;
+    let config = query
+        .get("config")
+        .filter(|value| !value.is_empty())
+        .context("missing config query param")?;
+    run_store::score_history(db_path, benchmark, config)
+}
+
+fn is_pivot_request_error(err: &anyhow::Error) -> bool {
+    err.to_string().contains("query param")
+}
+
+/// `?benchmark=&harness=` over the server's configured run ledger — the same
+/// cross-axis pivot `run_store::pivot_by_model` and `crucible runs pivot`
+/// return (backlog 027). `harness` is optional; omitting it pivots across
+/// every harness recorded for the benchmark.
+fn pivot_query_response(
+    db_path: &Path,
+    query: &HashMap<String, String>,
+) -> Result<run_store::PivotView> {
+    let benchmark = query
+        .get("benchmark")
+        .filter(|value| !value.is_empty())
+        .context("missing benchmark query param")?;
+    let harness = query.get("harness").filter(|value| !value.is_empty());
+    run_store::pivot_by_model(db_path, benchmark, harness.map(String::as_str))
 }
 
 fn run_detail_response(db_path: &Path, run_id: &str) -> Result<Value> {
@@ -864,6 +926,7 @@ struct RunFilters {
     benchmark: Option<String>,
     config: Option<String>,
     model: Option<String>,
+    harness: Option<String>,
     since: Option<String>,
     until: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -894,6 +957,7 @@ fn runs_response(db_path: &Path, query: &HashMap<String, String>) -> Result<Runs
         benchmark: nonempty_query(query, "benchmark"),
         config: nonempty_query(query, "config"),
         model: nonempty_query(query, "model"),
+        harness: nonempty_query(query, "harness"),
         since: nonempty_query(query, "since"),
         until: nonempty_query(query, "until"),
         limit: parse_i64_query(query, "limit")?,
@@ -915,6 +979,7 @@ fn runs_response(db_path: &Path, query: &HashMap<String, String>) -> Result<Runs
             benchmark: filters.benchmark.as_deref(),
             config: filters.config.as_deref(),
             model: filters.model.as_deref(),
+            harness: filters.harness.as_deref(),
             since_unix_ms,
             until_unix_ms,
             limit: filters.limit,

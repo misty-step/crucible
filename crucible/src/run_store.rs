@@ -51,6 +51,8 @@ pub struct RunListFilter<'a> {
     pub benchmark: Option<&'a str>,
     pub config: Option<&'a str>,
     pub model: Option<&'a str>,
+    /// Agent harness identity to filter on (backlog 027), e.g. `claude-code`.
+    pub harness: Option<&'a str>,
     pub since_unix_ms: Option<i64>,
     pub until_unix_ms: Option<i64>,
     /// Cap on the number of rows returned. `None` is unconstrained (every
@@ -71,6 +73,8 @@ pub struct RunList {
     pub config: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_unix_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,6 +109,14 @@ pub struct StoredRun {
     pub upper: f64,
     pub confidence: f64,
     pub method: String,
+    /// Agent harness identity recorded for this run (backlog 027), e.g.
+    /// `claude-code`. `None` for runs whose evidence predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// Tool ids available to the harness during this run (backlog 027).
+    /// Empty for runs whose evidence predates the field or declared none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_allowlist: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -197,6 +209,11 @@ struct EvidenceMetadata {
     spec_path: Option<String>,
     temperature: Option<f64>,
     max_output_units: Option<u64>,
+    /// Agent harness identity, e.g. `claude-code` (backlog 027).
+    harness: Option<String>,
+    /// Tool ids available to the harness, stored as a JSON array string —
+    /// the same shape [`StoredRun::tool_allowlist`] parses back out of.
+    tool_allowlist: Option<String>,
     prompt_tasks: Vec<PromptTaskInsert>,
     /// A judge's calibration measurement from this run, when the evidence is
     /// `crucible.agentic_judge_evidence.v1` and carries a non-null
@@ -334,10 +351,11 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 run_id, invocation_id, ordinal, benchmark_id, title, runner_kind,
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric, successes,
-                n, point, lower, upper, confidence, score_method, eval_json
+                n, point, lower, upper, confidence, score_method, eval_json,
+                harness, tool_allowlist
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
+                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
             )",
             params![
                 run_id,
@@ -362,7 +380,9 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 eval.score.upper,
                 eval.score.confidence,
                 eval.score.method,
-                eval_json
+                eval_json,
+                metadata.harness,
+                metadata.tool_allowlist
             ],
         )
         .with_context(|| format!("inserting run record for {}", eval.id))?;
@@ -586,15 +606,17 @@ pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
             "SELECT run_id, invocation_id, benchmark_id, title, runner_kind,
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
-                successes, n, point, lower, upper, confidence, score_method
+                successes, n, point, lower, upper, confidence, score_method,
+                harness, tool_allowlist
              FROM run_records
              WHERE (?1 IS NULL OR benchmark_id = ?1)
                AND (?2 IS NULL OR config_id = ?2)
                AND (?3 IS NULL OR model = ?3)
                AND (?4 IS NULL OR created_at_unix_ms >= ?4)
                AND (?5 IS NULL OR created_at_unix_ms <= ?5)
+               AND (?6 IS NULL OR harness = ?6)
              ORDER BY created_at_unix_ms DESC, run_id DESC
-             LIMIT COALESCE(?6, -1) OFFSET COALESCE(?7, 0)",
+             LIMIT COALESCE(?7, -1) OFFSET COALESCE(?8, 0)",
         )
         .context("preparing run list query")?;
     let rows = stmt
@@ -605,6 +627,7 @@ pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
                 filter.model,
                 filter.since_unix_ms,
                 filter.until_unix_ms,
+                filter.harness,
                 filter.limit,
                 filter.offset,
             ],
@@ -620,6 +643,7 @@ pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
         benchmark: filter.benchmark.map(str::to_string),
         config: filter.config.map(str::to_string),
         model: filter.model.map(str::to_string),
+        harness: filter.harness.map(str::to_string),
         since_unix_ms: filter.since_unix_ms,
         until_unix_ms: filter.until_unix_ms,
         limit: filter.limit,
@@ -635,7 +659,8 @@ pub fn show_run(db_path: &Path, run_id: &str) -> Result<RunDetail> {
             "SELECT run_id, invocation_id, benchmark_id, title, runner_kind,
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
-                successes, n, point, lower, upper, confidence, score_method
+                successes, n, point, lower, upper, confidence, score_method,
+                harness, tool_allowlist
              FROM run_records
              WHERE run_id = ?1",
             params![run_id],
@@ -669,6 +694,78 @@ pub fn show_run(db_path: &Path, run_id: &str) -> Result<RunDetail> {
             .map(|materialization| materialization.run_record.clone()),
         evaluation_card: materialization.map(|materialization| materialization.evaluation_card),
         eval_json,
+    })
+}
+
+/// One benchmark's score history for one config/model, oldest first.
+#[derive(Debug, Serialize)]
+pub struct ScoreHistory {
+    pub schema_version: &'static str,
+    pub db: String,
+    pub benchmark: String,
+    /// The config id or model slug queried — same either-match semantics as
+    /// [`compare_configs`]'s `left`/`right`.
+    pub config_query: String,
+    /// Score points ordered oldest to newest (`created_at_unix_ms` ascending),
+    /// the longitudinal trend line for this benchmark/config pair.
+    pub points: Vec<ScoreHistoryPoint>,
+}
+
+/// One point in a [`ScoreHistory`]: a stored run's score plus its timestamp.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScoreHistoryPoint {
+    pub run_id: String,
+    pub created_at_unix_ms: i64,
+    pub successes: u64,
+    pub n: u64,
+    pub point: Option<f64>,
+    pub lower: f64,
+    pub upper: f64,
+    pub confidence: f64,
+    pub method: String,
+}
+
+/// Every stored run's score for one benchmark/config or model slug, ordered
+/// oldest to newest — the time-series a longitudinal trend line reads
+/// (backlog 027). `config` matches either the stored `config_id` or the
+/// stored `model`, the same either-match rule [`compare_configs`]'s
+/// `left`/`right` already use, so a caller can pass a bare model slug when
+/// no richer config id was ever recorded.
+pub fn score_history(db_path: &Path, benchmark: &str, config: &str) -> Result<ScoreHistory> {
+    let conn = open_initialized(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT run_id, created_at_unix_ms, successes, n, point, lower, upper,
+                confidence, score_method
+             FROM run_records
+             WHERE benchmark_id = ?1 AND (config_id = ?2 OR model = ?2)
+             ORDER BY created_at_unix_ms ASC, run_id ASC",
+        )
+        .context("preparing score history query")?;
+    let points = stmt
+        .query_map(params![benchmark, config], |row| {
+            Ok(ScoreHistoryPoint {
+                run_id: row.get(0)?,
+                created_at_unix_ms: row.get(1)?,
+                successes: i64_to_u64(row.get(2)?),
+                n: i64_to_u64(row.get(3)?),
+                point: row.get(4)?,
+                lower: row.get(5)?,
+                upper: row.get(6)?,
+                confidence: row.get(7)?,
+                method: row.get(8)?,
+            })
+        })
+        .context("querying score history")?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("reading score history rows")?;
+
+    Ok(ScoreHistory {
+        schema_version: RUN_STORE_SCHEMA,
+        db: db_path.display().to_string(),
+        benchmark: benchmark.to_string(),
+        config_query: config.to_string(),
+        points,
     })
 }
 
@@ -733,6 +830,79 @@ pub fn compare_configs(
         class_breakdowns,
         comparison_kind,
         note,
+    })
+}
+
+/// One benchmark's cross-axis pivot: the latest stored run per model,
+/// optionally narrowed to one harness — "this benchmark, this harness,
+/// across all models" (backlog 027).
+#[derive(Debug, Serialize)]
+pub struct PivotView {
+    pub schema_version: &'static str,
+    pub db: String,
+    pub benchmark: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// One row per distinct model recorded for this benchmark (and harness,
+    /// when narrowed), each holding that model's most recent run.
+    pub rows: Vec<PivotRow>,
+}
+
+/// One model's latest run within a [`PivotView`].
+#[derive(Debug, Clone, Serialize)]
+pub struct PivotRow {
+    /// `None` when the run's evidence never recorded a model (e.g. a
+    /// deterministic key_recall run over a candidate id instead).
+    pub model: Option<String>,
+    pub latest_run: StoredRun,
+}
+
+/// Pivot one benchmark across every model that has a stored run, keeping
+/// only the most recent run per model — optionally narrowed to runs
+/// recorded under one `harness`. Rows are grouped in Rust (not SQL `GROUP
+/// BY`) the same way [`compare_by_class`] groups per-task rows: read once in
+/// `created_at_unix_ms DESC` order and keep the first (i.e. latest) row seen
+/// per model, so the exact same tie-break (`created_at_unix_ms DESC, run_id
+/// DESC`) [`latest_for_config`] uses applies here per model instead of per
+/// config.
+pub fn pivot_by_model(db_path: &Path, benchmark: &str, harness: Option<&str>) -> Result<PivotView> {
+    let conn = open_initialized(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT run_id, invocation_id, benchmark_id, title, runner_kind,
+                config_id, provider, model, created_at_unix_ms, output_dir,
+                run_report_path, evidence_path, spec_path, score_metric,
+                successes, n, point, lower, upper, confidence, score_method,
+                harness, tool_allowlist
+             FROM run_records
+             WHERE benchmark_id = ?1 AND (?2 IS NULL OR harness = ?2)
+             ORDER BY created_at_unix_ms DESC, run_id DESC",
+        )
+        .context("preparing pivot query")?;
+    let runs = stmt
+        .query_map(params![benchmark, harness], row_to_stored_run)
+        .context("querying pivot rows")?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("reading pivot rows")?;
+
+    let mut seen_models: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut rows = Vec::new();
+    for run in runs {
+        let key = run.model.clone().unwrap_or_default();
+        if seen_models.insert(key) {
+            rows.push(PivotRow {
+                model: run.model.clone(),
+                latest_run: run,
+            });
+        }
+    }
+
+    Ok(PivotView {
+        schema_version: RUN_STORE_SCHEMA,
+        db: db_path.display().to_string(),
+        benchmark: benchmark.to_string(),
+        harness: harness.map(str::to_string),
+        rows,
     })
 }
 
@@ -1024,24 +1194,33 @@ fn init_schema(conn: &Connection) -> Result<()> {
         ",
     )
     .context("initializing run-store schema")?;
-    ensure_prompt_task_class_column(conn)
+    ensure_column(conn, "prompt_task_results", "task_class", "TEXT")?;
+    ensure_column(conn, "run_records", "harness", "TEXT")?;
+    ensure_column(conn, "run_records", "tool_allowlist", "TEXT")?;
+    Ok(())
 }
 
-fn ensure_prompt_task_class_column(conn: &Connection) -> Result<()> {
+/// Add `column` to `table` if an older ledger predates it — the same
+/// additive migration shape for every column this run-store has grown after
+/// its first release (`prompt_task_results.task_class`, then backlog 027's
+/// `run_records.harness`/`run_records.tool_allowlist`): `CREATE TABLE IF NOT
+/// EXISTS` never widens an existing table, so a reopened pre-existing ledger
+/// needs this explicit `ALTER TABLE` check instead.
+fn ensure_column(conn: &Connection, table: &str, column: &str, decl_type: &str) -> Result<()> {
     let mut stmt = conn
-        .prepare("PRAGMA table_info(prompt_task_results)")
-        .context("preparing prompt_task_results schema inspection")?;
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .with_context(|| format!("preparing {table} schema inspection"))?;
     let columns = stmt
         .query_map([], |row| row.get::<_, String>(1))
-        .context("querying prompt_task_results schema")?
+        .with_context(|| format!("querying {table} schema"))?
         .collect::<std::result::Result<Vec<_>, _>>()
-        .context("reading prompt_task_results schema")?;
-    if !columns.iter().any(|column| column == "task_class") {
+        .with_context(|| format!("reading {table} schema"))?;
+    if !columns.iter().any(|existing| existing == column) {
         conn.execute(
-            "ALTER TABLE prompt_task_results ADD COLUMN task_class TEXT",
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {decl_type}"),
             [],
         )
-        .context("adding prompt_task_results.task_class column")?;
+        .with_context(|| format!("adding {table}.{column} column"))?;
     }
     Ok(())
 }
@@ -1182,6 +1361,17 @@ fn merge_prompt_metadata(
         .get("max_output_units")
         .and_then(Value::as_u64)
         .or(metadata.max_output_units.take());
+    metadata.harness = value
+        .get("harness")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(metadata.harness.take());
+    metadata.tool_allowlist = value
+        .get("tool_allowlist")
+        .and_then(Value::as_array)
+        .filter(|tools| !tools.is_empty())
+        .map(|tools| serde_json::to_string(tools).unwrap_or_default())
+        .or(metadata.tool_allowlist.take());
     metadata.evidence_path = Some(artifact.to_string());
 
     if config_prefix == "judge" {
@@ -1202,9 +1392,19 @@ fn merge_prompt_metadata(
         .get("system_prompt_hash")
         .and_then(Value::as_str)
         .unwrap_or("prompt");
-    metadata.config_id = Some(format!(
+    let mut config_id = format!(
         "{config_prefix}:{provider}:{model}:temp={temperature}:max={max_output_units}:prompt={system_prompt_hash}"
-    ));
+    );
+    // Additive suffixes only — a run with neither field recorded gets the
+    // exact same config_id it would have before backlog 027, so pre-existing
+    // config identities never shift under a schema reopen.
+    if let Some(harness) = &metadata.harness {
+        config_id.push_str(&format!(":harness={harness}"));
+    }
+    if let Some(tool_allowlist) = &metadata.tool_allowlist {
+        config_id.push_str(&format!(":tools={tool_allowlist}"));
+    }
+    metadata.config_id = Some(config_id);
 
     let tasks = value
         .get("tasks")
@@ -1388,6 +1588,7 @@ fn read_json_artifact(path: &Path) -> Result<Value> {
 }
 
 fn row_to_stored_run(row: &Row<'_>) -> rusqlite::Result<StoredRun> {
+    let tool_allowlist_json: Option<String> = row.get(22)?;
     Ok(StoredRun {
         run_id: row.get(0)?,
         invocation_id: row.get(1)?,
@@ -1410,7 +1611,18 @@ fn row_to_stored_run(row: &Row<'_>) -> rusqlite::Result<StoredRun> {
         upper: row.get(18)?,
         confidence: row.get(19)?,
         method: row.get(20)?,
+        harness: row.get(21)?,
+        tool_allowlist: parse_tool_allowlist(tool_allowlist_json.as_deref()),
     })
+}
+
+/// Parse a stored `tool_allowlist` JSON-array-string column back into a
+/// `Vec<String>`. `None`, an empty column, or malformed JSON all yield an
+/// empty vec — a run predating backlog 027 has no tool allowlist recorded,
+/// not a corrupt one.
+fn parse_tool_allowlist(raw: Option<&str>) -> Vec<String> {
+    raw.and_then(|text| serde_json::from_str::<Vec<String>>(text).ok())
+        .unwrap_or_default()
 }
 
 fn query_artifacts(conn: &Connection, run_id: &str) -> Result<Vec<StoredArtifact>> {
@@ -1505,7 +1717,8 @@ fn latest_for_config(conn: &Connection, benchmark: &str, config: &str) -> Result
         "SELECT run_id, invocation_id, benchmark_id, title, runner_kind,
             config_id, provider, model, created_at_unix_ms, output_dir,
             run_report_path, evidence_path, spec_path, score_metric,
-            successes, n, point, lower, upper, confidence, score_method
+            successes, n, point, lower, upper, confidence, score_method,
+            harness, tool_allowlist
          FROM run_records
          WHERE benchmark_id = ?1 AND (config_id = ?2 OR model = ?2)
          ORDER BY created_at_unix_ms DESC, run_id DESC
@@ -2541,5 +2754,279 @@ mod tests {
             message.contains("not-a-date") && message.contains("RFC3339"),
             "error names the offending value and the accepted formats: {message}"
         );
+    }
+
+    /// Inject `harness`/`tool_allowlist` fields into a prompt report's
+    /// already-written evidence JSON, the same post-hoc-mutation technique
+    /// `compares_prompt_runs_by_class_breakdown` and
+    /// `missing_fixture_spec_path_does_not_abort_persistence` already use to
+    /// exercise evidence shapes `prompt_report`'s fixture doesn't cover.
+    fn set_harness_and_tools(report: &RunReport, harness: &str, tools: &[&str]) {
+        let evidence_path = Path::new(&report.evals[0].artifacts[1]);
+        let mut evidence: Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence_path).expect("read evidence"))
+                .expect("evidence is JSON");
+        evidence["harness"] = serde_json::json!(harness);
+        evidence["tool_allowlist"] = serde_json::json!(tools);
+        std::fs::write(
+            evidence_path,
+            format!("{}\n", serde_json::to_string_pretty(&evidence).unwrap()),
+        )
+        .expect("rewrite evidence with harness/tool_allowlist");
+    }
+
+    /// Force a stored run's `created_at_unix_ms` to an exact value —
+    /// deterministic control over insertion-order-independent tests
+    /// (`score_history`/pivot ordering) instead of relying on real wall-clock
+    /// gaps between sequential `persist_report` calls in the same test.
+    fn set_created_at(db: &Path, run_id: &str, created_at_unix_ms: i64) {
+        let conn = open_initialized(db).expect("open db for timestamp fixup");
+        conn.execute(
+            "UPDATE run_records SET created_at_unix_ms = ?1 WHERE run_id = ?2",
+            params![created_at_unix_ms, run_id],
+        )
+        .expect("fixup created_at_unix_ms");
+    }
+
+    #[test]
+    fn persists_harness_and_tool_allowlist_when_evidence_declares_them() {
+        let root = temp_dir("harness-persist");
+        let db = root.join("runs.sqlite");
+        let report = prompt_report(&root, "test/model-a", true);
+        set_harness_and_tools(&report, "claude-code", &["bash", "web_search"]);
+        persist_report(&db, &report).expect("persist report with harness/tool_allowlist");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        assert_eq!(list.runs.len(), 1);
+        let run = &list.runs[0];
+        assert_eq!(run.harness.as_deref(), Some("claude-code"));
+        assert_eq!(
+            run.tool_allowlist,
+            vec!["bash".to_string(), "web_search".to_string()]
+        );
+        assert!(
+            run.config_id.contains("harness=claude-code"),
+            "config identity encodes the recorded harness: {}",
+            run.config_id
+        );
+        assert!(
+            run.config_id.contains("tools="),
+            "config identity encodes the recorded tool allowlist: {}",
+            run.config_id
+        );
+
+        // show_run reads the same columns back, independent of list_runs.
+        let detail = show_run(&db, &run.run_id).expect("show run");
+        assert_eq!(detail.run.harness.as_deref(), Some("claude-code"));
+        assert_eq!(
+            detail.run.tool_allowlist,
+            vec!["bash".to_string(), "web_search".to_string()]
+        );
+    }
+
+    #[test]
+    fn harness_and_tool_allowlist_are_absent_by_default_and_config_id_is_unchanged() {
+        // A run whose evidence predates backlog 027 (no harness/tool_allowlist
+        // keys at all — exactly what prompt_report's fixture already writes)
+        // must still persist cleanly: the two new fields default to
+        // absent/empty and the config_id string is byte-for-byte what it was
+        // before this backlog landed, so no existing config identity shifts
+        // under a ledger reopen.
+        let root = temp_dir("harness-absent");
+        let db = root.join("runs.sqlite");
+        let report = prompt_report(&root, "test/model-a", true);
+        persist_report(&db, &report).expect("persist report without harness/tool_allowlist");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        let run = &list.runs[0];
+        assert_eq!(run.harness, None);
+        assert!(run.tool_allowlist.is_empty());
+        assert!(
+            !run.config_id.contains("harness=") && !run.config_id.contains("tools="),
+            "config identity is unchanged when neither field is recorded: {}",
+            run.config_id
+        );
+        assert!(
+            run.config_id.contains("temp=0") && run.config_id.contains("max=8"),
+            "existing config_id shape survives unchanged: {}",
+            run.config_id
+        );
+    }
+
+    #[test]
+    fn run_list_filter_matches_by_harness() {
+        let root = temp_dir("harness-filter");
+        let db = root.join("runs.sqlite");
+        let claude = prompt_report(&root, "test/model-a", true);
+        set_harness_and_tools(&claude, "claude-code", &["bash"]);
+        persist_report(&db, &claude).expect("persist claude-code run");
+
+        let codex = prompt_report(&root, "test/model-b", true);
+        set_harness_and_tools(&codex, "codex", &["apply_patch"]);
+        persist_report(&db, &codex).expect("persist codex run");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                harness: Some("codex"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs filtered by harness");
+        assert_eq!(list.runs.len(), 1);
+        assert_eq!(list.runs[0].model.as_deref(), Some("test/model-b"));
+        assert_eq!(list.runs[0].harness.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn score_history_orders_points_oldest_first_for_one_config() {
+        let root = temp_dir("history");
+        let db = root.join("runs.sqlite");
+        persist_report(&db, &prompt_report(&root, "test/model-a", false)).expect("persist run 1");
+        persist_report(&db, &prompt_report(&root, "test/model-a", true)).expect("persist run 2");
+        persist_report(&db, &prompt_report(&root, "test/model-a", true)).expect("persist run 3");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs to fix up timestamps");
+        assert_eq!(list.runs.len(), 3);
+        // Assign deterministic, deliberately-scrambled timestamps so the test
+        // proves score_history sorts rather than happening to already be in
+        // insertion order.
+        let run_ids: Vec<&str> = list.runs.iter().map(|run| run.run_id.as_str()).collect();
+        set_created_at(&db, run_ids[0], 3_000);
+        set_created_at(&db, run_ids[1], 1_000);
+        set_created_at(&db, run_ids[2], 2_000);
+
+        let history = score_history(&db, "prompt-smoke-v0", "test/model-a").expect("score history");
+        assert_eq!(history.benchmark, "prompt-smoke-v0");
+        assert_eq!(history.config_query, "test/model-a");
+        assert_eq!(history.points.len(), 3);
+        assert_eq!(
+            history
+                .points
+                .iter()
+                .map(|p| p.created_at_unix_ms)
+                .collect::<Vec<_>>(),
+            vec![1_000, 2_000, 3_000],
+            "points are ordered oldest to newest, not insertion order"
+        );
+        assert_eq!(history.points[0].run_id, run_ids[1]);
+        assert_eq!(history.points[1].run_id, run_ids[2]);
+        assert_eq!(history.points[2].run_id, run_ids[0]);
+    }
+
+    #[test]
+    fn score_history_matches_a_bare_model_slug_like_compare_configs_does() {
+        let root = temp_dir("history-model-slug");
+        let db = root.join("runs.sqlite");
+        persist_report(&db, &prompt_report(&root, "test/model-a", true)).expect("persist run");
+
+        // No richer config_id namespace was ever declared for this evidence,
+        // so the config/model either-match rule (shared with compare_configs)
+        // must let a bare model slug find the run.
+        let history = score_history(&db, "prompt-smoke-v0", "test/model-a").expect("history");
+        assert_eq!(history.points.len(), 1);
+    }
+
+    #[test]
+    fn score_history_is_empty_for_an_unknown_config() {
+        let root = temp_dir("history-empty");
+        let db = root.join("runs.sqlite");
+        persist_report(&db, &prompt_report(&root, "test/model-a", true)).expect("persist run");
+
+        let history =
+            score_history(&db, "prompt-smoke-v0", "test/model-nonexistent").expect("history");
+        assert!(history.points.is_empty());
+    }
+
+    #[test]
+    fn pivot_by_model_keeps_only_the_latest_run_per_model() {
+        let root = temp_dir("pivot");
+        let db = root.join("runs.sqlite");
+        persist_report(&db, &prompt_report(&root, "test/model-a", false))
+            .expect("persist model-a run 1 (older, failing)");
+        persist_report(&db, &prompt_report(&root, "test/model-a", true))
+            .expect("persist model-a run 2 (newer, passing)");
+        persist_report(&db, &prompt_report(&root, "test/model-b", true))
+            .expect("persist model-b run");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                model: Some("test/model-a"),
+                ..Default::default()
+            },
+        )
+        .expect("list model-a runs to fix up timestamps");
+        assert_eq!(list.runs.len(), 2);
+        // list_runs orders DESC, so [0] is whichever was inserted last; force
+        // an explicit, unambiguous ordering regardless of real-clock timing.
+        let (older_run_id, newer_run_id) =
+            (list.runs[1].run_id.clone(), list.runs[0].run_id.clone());
+        set_created_at(&db, &older_run_id, 1_000);
+        set_created_at(&db, &newer_run_id, 2_000);
+
+        let pivot =
+            pivot_by_model(&db, "prompt-smoke-v0", None).expect("pivot across every harness");
+        assert_eq!(pivot.benchmark, "prompt-smoke-v0");
+        assert!(pivot.harness.is_none());
+        assert_eq!(
+            pivot.rows.len(),
+            2,
+            "one row per distinct model: {:?}",
+            pivot.rows.iter().map(|r| &r.model).collect::<Vec<_>>()
+        );
+        let by_model: HashMap<&str, &PivotRow> = pivot
+            .rows
+            .iter()
+            .map(|row| (row.model.as_deref().unwrap(), row))
+            .collect();
+        assert_eq!(by_model["test/model-a"].latest_run.run_id, newer_run_id);
+        assert_eq!(
+            by_model["test/model-b"].latest_run.model.as_deref(),
+            Some("test/model-b")
+        );
+    }
+
+    #[test]
+    fn pivot_by_model_narrows_to_one_harness_when_given() {
+        let root = temp_dir("pivot-harness");
+        let db = root.join("runs.sqlite");
+        let claude = prompt_report(&root, "test/model-a", true);
+        set_harness_and_tools(&claude, "claude-code", &["bash"]);
+        persist_report(&db, &claude).expect("persist claude-code run");
+
+        let codex = prompt_report(&root, "test/model-b", true);
+        set_harness_and_tools(&codex, "codex", &["apply_patch"]);
+        persist_report(&db, &codex).expect("persist codex run");
+
+        let pivot =
+            pivot_by_model(&db, "prompt-smoke-v0", Some("codex")).expect("pivot narrowed to codex");
+        assert_eq!(pivot.harness.as_deref(), Some("codex"));
+        assert_eq!(pivot.rows.len(), 1);
+        assert_eq!(pivot.rows[0].model.as_deref(), Some("test/model-b"));
+        assert_eq!(pivot.rows[0].latest_run.harness.as_deref(), Some("codex"));
     }
 }

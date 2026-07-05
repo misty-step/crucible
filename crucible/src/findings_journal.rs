@@ -435,6 +435,8 @@ mod tests {
             upper,
             confidence: 0.95,
             method: "Wilson".to_string(),
+            harness: None,
+            tool_allowlist: Vec::new(),
         }
     }
 }

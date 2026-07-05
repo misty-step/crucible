@@ -223,6 +223,16 @@ pub struct PromptModelConfig {
     /// the schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<u32>,
+    /// Agent harness/framework identity for this run, e.g. `claude-code`,
+    /// `codex`, or `raw-api`. Optional and defaults to absent so a spec that
+    /// predates this field (backlog 027) still loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// Tool ids made available to the harness during this run, e.g. `bash`,
+    /// `web_search`. Defaults to empty — either "no tools" or "not recorded"
+    /// for a spec that predates this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_allowlist: Vec<String>,
 }
 
 fn default_openrouter_credential_env() -> String {
@@ -315,6 +325,14 @@ pub struct AgenticJudgeConfig {
     /// reports no generator and no risk, not a false "different family".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator_model: Option<String>,
+    /// Agent harness/framework identity for this run (see
+    /// [`PromptModelConfig::harness`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// Tool ids made available to the judge harness during this run (see
+    /// [`PromptModelConfig::tool_allowlist`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_allowlist: Vec<String>,
 }
 
 /// One candidate output for the judge to score against a rubric.
@@ -689,6 +707,8 @@ mod tests {
                 credential_env: "OPENROUTER_API_KEY".to_string(),
                 max_output_units: Some(8),
                 temperature: Some(0),
+                harness: None,
+                tool_allowlist: Vec::new(),
             },
             tasks: vec![PromptBenchmarkTask {
                 task_id: "exact-word".to_string(),
@@ -705,8 +725,72 @@ mod tests {
             json.contains(r#""source":"prompt_benchmark""#),
             "corpus source is stable: {json}"
         );
+        assert!(
+            !json.contains("harness") && !json.contains("tool_allowlist"),
+            "absent harness/tool_allowlist are omitted, not written as null/empty: {json}"
+        );
         let back: CorpusSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(back, corpus);
+    }
+
+    #[test]
+    fn prompt_model_config_round_trips_harness_and_tool_allowlist() {
+        let config = PromptModelConfig {
+            provider: ModelProvider::OpenRouter,
+            model: "openai/gpt-4o-mini".to_string(),
+            system_prompt: "Answer exactly.".to_string(),
+            credential_env: "OPENROUTER_API_KEY".to_string(),
+            max_output_units: Some(8),
+            temperature: Some(0),
+            harness: Some("claude-code".to_string()),
+            tool_allowlist: vec!["bash".to_string(), "web_search".to_string()],
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains(r#""harness":"claude-code""#), "{json}");
+        assert!(
+            json.contains(r#""tool_allowlist":["bash","web_search"]"#),
+            "{json}"
+        );
+        let back: PromptModelConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, config);
+    }
+
+    #[test]
+    fn prompt_model_config_without_harness_or_tools_deserializes_with_defaults() {
+        // A spec authored before backlog 027 has neither field; it must still
+        // load, defaulting harness to absent and tool_allowlist to empty —
+        // config identity gains the fields without breaking old specs.
+        let json = r#"{
+            "provider": "open_router",
+            "model": "openai/gpt-4o-mini",
+            "system_prompt": "Answer exactly.",
+            "credential_env": "OPENROUTER_API_KEY"
+        }"#;
+        let config: PromptModelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.harness, None);
+        assert!(config.tool_allowlist.is_empty());
+    }
+
+    #[test]
+    fn agentic_judge_config_round_trips_harness_and_tool_allowlist() {
+        let config = AgenticJudgeConfig {
+            provider: ModelProvider::OpenRouter,
+            model: "anthropic/claude-opus-4".to_string(),
+            judge_prompt: "Grade it.".to_string(),
+            credential_env: "OPENROUTER_API_KEY".to_string(),
+            temperature: None,
+            generator_model: None,
+            harness: Some("codex".to_string()),
+            tool_allowlist: vec!["apply_patch".to_string()],
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains(r#""harness":"codex""#), "{json}");
+        assert!(
+            json.contains(r#""tool_allowlist":["apply_patch"]"#),
+            "{json}"
+        );
+        let back: AgenticJudgeConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, config);
     }
 
     #[test]

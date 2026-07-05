@@ -159,6 +159,15 @@ pub struct AuthorArgs {
     /// `prompt_benchmark`: optional integer temperature.
     #[arg(long = "prompt-temperature", value_name = "N")]
     pub prompt_temperature: Option<u32>,
+    /// `prompt_benchmark`: optional agent harness identity for this run,
+    /// e.g. `claude-code`, `codex`, or `raw-api` (backlog 027).
+    #[arg(long = "prompt-harness", value_name = "HARNESS")]
+    pub prompt_harness: Option<String>,
+    /// `prompt_benchmark`: a tool id available to the harness during this
+    /// run. Repeatable; omit entirely to leave the tool allowlist empty
+    /// (backlog 027).
+    #[arg(long = "prompt-tool", value_name = "TOOL_ID")]
+    pub prompt_tools: Vec<String>,
     /// `prompt_benchmark`: the authored task's stable id.
     #[arg(long = "prompt-task-id", value_name = "ID")]
     pub prompt_task_id: Option<String>,
@@ -586,6 +595,8 @@ fn prompt_benchmark_from_flags(args: &AuthorArgs) -> anyhow::Result<ResolvedRunn
                 credential_env,
                 max_output_units: args.prompt_max_output_units,
                 temperature: args.prompt_temperature,
+                harness: non_empty(&args.prompt_harness),
+                tool_allowlist: args.prompt_tools.clone(),
             },
             tasks: vec![task],
         },
@@ -644,6 +655,8 @@ fn prompt_benchmark_from_interactive<R: BufRead, W: Write>(
                 credential_env,
                 max_output_units,
                 temperature,
+                harness: None,
+                tool_allowlist: Vec::new(),
             },
             tasks: vec![PromptBenchmarkTask {
                 task_id,
@@ -888,6 +901,8 @@ mod tests {
             prompt_credential_env: None,
             prompt_max_output_units: None,
             prompt_temperature: None,
+            prompt_harness: None,
+            prompt_tools: Vec::new(),
             prompt_task_id: None,
             prompt_task_prompt: None,
             prompt_task_class: None,

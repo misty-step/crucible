@@ -1,6 +1,22 @@
 # Longitudinal scores view across model/config/prompt/harness/tool axes
 
-Priority: P1 · Status: pending · Estimate: M
+Priority: P1 · Status: done · Estimate: M
+
+## Outcome (completed 2026-07-04)
+
+`run_records` gains nullable `harness`/`tool_allowlist` columns (additive
+`ALTER TABLE` migration via a generalized `ensure_column`, extending the
+existing `task_class` precedent); `PromptModelConfig`/`AgenticJudgeConfig`
+gain matching optional fields threaded through evidence JSON and `crucible
+author --prompt-harness`/`--prompt-tool`. `config_id` gains an additive
+`:harness=`/`:tools=` suffix only when recorded, so pre-existing config
+identities are unchanged. `run_store::score_history` (CLI `runs history`,
+MCP `crucible_runs_history`, `GET /api/history`) returns one config's score
+trend oldest-to-newest. `run_store::pivot_by_model` (CLI `runs pivot`, MCP
+`crucible_runs_pivot`, `GET /api/pivot`) returns one benchmark's latest run
+per model, optionally narrowed to one harness. `runs list`/`crucible_runs_list`
+gain a `--harness`/`harness` filter. No `011`/`009` regression: full
+`cargo test --all` and `./scripts/check.sh` green.
 
 ## Goal
 
@@ -42,17 +58,17 @@ those axes does not.
 
 ## Oracle
 
-- [ ] Config identity gains explicit `harness` and `tool_allowlist` fields
+- [x] Config identity gains explicit `harness` and `tool_allowlist` fields
   (or a documented equivalent) alongside the existing runner/provider/model/
   system-prompt-hash tuple, with a migration note for existing rows.
-- [ ] A time-series query (CLI + MCP) returns a benchmark's score history for
+- [x] A time-series query (CLI + MCP) returns a benchmark's score history for
   a given config, ordered by run date, with intervals — the `009` trend-
   sparkline item, actually shipped and wired into the dashboard.
-- [ ] At least one cross-axis pivot view exists (e.g. "this benchmark, this
+- [x] At least one cross-axis pivot view exists (e.g. "this benchmark, this
   model, every harness, over time" or "this benchmark, every model, this
   harness, over time") backed by the run database, not a hand-assembled
   report.
-- [ ] No existing `011`/`009` functionality regresses; this ticket extends the
+- [x] No existing `011`/`009` functionality regresses; this ticket extends the
   schema and view layer, it does not re-litigate the storage design.
 
 ## Notes

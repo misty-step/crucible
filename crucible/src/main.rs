@@ -356,6 +356,10 @@ enum RunsCommand {
         /// Model slug to filter on.
         #[arg(long, value_name = "SLUG")]
         model: Option<String>,
+        /// Agent harness identity to filter on, e.g. claude-code or codex
+        /// (backlog 027).
+        #[arg(long, value_name = "HARNESS")]
+        harness: Option<String>,
         /// Only runs created at or after this RFC3339 timestamp or YYYY-MM-DD date.
         #[arg(long, value_name = "TIMESTAMP")]
         since: Option<String>,
@@ -424,6 +428,41 @@ enum RunsCommand {
         /// SQLite run ledger path.
         #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
         db: PathBuf,
+        /// Emit stable JSON instead of a readable table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Time-series score history for one benchmark/config, ordered oldest
+    /// to newest (backlog 027) — the longitudinal view a single config's
+    /// trend line needs.
+    History {
+        /// SQLite run ledger path.
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        db: PathBuf,
+        /// Benchmark id to trend.
+        #[arg(long, value_name = "ID")]
+        benchmark: String,
+        /// Config id or model slug to trend.
+        #[arg(long, value_name = "CONFIG_OR_MODEL")]
+        config: String,
+        /// Emit stable JSON instead of a readable table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Cross-axis pivot: one benchmark's latest run per model, optionally
+    /// narrowed to one harness (backlog 027) — "this benchmark, this
+    /// harness, across all models".
+    Pivot {
+        /// SQLite run ledger path.
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        db: PathBuf,
+        /// Benchmark id to pivot.
+        #[arg(long, value_name = "ID")]
+        benchmark: String,
+        /// Agent harness identity to narrow to, e.g. claude-code or codex.
+        /// Omit to pivot across every harness recorded for the benchmark.
+        #[arg(long, value_name = "HARNESS")]
+        harness: Option<String>,
         /// Emit stable JSON instead of a readable table.
         #[arg(long)]
         json: bool,
@@ -655,6 +694,7 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             benchmark,
             config,
             model,
+            harness,
             since,
             until,
             limit,
@@ -673,6 +713,7 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
                 benchmark: benchmark.as_deref(),
                 config: config.as_deref(),
                 model: model.as_deref(),
+                harness: harness.as_deref(),
                 since_unix_ms,
                 until_unix_ms,
                 limit,
@@ -739,6 +780,32 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&status)?);
             } else {
                 print_judge_licence_status(&licence_key, status.as_ref());
+            }
+        }
+        RunsCommand::History {
+            db,
+            benchmark,
+            config,
+            json,
+        } => {
+            let history = run_store::score_history(&db, &benchmark, &config)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&history)?);
+            } else {
+                print_score_history(&history);
+            }
+        }
+        RunsCommand::Pivot {
+            db,
+            benchmark,
+            harness,
+            json,
+        } => {
+            let pivot = run_store::pivot_by_model(&db, &benchmark, harness.as_deref())?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&pivot)?);
+            } else {
+                print_pivot_view(&pivot);
             }
         }
     }
@@ -884,6 +951,65 @@ fn print_config_comparison(comparison: &run_store::ConfigComparison) {
         }
     }
     println!("  note      {}", comparison.note);
+}
+
+fn print_score_history(history: &run_store::ScoreHistory) {
+    println!("crucible runs history");
+    println!("  db        {}", history.db);
+    println!("  benchmark {}", history.benchmark);
+    println!("  config    {}", history.config_query);
+    if history.points.is_empty() {
+        println!("  (no runs)");
+        return;
+    }
+    for point in &history.points {
+        let score = match point.point {
+            Some(value) => format!(
+                "{:.1}%   {:.0}% CI [{:.1}%, {:.1}%]   ({}; {}/{})",
+                value * 100.0,
+                point.confidence * 100.0,
+                point.lower * 100.0,
+                point.upper * 100.0,
+                point.method,
+                point.successes,
+                point.n
+            ),
+            None => format!(
+                "n/a   {:.0}% CI [{:.1}%, {:.1}%]   ({}; {}/{})",
+                point.confidence * 100.0,
+                point.lower * 100.0,
+                point.upper * 100.0,
+                point.method,
+                point.successes,
+                point.n
+            ),
+        };
+        println!(
+            "  {}  run={}  {}",
+            point.created_at_unix_ms, point.run_id, score
+        );
+    }
+}
+
+fn print_pivot_view(pivot: &run_store::PivotView) {
+    println!("crucible runs pivot");
+    println!("  db        {}", pivot.db);
+    println!("  benchmark {}", pivot.benchmark);
+    match &pivot.harness {
+        Some(harness) => println!("  harness   {harness}"),
+        None => println!("  harness   (all)"),
+    }
+    if pivot.rows.is_empty() {
+        println!("  (no runs)");
+        return;
+    }
+    for row in &pivot.rows {
+        println!(
+            "  model={:<28} {}",
+            row.model.as_deref().unwrap_or("(unknown)"),
+            format_stored_score(&row.latest_run)
+        );
+    }
 }
 
 fn format_stored_score(run: &run_store::StoredRun) -> String {
