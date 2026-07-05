@@ -4,7 +4,7 @@ Status: open
 Priority: P1  
 Owner: crucible
 
-## Premise
+## Goal
 
 Harbor is now the official harness for Terminal-Bench 2.0 and a broader
 containerized agent-benchmark framework. Its task format standardizes an
@@ -17,18 +17,18 @@ the benchmark artifact, controlled runner comparison, calibration/trust layer,
 uncertainty/noise-floor reporting, and durable run records. Harbor is valuable
 at the execution/task-portability seam.
 
-## Acceptance
+## Oracle
 
-- Add a `harbor_task` or `harbor_dataset` runner family that can execute a local
+- [ ] Add a `harbor_task` or `harbor_dataset` runner family that can execute a local
   Harbor task/dataset through `harbor run` with a selected runner bundle.
-- Parse Harbor job/trial `result.json`, verifier reward files, artifact
+- [ ] Parse Harbor job/trial `result.json`, verifier reward files, artifact
   manifests, and trajectories into Crucible run records without copying raw
   model outputs into tracked files.
-- Preserve Crucible's comparison discipline: paired task rows where possible,
+- [ ] Preserve Crucible's comparison discipline: paired task rows where possible,
   uncertainty intervals on rates, and a plain-language noise-floor verdict.
-- Support import of Terminal-Bench 2.0 tasks locally through Harbor before
+- [ ] Support import of Terminal-Bench 2.0 tasks locally through Harbor before
   considering registry publishing.
-- Document the export/publish path separately: publishing Crucible-authored
+- [ ] Document the export/publish path separately: publishing Crucible-authored
   tasks upstream is useful only after a local runner proves parity against the
   same deterministic verifier.
 
