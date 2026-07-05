@@ -668,6 +668,8 @@ fn run_prompt_benchmark_with_client(
             model: config.model.clone(),
             temperature: config.temperature,
             max_output_units: config.max_output_units,
+            harness: config.harness.clone(),
+            tool_allowlist: config.tool_allowlist.clone(),
             system_prompt_hash: stable_hash(&[&config.system_prompt]),
             score: &score,
             totals: PromptTotals {
@@ -1071,6 +1073,8 @@ fn run_agentic_judge_with_client(
             provider: config.provider,
             model: config.model.clone(),
             temperature: config.temperature,
+            harness: config.harness.clone(),
+            tool_allowlist: config.tool_allowlist.clone(),
             system_prompt_hash,
             score: &score,
             totals: PromptTotals {
@@ -1901,6 +1905,10 @@ struct PromptRunEvidence<'a> {
     temperature: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_output_units: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    harness: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_allowlist: Vec<String>,
     system_prompt_hash: String,
     score: &'a Score,
     totals: PromptTotals,
@@ -1954,6 +1962,10 @@ struct AgenticJudgeEvidence<'a> {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    harness: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_allowlist: Vec<String>,
     system_prompt_hash: String,
     score: &'a Score,
     totals: PromptTotals,
@@ -2170,6 +2182,8 @@ mod tests {
             credential_env: "OPENROUTER_API_KEY".to_string(),
             temperature: Some(0),
             generator_model: None,
+            harness: None,
+            tool_allowlist: Vec::new(),
         }
     }
 
@@ -2213,6 +2227,8 @@ mod tests {
             credential_env: "OPENROUTER_API_KEY".to_string(),
             max_output_units: Some(8),
             temperature: Some(0),
+            harness: None,
+            tool_allowlist: Vec::new(),
         };
 
         let effective =
@@ -2347,6 +2363,8 @@ mod tests {
                     credential_env: "OPENROUTER_API_KEY".to_string(),
                     max_output_units: Some(8),
                     temperature: Some(0),
+                    harness: Some("claude-code".to_string()),
+                    tool_allowlist: vec!["bash".to_string(), "web_search".to_string()],
                 },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "exact".to_string(),
@@ -2394,6 +2412,15 @@ mod tests {
         assert_eq!(evidence["tasks"][0]["class"], "format_adherence");
         assert_eq!(evidence["tasks"][0]["total_tokens"], 10);
         assert_eq!(evidence["max_output_units"], 8);
+        assert_eq!(
+            evidence["harness"], "claude-code",
+            "the config's harness identity flows through to evidence: {evidence}"
+        );
+        assert_eq!(
+            evidence["tool_allowlist"],
+            serde_json::json!(["bash", "web_search"]),
+            "the config's tool allowlist flows through to evidence: {evidence}"
+        );
     }
 
     /// A model client that proves calls actually overlap in time: it counts
@@ -2575,6 +2602,8 @@ mod tests {
             credential_env: "OPENROUTER_API_KEY".to_string(),
             max_output_units: Some(8),
             temperature: Some(0),
+            harness: Some("claude-code".to_string()),
+            tool_allowlist: vec!["bash".to_string()],
         };
         let options = RunOptions {
             prompt_model: Some("test/model-b".to_string()),
@@ -2589,6 +2618,16 @@ mod tests {
         assert_eq!(effective.system_prompt, "Use terse answers.");
         assert_eq!(effective.max_output_units, Some(32));
         assert_eq!(effective.temperature, Some(1));
+        assert_eq!(
+            effective.harness,
+            Some("claude-code".to_string()),
+            "harness identity is not one of the overridable fields; it survives untouched"
+        );
+        assert_eq!(
+            effective.tool_allowlist,
+            vec!["bash".to_string()],
+            "tool allowlist is not one of the overridable fields; it survives untouched"
+        );
     }
 
     #[test]
@@ -2721,6 +2760,8 @@ mod tests {
                     credential_env: "OPENROUTER_API_KEY".to_string(),
                     max_output_units: None,
                     temperature: None,
+                    harness: None,
+                    tool_allowlist: Vec::new(),
                 },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "broken".to_string(),

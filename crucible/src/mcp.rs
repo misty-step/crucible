@@ -180,6 +180,15 @@ fn crucible_author_tool_def() -> Value {
                     "type": "integer",
                     "description": "prompt_benchmark: optional integer temperature."
                 },
+                "prompt_harness": {
+                    "type": "string",
+                    "description": "prompt_benchmark: optional agent harness identity for this run, e.g. claude-code, codex, or raw-api (backlog 027)."
+                },
+                "prompt_tools": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "prompt_benchmark: tool ids available to the harness during this run. Omit entirely to leave the tool allowlist empty (backlog 027)."
+                },
                 "prompt_task_id": {
                     "type": "string",
                     "description": "prompt_benchmark: the authored task's stable id."
@@ -545,6 +554,9 @@ struct CrucibleAuthorArgs {
     prompt_credential_env: Option<String>,
     prompt_max_output_units: Option<u32>,
     prompt_temperature: Option<u32>,
+    prompt_harness: Option<String>,
+    #[serde(default)]
+    prompt_tools: Vec<String>,
     prompt_task_id: Option<String>,
     prompt_task_prompt: Option<String>,
     prompt_task_class: Option<String>,
@@ -602,6 +614,8 @@ impl CrucibleAuthorArgs {
             prompt_credential_env: self.prompt_credential_env,
             prompt_max_output_units: self.prompt_max_output_units,
             prompt_temperature: self.prompt_temperature,
+            prompt_harness: self.prompt_harness,
+            prompt_tools: self.prompt_tools,
             prompt_task_id: self.prompt_task_id,
             prompt_task_prompt: self.prompt_task_prompt,
             prompt_task_class: self.prompt_task_class,

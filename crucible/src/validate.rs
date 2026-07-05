@@ -229,6 +229,8 @@ mod tests {
                     credential_env: "OPENROUTER_API_KEY".to_string(),
                     temperature: None,
                     generator_model: None,
+                    harness: None,
+                    tool_allowlist: Vec::new(),
                 },
                 tasks: vec![AgenticJudgeTask {
                     task_id: "t1".to_string(),
@@ -267,6 +269,8 @@ mod tests {
                     credential_env: "OPENROUTER_API_KEY".to_string(),
                     temperature: None,
                     generator_model: None,
+                    harness: None,
+                    tool_allowlist: Vec::new(),
                 },
                 tasks: vec![AgenticJudgeTask {
                     task_id: "t1".to_string(),
@@ -412,6 +416,8 @@ mod tests {
                     credential_env: "OPENROUTER_API_KEY".to_string(),
                     max_output_units: None,
                     temperature: None,
+                    harness: None,
+                    tool_allowlist: Vec::new(),
                 },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "broken".to_string(),
