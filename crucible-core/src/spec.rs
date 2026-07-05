@@ -305,6 +305,16 @@ pub struct AgenticJudgeConfig {
     /// Optional integer temperature (see [`PromptModelConfig::temperature`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<u32>,
+    /// The model slug that generated the candidate outputs this judge scores,
+    /// when known. Enables the self-evaluation bias check (report §6's
+    /// self-preference bias table: "judge prefers outputs from same model
+    /// family"): the runner compares this against `model`'s
+    /// [`crate::model_family`] and records the risk on the
+    /// [`crate::CalibrationRecord`] rather than silently allowing it.
+    /// `None` when the generator is unrecorded — the calibration record then
+    /// reports no generator and no risk, not a false "different family".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator_model: Option<String>,
 }
 
 /// One candidate output for the judge to score against a rubric.

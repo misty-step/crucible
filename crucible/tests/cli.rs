@@ -2131,6 +2131,38 @@ fn run_agentic_judge_requires_openrouter_key_without_fallback() {
     );
 }
 
+/// `crucible runs judge-status` (backlog 029) answers "is this judge licensed"
+/// by licence key without any run ever having existed — reads as
+/// locked/unlicensed (`null`), not an error, since an unmeasured identity is a
+/// normal, expected state for a licence key nobody has run yet.
+#[test]
+fn runs_judge_status_reports_no_licence_for_an_unmeasured_key() {
+    let out_dir = temp_root("judge-status-empty");
+    let db = out_dir.join("runs.sqlite");
+
+    let out = crucible()
+        .arg("runs")
+        .arg("judge-status")
+        .arg("--licence-key")
+        .arg("judge-licence:v1:no/such-judge:hash-a:hash-b")
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .expect("crucible runs judge-status executes");
+    assert!(
+        out.status.success(),
+        "an unmeasured licence key is a normal query result, not a usage error; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let status: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("judge-status emits JSON");
+    assert!(
+        status.is_null(),
+        "no run has measured this key, so the standing licence is null: {status}"
+    );
+}
+
 /// MCP exposes the same declared-spec runner as the CLI: initialize the stdio
 /// server, list tools, call `crucible_run`, and get the scored run report plus
 /// the on-disk evidence packet.

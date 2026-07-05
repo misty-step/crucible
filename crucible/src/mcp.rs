@@ -465,6 +465,24 @@ fn tool_defs() -> Value {
                     }
                 }
             }
+        },
+        {
+            "name": "crucible_runs_judge_status",
+            "description": "Query a judge's standing calibration licence by its licence key (backlog 029) -- is this exact judge identity (model + judge prompt + calibration rubric set) currently licensed, across runs, without recomputing calibration from scratch. The licence key is the calibration record's licence_key field, also logged in an agentic-judge run's notes. Returns null when no run has ever measured this exact identity -- read that as locked/unlicensed.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["licence_key"],
+                "properties": {
+                    "db": {
+                        "type": "string",
+                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                    },
+                    "licence_key": {
+                        "type": "string",
+                        "description": "The calibration record's licence_key."
+                    }
+                }
+            }
         }
     ])
 }
@@ -489,6 +507,7 @@ fn call_tool(params: &Value) -> Result<Value> {
         "crucible_runs_list" => crucible_runs_list(arguments),
         "crucible_runs_show" => crucible_runs_show(arguments),
         "crucible_runs_compare" => crucible_runs_compare(arguments),
+        "crucible_runs_judge_status" => crucible_runs_judge_status(arguments),
         other => Err(anyhow!("unknown tool: {other}")),
     }
 }
@@ -792,6 +811,25 @@ fn crucible_runs_show(arguments: Value) -> Result<Value> {
 }
 
 #[derive(Debug, Deserialize)]
+struct RunsJudgeStatusArgs {
+    db: Option<PathBuf>,
+    licence_key: String,
+}
+
+fn crucible_runs_judge_status(arguments: Value) -> Result<Value> {
+    let args: RunsJudgeStatusArgs =
+        serde_json::from_value(arguments).context("parse crucible_runs_judge_status arguments")?;
+    let db = args
+        .db
+        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let status = run_store::judge_licence_status(&db, &args.licence_key)?;
+    Ok(json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&status)? }],
+        "structuredContent": status
+    }))
+}
+
+#[derive(Debug, Deserialize)]
 struct RunsCompareArgs {
     db: Option<PathBuf>,
     benchmark: String,
@@ -916,8 +954,23 @@ mod tests {
                 "crucible_export",
                 "crucible_runs_list",
                 "crucible_runs_show",
-                "crucible_runs_compare"
+                "crucible_runs_compare",
+                "crucible_runs_judge_status"
             ]
+        );
+    }
+
+    #[test]
+    fn crucible_runs_judge_status_reports_null_for_an_unmeasured_licence_key() {
+        let db = crate::test_fixtures::temp_db("mcp-judge-status-empty");
+        let response = crucible_runs_judge_status(json!({
+            "db": db.display().to_string(),
+            "licence_key": "judge-licence:v1:no/such-judge:hash-a:hash-b",
+        }))
+        .expect("crucible_runs_judge_status succeeds");
+        assert!(
+            response["structuredContent"].is_null(),
+            "no run has measured this key: {response}"
         );
     }
 

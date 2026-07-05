@@ -404,6 +404,22 @@ enum RunsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Query a judge's standing calibration licence by its licence key (the
+    /// `licence_key` field on a `crucible.calibration_record.v1`, or the
+    /// value logged in an agentic-judge run's notes) — "is this exact judge
+    /// (model + prompt + rubric set) currently licensed", across runs,
+    /// without recomputing calibration from scratch (backlog 029).
+    JudgeStatus {
+        /// The calibration record's `licence_key`.
+        #[arg(long, value_name = "KEY")]
+        licence_key: String,
+        /// SQLite run ledger path.
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        db: PathBuf,
+        /// Emit stable JSON instead of a readable table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -701,8 +717,50 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
                 }
             }
         }
+        RunsCommand::JudgeStatus {
+            licence_key,
+            db,
+            json,
+        } => {
+            let status = run_store::judge_licence_status(&db, &licence_key)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                print_judge_licence_status(&licence_key, status.as_ref());
+            }
+        }
     }
     Ok(())
+}
+
+fn print_judge_licence_status(licence_key: &str, status: Option<&run_store::JudgeLicenceStatus>) {
+    println!("crucible runs judge-status");
+    println!("  licence_key  {licence_key}");
+    match status {
+        None => println!(
+            "  (no run has measured this judge/prompt/rubric identity — locked/unlicensed)"
+        ),
+        Some(status) => {
+            println!("  judge_model  {}", status.judge_model);
+            println!(
+                "  unlocked     {}  (agreement {:.2}, κ {:.2}, threshold {:.2})",
+                status.unlocked, status.agreement, status.cohen_kappa, status.unlock_threshold
+            );
+            println!(
+                "  fp_rate      {:.2}   fn_rate  {:.2}",
+                status.false_positive_rate, status.false_negative_rate
+            );
+            if status.self_evaluation_bias_risk {
+                println!(
+                    "  bias_risk    SELF-EVALUATION RISK (generator {})",
+                    status.generator_id.as_deref().unwrap_or("?")
+                );
+            }
+            println!("  n            {}", status.n);
+            println!("  from_run     {}", status.run_id);
+            println!("  updated_at   {}", status.updated_at_unix_ms);
+        }
+    }
 }
 
 fn print_run_list(list: &run_store::RunList) {
