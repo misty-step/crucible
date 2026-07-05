@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en" data-ae-theme="violet">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crucible release notes</title>
+    <meta
+      name="description"
+      content="User-facing release notes for Crucible, the eval and benchmark workbench."
+    />
+    <script>
+      try {
+        var m = localStorage.getItem('ae-mode');
+        if (m === 'dark' || m === 'light') {
+          document.documentElement.classList.add(m);
+          document.documentElement.style.colorScheme = m;
+        }
+      } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="aesthetic.css" />
+    <link rel="stylesheet" href="marketing.css" />
+  </head>
+  <body>
+    <svg aria-hidden="true" width="0" height="0" style="position: absolute">
+      <symbol id="i-flask-conical" viewBox="0 0 24 24">
+        <path
+          d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"
+        />
+        <path d="M6.453 15h11.094" />
+        <path d="M8.5 2h7" />
+      </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2" />
+        <path d="M12 20v2" />
+        <path d="m4.93 4.93 1.41 1.41" />
+        <path d="m17.66 17.66 1.41 1.41" />
+        <path d="M2 12h2" />
+        <path d="M20 12h2" />
+        <path d="m6.34 17.66-1.41 1.41" />
+        <path d="m19.07 4.93-1.41 1.41" />
+      </symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+      </symbol>
+      <symbol id="i-circle-check" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10" />
+        <path d="m9 12 2 2 4-4" />
+      </symbol>
+    </svg>
+
+    <div class="ae-screen ae-wide">
+      <header class="ae-bar msk-bar">
+        <a class="ae-logo" href="./" aria-label="Crucible home">
+          <span class="ae-app-mark" aria-hidden="true">
+            <svg class="ae-icon" data-lucide="flask-conical">
+              <use href="#i-flask-conical" />
+            </svg>
+          </span>
+          <span class="ae-name">Crucible</span>
+        </a>
+        <span class="msk-actions">
+          <nav class="ae-chrome msk-nav" aria-label="Site">
+            <a href="./">home</a>
+            <a href="changelog.html" aria-current="page">release notes</a>
+          </nav>
+          <button class="ae-mode" aria-label="toggle color mode">
+            <svg class="ae-icon ae-sun"><use href="#i-sun" /></svg>
+            <svg class="ae-icon ae-moon"><use href="#i-moon" /></svg>
+          </button>
+        </span>
+      </header>
+
+      <main class="ae-stage ae-stage-scroll">
+        <article class="ae-doc msk-page" aria-labelledby="release-notes-title">
+          <h1 id="release-notes-title">Release notes</h1>
+          <p class="ae-lede">
+            Crucible does not yet cut tagged releases or publish a formal
+            CHANGELOG — it ships continuously to <code>master</code>. These
+            notes are an honest stub summarizing the most recent user-facing
+            commits, not a versioned release train. The repository is
+            currently private; this page will link to it once that changes.
+          </p>
+
+          <section class="msk-release">
+            <p class="ae-chrome">2026-07-04 - unreleased, main branch</p>
+            <h2>Run inspection and external eval import</h2>
+            <ul>
+              <li>
+                Added a Trace layer so a stored run's execution can be
+                inspected step by step, not just its final verdict
+                (<code>crucible-030</code>).
+              </li>
+              <li>
+                Added <code>crucible import promptfoo</code>, the first
+                external eval adapter — bring an existing promptfoo config in
+                as a declared <code>EvalSpec</code> instead of hand-writing
+                one.
+              </li>
+            </ul>
+          </section>
+
+          <section class="msk-release">
+            <p class="ae-chrome">2026-07-04 - unreleased, main branch</p>
+            <h2>Harder judge calibration, longitudinal comparisons</h2>
+            <ul>
+              <li>
+                Hardened agentic-judge calibration against known gaps in the
+                judge-vs-human agreement report.
+              </li>
+              <li>
+                Added longitudinal score queries: compare harness and
+                tool-allowlist configuration identity across run history, not
+                just one-off pairs.
+              </li>
+            </ul>
+          </section>
+
+          <section class="msk-release">
+            <p class="ae-chrome">2026-07-04 - unreleased, main branch</p>
+            <h2>Verified-live onboarding</h2>
+            <ul>
+              <li>
+                Added <code>crucible doctor</code>: one command that proves
+                the CLI, MCP server, serve UI, and SQLite run ledger are
+                actually live, with no network call and no spent model
+                credit.
+              </li>
+              <li>
+                Closed a brand gap so the flask-conical mark renders
+                consistently across the dashboard and the adjudication panel.
+              </li>
+            </ul>
+            <p class="ae-status">
+              <svg class="ae-icon ae-ok" data-lucide="circle-check">
+                <use href="#i-circle-check" />
+              </svg>
+              <span class="ae-status-label"
+                >Evidence: <code>cargo run -p crucible -- doctor --json</code>
+                exits 0 with every check <code>ok</code>.</span
+              >
+            </p>
+          </section>
+        </article>
+      </main>
+
+      <footer class="ae-bar msk-footer">
+        <p class="ae-chrome">
+          Crucible release notes are public by default.
+        </p>
+        <nav class="ae-foot-links ae-chrome" aria-label="Footer">
+          <!-- GitHub link omitted: misty-step/crucible is a private repository. -->
+          <a data-footer-link="misty-step" href="https://mistystep.io"
+            >Misty Step</a
+          >
+        </nav>
+      </footer>
+    </div>
+
+    <script src="mode.js"></script>
+    <script src="theme.js"></script>
+  </body>
+</html>
