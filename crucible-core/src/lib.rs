@@ -105,7 +105,10 @@ pub mod spec;
 pub use adapter::{findings_from_artifact, to_key_findings};
 pub use adjudication::{Disposition, Verdict};
 pub use artifact::{Anchor, AnchorKind, Finding, ReviewArtifact, Severity, REVIEW_ARTIFACT_SCHEMA};
-pub use calibration::{CalibrationRecord, ConfusionMatrix, CALIBRATION_RECORD_SCHEMA};
+pub use calibration::{
+    judge_licence_key, model_family, shares_model_family, CalibrationRecord, ConfusionMatrix,
+    CALIBRATION_RECORD_SCHEMA,
+};
 pub use dashboard::{
     Config, Dataset, DeltaEstimate, DeltaSign, Estimate, Eval, EvalTask, Leaderboard,
     LeaderboardEntry, LeaderboardGroup, McnemarOutcome, Pairwise, PairwiseVerdict, Run, SkipReason,

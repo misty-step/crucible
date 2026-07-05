@@ -228,6 +228,7 @@ mod tests {
                     judge_prompt: "Grade it.".to_string(),
                     credential_env: "OPENROUTER_API_KEY".to_string(),
                     temperature: None,
+                    generator_model: None,
                 },
                 tasks: vec![AgenticJudgeTask {
                     task_id: "t1".to_string(),
@@ -265,6 +266,7 @@ mod tests {
                     judge_prompt: "Grade it.".to_string(),
                     credential_env: "OPENROUTER_API_KEY".to_string(),
                     temperature: None,
+                    generator_model: None,
                 },
                 tasks: vec![AgenticJudgeTask {
                     task_id: "t1".to_string(),

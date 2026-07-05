@@ -15,10 +15,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use crucible_core::{
-    agreement, cohen_kappa, findings_from_artifact, schema_valid, to_key_findings,
-    AgenticJudgeConfig, AgenticJudgeTask, AggregationMethod, CalibrationRecord,
-    CerberusReceiptTask, ConfusionMatrix, CorpusSpec, EvalSpec, ExpectedKey, GraderKind,
-    IntervalMethod, KeyFinding, ModelProvider, PromptBenchmarkTask, PromptExpectation,
+    agreement, cohen_kappa, findings_from_artifact, judge_licence_key, schema_valid,
+    shares_model_family, to_key_findings, AgenticJudgeConfig, AgenticJudgeTask, AggregationMethod,
+    CalibrationRecord, CerberusReceiptTask, ConfusionMatrix, CorpusSpec, EvalSpec, ExpectedKey,
+    GraderKind, IntervalMethod, KeyFinding, ModelProvider, PromptBenchmarkTask, PromptExpectation,
     PromptModelConfig, RunnerKind, RunnerSpec, CALIBRATION_RECORD_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
@@ -743,8 +743,42 @@ fn prompt_text_for_task(spec_path: &Path, task: &PromptBenchmarkTask) -> anyhow:
 
 /// Judge protocol suffix appended to every judge call's system prompt so the
 /// response is parseable regardless of what the operator wrote in
-/// `judge_prompt`: exactly one `VERDICT: PASS` or `VERDICT: FAIL` line.
-const JUDGE_VERDICT_PROTOCOL: &str = "\n\nRespond with exactly one line in the form `VERDICT: PASS` or `VERDICT: FAIL`, followed by one sentence of reasoning on the next line. Do not rubber-stamp: a candidate that fails the rubric must get VERDICT: FAIL even if it is close.";
+/// `judge_prompt`: exactly one `VERDICT: PASS`, `VERDICT: FAIL`, or
+/// `VERDICT: UNKNOWN` line (report §6 checklist item 8: "give the judge an
+/// explicit `unknown`/`insufficient_information` option").
+const JUDGE_VERDICT_PROTOCOL: &str = "\n\nRespond with exactly one line in the form `VERDICT: PASS`, `VERDICT: FAIL`, or `VERDICT: UNKNOWN`, followed by one sentence of reasoning on the next line. Do not rubber-stamp: a candidate that fails the rubric must get VERDICT: FAIL even if it is close. Use VERDICT: UNKNOWN only when the rubric and candidate genuinely do not give you enough information to decide — never guess a PASS or FAIL you are not confident in.";
+
+/// A judge's verdict on one task: pass, fail, or a genuine inability to
+/// decide (report §6 item 8). `Unknown` is a distinct, first-class outcome —
+/// never silently coerced to `Pass` or `Fail` for scoring or calibration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JudgeVerdict {
+    Pass,
+    Fail,
+    Unknown,
+}
+
+impl JudgeVerdict {
+    /// The binary reading of this verdict, for calibration/scoring paths
+    /// that only make sense for a decisive verdict. `None` for `Unknown`.
+    fn as_bool(self) -> Option<bool> {
+        match self {
+            JudgeVerdict::Pass => Some(true),
+            JudgeVerdict::Fail => Some(false),
+            JudgeVerdict::Unknown => None,
+        }
+    }
+}
+
+impl std::fmt::Display for JudgeVerdict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            JudgeVerdict::Pass => "PASS",
+            JudgeVerdict::Fail => "FAIL",
+            JudgeVerdict::Unknown => "UNKNOWN",
+        })
+    }
+}
 
 /// Raw-agreement floor an agentic judge's calls against the tasks with a known
 /// `expected_pass` (the deterministic tier for the same tasks) must clear to
@@ -785,9 +819,20 @@ fn run_agentic_judge_with_client(
     }
 
     let judge_system_prompt = format!("{}{JUDGE_VERDICT_PROTOCOL}", config.judge_prompt);
+    let system_prompt_hash = stable_hash(&[&judge_system_prompt]);
+    // Self-evaluation bias check (report §6's self-preference bias table):
+    // does the judge share a model family with whoever generated the
+    // candidates it is scoring? Checked once at construction, not per-task —
+    // the answer does not depend on any one task — and surfaced on the
+    // calibration record rather than gating the run.
+    let self_evaluation_bias_risk = config
+        .generator_model
+        .as_deref()
+        .is_some_and(|generator| shares_model_family(&config.model, generator));
     let mut task_results = Vec::new();
     let mut scored_successes = 0u64;
     let mut scored_n = 0u64;
+    let mut unknown_scored = 0u64;
     let mut canary_notes = Vec::new();
     // Every task with a known `expected_pass` is a paired (judge, deterministic)
     // calibration item, not only the judge-gaming canary — backlog 012's
@@ -795,6 +840,14 @@ fn run_agentic_judge_with_client(
     // the same tasks.
     let mut calibration_judge = Vec::new();
     let mut calibration_human = Vec::new();
+    let mut calibration_rubric_hashes = Vec::new();
+    let mut unknown_calibration = 0u64;
+    // Judge-specific run stats (report §6 item 11), distinct from any
+    // candidate-generation cost this runner does not itself incur (candidates
+    // here are authored strings, not live-generated).
+    let mut total_cost_usd = 0.0f64;
+    let mut any_cost_recorded = false;
+    let mut total_latency_ms: u64 = 0;
 
     for task in tasks {
         let user_prompt = format!(
@@ -810,39 +863,67 @@ fn run_agentic_judge_with_client(
             temperature: config.temperature,
         })?;
         let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+        total_latency_ms = total_latency_ms.saturating_add(latency_ms);
+        if let Some(cost) = response.cost_usd {
+            total_cost_usd += cost;
+            any_cost_recorded = true;
+        }
         let verdict = parse_judge_verdict(&response.output).with_context(|| {
             format!(
                 "agentic judge task {:?} returned an unparseable verdict",
                 task.task_id
             )
         })?;
+        let rubric_hash = stable_hash(&[&task.rubric]);
 
-        match task.expected_pass {
-            Some(expected) if expected != verdict => {
-                if task.refuse_on_mismatch {
-                    anyhow::bail!(
-                        "judge-gaming guard tripped on task {:?}: expected verdict {expected} but the judge said {verdict}; refusing to trust this run",
+        match (task.expected_pass, verdict) {
+            (Some(_), JudgeVerdict::Unknown) => {
+                // Diagnostic, not a mismatch: an honest "I can't tell" is not
+                // the judge-gaming guard's target (rubber-stamping) and must
+                // never be coerced into agreeing or disagreeing with
+                // `expected_pass`. Excluded from the agreement/κ measurement.
+                unknown_calibration += 1;
+                calibration_rubric_hashes.push(rubric_hash.clone());
+                canary_notes.push(format!(
+                    "calibration task {:?} returned UNKNOWN — diagnostic, excluded from the agreement measurement.",
+                    task.task_id
+                ));
+            }
+            (Some(expected), verdict) => {
+                let verdict_bool = verdict
+                    .as_bool()
+                    .expect("Unknown is handled by the arm above");
+                calibration_rubric_hashes.push(rubric_hash.clone());
+                if expected != verdict_bool {
+                    if task.refuse_on_mismatch {
+                        anyhow::bail!(
+                            "judge-gaming guard tripped on task {:?}: expected verdict {expected} but the judge said {verdict}; refusing to trust this run",
+                            task.task_id
+                        );
+                    }
+                    calibration_judge.push(verdict_bool);
+                    calibration_human.push(expected);
+                    canary_notes.push(format!(
+                        "calibration task {:?} disagreed with the judge (expected {expected}, got {verdict}) but did not refuse the run.",
                         task.task_id
-                    );
+                    ));
+                } else {
+                    calibration_judge.push(verdict_bool);
+                    calibration_human.push(expected);
+                    canary_notes.push(format!(
+                        "calibration task {:?} matched its expected verdict.",
+                        task.task_id
+                    ));
                 }
-                calibration_judge.push(verdict);
-                calibration_human.push(expected);
-                canary_notes.push(format!(
-                    "calibration task {:?} disagreed with the judge (expected {expected}, got {verdict}) but did not refuse the run.",
-                    task.task_id
-                ));
             }
-            Some(expected) => {
-                calibration_judge.push(verdict);
-                calibration_human.push(expected);
-                canary_notes.push(format!(
-                    "calibration task {:?} matched its expected verdict.",
-                    task.task_id
-                ));
+            (None, JudgeVerdict::Unknown) => {
+                // Diagnostic: never silently coerced to a pass or a fail —
+                // excluded from the scored denominator entirely.
+                unknown_scored += 1;
             }
-            None => {
+            (None, verdict) => {
                 scored_n += 1;
-                if verdict {
+                if verdict == JudgeVerdict::Pass {
                     scored_successes += 1;
                 }
             }
@@ -851,9 +932,19 @@ fn run_agentic_judge_with_client(
         task_results.push(AgenticJudgeTaskResult {
             task_id: task.task_id.clone(),
             prompt_hash: stable_hash(&[&judge_system_prompt, &user_prompt]),
-            rubric_hash: stable_hash(&[&task.rubric]),
+            rubric_hash,
             expected_pass: task.expected_pass,
-            passed: verdict,
+            verdict: match verdict {
+                JudgeVerdict::Pass => "pass",
+                JudgeVerdict::Fail => "fail",
+                JudgeVerdict::Unknown => "unknown",
+            },
+            // Legacy bool mirror of `verdict`, kept for the shared
+            // prompt/judge evidence ingestion path in `run_store.rs` which
+            // requires every task to carry a `passed` bool. `Unknown` reads
+            // as `false` here — the authoritative tri-state lives in
+            // `verdict`, never re-derived from this field.
+            passed: verdict == JudgeVerdict::Pass,
             output: response.output,
             latency_ms,
             response_id: response.response_id,
@@ -872,8 +963,42 @@ fn run_agentic_judge_with_client(
         );
     }
 
-    let calibration =
-        build_calibration_record(&config.model, &calibration_judge, &calibration_human);
+    calibration_rubric_hashes.sort();
+    let calibration_rubric_hash = stable_hash(
+        &calibration_rubric_hashes
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let licence_key =
+        judge_licence_key(&config.model, &system_prompt_hash, &calibration_rubric_hash);
+    let calibration = build_calibration_record(BuildCalibrationInput {
+        judge_id: &config.model,
+        judge_verdicts: &calibration_judge,
+        expected_verdicts: &calibration_human,
+        unknown_count: unknown_calibration,
+        generator_id: config.generator_model.as_deref(),
+        self_evaluation_bias_risk,
+        licence_key: &licence_key,
+    });
+
+    let call_count = task_results.len() as u64;
+    let judge_stats = JudgeRunStats {
+        call_count,
+        total_latency_ms,
+        mean_latency_ms: if call_count == 0 {
+            0.0
+        } else {
+            total_latency_ms as f64 / call_count as f64
+        },
+        total_cost_usd: any_cost_recorded.then_some(total_cost_usd),
+        unknown_verdict_count: unknown_scored + unknown_calibration,
+        failure_rate: if call_count == 0 {
+            0.0
+        } else {
+            (unknown_scored + unknown_calibration) as f64 / call_count as f64
+        },
+    };
 
     let score = wilson_score("judge_pass_rate", scored_successes, scored_n);
     let evidence_path = out.join("agentic-judge-run.json");
@@ -887,7 +1012,7 @@ fn run_agentic_judge_with_client(
             provider: config.provider,
             model: config.model.clone(),
             temperature: config.temperature,
-            system_prompt_hash: stable_hash(&[&judge_system_prompt]),
+            system_prompt_hash,
             score: &score,
             totals: PromptTotals {
                 tasks: scored_n,
@@ -896,6 +1021,7 @@ fn run_agentic_judge_with_client(
             },
             tasks: &task_results,
             calibration: calibration.as_ref(),
+            judge_stats,
         },
     )?;
 
@@ -907,15 +1033,29 @@ fn run_agentic_judge_with_client(
             config.provider, config.model
         ),
     ];
+    if unknown_scored > 0 {
+        notes.push(format!(
+            "{unknown_scored} scored task(s) returned UNKNOWN and were excluded from the score's denominator rather than counted as pass or fail."
+        ));
+    }
+    if self_evaluation_bias_risk {
+        notes.push(format!(
+            "Self-evaluation bias risk: judge model {} and candidate generator {} share a model family (report §6 mitigation: diversify judges or calibrate against human labels).",
+            config.model,
+            config.generator_model.as_deref().unwrap_or("?"),
+        ));
+    }
     notes.extend(canary_notes);
     match &calibration {
         Some(record) if record.unlocked => notes.push(format!(
-            "Calibration UNLOCKED: {} paired task(s) vs. the deterministic tier, agreement {:.2}, κ {:.2} (threshold {:.2}) — this judge's score is trusted.",
-            record.n, record.agreement, record.cohen_kappa, record.unlock_threshold
+            "Calibration UNLOCKED: {} paired task(s) vs. the deterministic tier, agreement {:.2}, κ {:.2} (threshold {:.2}), FP rate {:.2}, FN rate {:.2} — this judge's score is trusted. Licence key: {}",
+            record.n, record.agreement, record.cohen_kappa, record.unlock_threshold,
+            record.false_positive_rate, record.false_negative_rate, record.licence_key
         )),
         Some(record) => notes.push(format!(
-            "Calibration LOCKED: {} paired task(s) vs. the deterministic tier, agreement {:.2}, κ {:.2} (threshold {:.2}) — this judge's score is diagnostic, not trusted.",
-            record.n, record.agreement, record.cohen_kappa, record.unlock_threshold
+            "Calibration LOCKED: {} paired task(s) vs. the deterministic tier, agreement {:.2}, κ {:.2} (threshold {:.2}), FP rate {:.2}, FN rate {:.2} — this judge's score is diagnostic, not trusted. Licence key: {}",
+            record.n, record.agreement, record.cohen_kappa, record.unlock_threshold,
+            record.false_positive_rate, record.false_negative_rate, record.licence_key
         )),
         None => notes.push(
             "No calibration tasks declared (no task carried a known expected_pass); this judge's score is unlicensed/diagnostic."
@@ -939,30 +1079,50 @@ fn run_agentic_judge_with_client(
     })
 }
 
-/// Parse a judge response for the `VERDICT: PASS`/`VERDICT: FAIL` line the
-/// judge protocol requires. Refuses to guess: an ambiguous or missing verdict
-/// is an error, not a default pass or fail.
-fn parse_judge_verdict(output: &str) -> anyhow::Result<bool> {
+/// Parse a judge response for the `VERDICT: PASS`/`VERDICT: FAIL`/`VERDICT:
+/// UNKNOWN` line the judge protocol requires. Refuses to guess: an ambiguous
+/// (more than one verdict tag present) or missing verdict is still an error,
+/// never silently defaulted — `UNKNOWN` is a verdict the judge states
+/// explicitly, not a fallback for a response this parser can't read.
+fn parse_judge_verdict(output: &str) -> anyhow::Result<JudgeVerdict> {
     let upper = output.to_uppercase();
     let pass = upper.contains("VERDICT: PASS") || upper.contains("VERDICT:PASS");
     let fail = upper.contains("VERDICT: FAIL") || upper.contains("VERDICT:FAIL");
-    match (pass, fail) {
-        (true, false) => Ok(true),
-        (false, true) => Ok(false),
-        (false, false) => {
-            anyhow::bail!("judge response had no VERDICT: PASS/FAIL line: {output:?}")
+    let unknown = upper.contains("VERDICT: UNKNOWN") || upper.contains("VERDICT:UNKNOWN");
+    match (pass, fail, unknown) {
+        (true, false, false) => Ok(JudgeVerdict::Pass),
+        (false, true, false) => Ok(JudgeVerdict::Fail),
+        (false, false, true) => Ok(JudgeVerdict::Unknown),
+        (false, false, false) => {
+            anyhow::bail!("judge response had no VERDICT: PASS/FAIL/UNKNOWN line: {output:?}")
         }
-        (true, true) => {
-            anyhow::bail!("judge response had both VERDICT: PASS and VERDICT: FAIL: {output:?}")
+        _ => {
+            anyhow::bail!("judge response had more than one VERDICT tag: {output:?}")
         }
     }
+}
+
+/// Inputs to [`build_calibration_record`], bundled so the function reads as
+/// one decision (assemble the record) rather than eight loose positional
+/// arguments.
+struct BuildCalibrationInput<'a> {
+    judge_id: &'a str,
+    judge_verdicts: &'a [bool],
+    expected_verdicts: &'a [bool],
+    /// Calibration tasks the judge answered `UNKNOWN` on — excluded from
+    /// `judge_verdicts`/`expected_verdicts`, reported separately.
+    unknown_count: u64,
+    generator_id: Option<&'a str>,
+    self_evaluation_bias_risk: bool,
+    licence_key: &'a str,
 }
 
 /// Build the judge's [`CalibrationRecord`] (backlog 012) from the paired
 /// (judge verdict, deterministic/expected verdict) vectors accumulated over
 /// every task in the run that carried a known `expected_pass` — every
 /// calibration probe, not only the judge-gaming canary. `None` when the run
-/// declared no calibration tasks at all: an unmeasured judge has no record to
+/// declared no *decisive* calibration tasks at all (an all-`UNKNOWN`
+/// calibration set counts as none): an unmeasured judge has no record to
 /// report, not a fabricated `unlocked: true`.
 ///
 /// Reuses `crucible_core::measure`'s [`agreement`]/[`cohen_kappa`] kernels (the
@@ -975,11 +1135,16 @@ fn parse_judge_verdict(output: &str) -> anyhow::Result<bool> {
 /// itself gate. A degenerate κ (all-one-label calibration set) records as
 /// `0.0` — descriptive metadata on the record, never the gate input, so an
 /// undefined κ cannot silently unlock a judge.
-fn build_calibration_record(
-    judge_id: &str,
-    judge_verdicts: &[bool],
-    expected_verdicts: &[bool],
-) -> Option<CalibrationRecord> {
+fn build_calibration_record(input: BuildCalibrationInput<'_>) -> Option<CalibrationRecord> {
+    let BuildCalibrationInput {
+        judge_id,
+        judge_verdicts,
+        expected_verdicts,
+        unknown_count,
+        generator_id,
+        self_evaluation_bias_risk,
+        licence_key,
+    } = input;
     if judge_verdicts.is_empty() {
         return None;
     }
@@ -994,6 +1159,8 @@ fn build_calibration_record(
             (false, false) => confusion.true_negative += 1,
         }
     }
+    let false_positive_rate = confusion.false_positive_rate();
+    let false_negative_rate = confusion.false_negative_rate();
     Some(CalibrationRecord {
         schema_version: CALIBRATION_RECORD_SCHEMA.to_string(),
         judge_id: judge_id.to_string(),
@@ -1001,8 +1168,14 @@ fn build_calibration_record(
         agreement: observed_agreement,
         cohen_kappa: kappa,
         confusion,
+        false_positive_rate,
+        false_negative_rate,
+        unknown_count,
+        generator_id: generator_id.map(str::to_string),
+        self_evaluation_bias_risk,
         unlock_threshold: CALIBRATION_AGREEMENT_THRESHOLD,
         unlocked: observed_agreement >= CALIBRATION_AGREEMENT_THRESHOLD,
+        licence_key: licence_key.to_string(),
     })
 }
 
@@ -1730,6 +1903,26 @@ struct AgenticJudgeEvidence<'a> {
     /// calibration tasks (backlog 012). `None` when the run declared none.
     #[serde(skip_serializing_if = "Option::is_none")]
     calibration: Option<&'a CalibrationRecord>,
+    /// Judge-specific cost/latency/failure-rate for this run (report §6 item
+    /// 11), distinct from any candidate-side generation cost — this runner
+    /// judges authored candidate strings, so every call here is a judge call.
+    judge_stats: JudgeRunStats,
+}
+
+/// Judge-specific aggregate stats for one run: total/mean latency, total
+/// cost (when the provider reported one), and how often the judge answered
+/// `UNKNOWN` rather than a decisive verdict — the judge's own failure-to-decide
+/// rate, distinguishable from any candidate-generation cost/latency tracked
+/// elsewhere.
+#[derive(Debug, Serialize)]
+struct JudgeRunStats {
+    call_count: u64,
+    total_latency_ms: u64,
+    mean_latency_ms: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_cost_usd: Option<f64>,
+    unknown_verdict_count: u64,
+    failure_rate: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1739,6 +1932,11 @@ struct AgenticJudgeTaskResult {
     rubric_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_pass: Option<bool>,
+    /// The judge's verdict, tri-state: `"pass"`, `"fail"`, or `"unknown"`
+    /// (report §6 item 8). The authoritative field — `passed` below is a
+    /// bool mirror kept only for the shared prompt/judge evidence ingestion
+    /// path in `run_store.rs`.
+    verdict: &'static str,
     passed: bool,
     output: String,
     latency_ms: u64,
@@ -1912,6 +2110,7 @@ mod tests {
             judge_prompt: "Grade the candidate against the rubric.".to_string(),
             credential_env: "OPENROUTER_API_KEY".to_string(),
             temperature: Some(0),
+            generator_model: None,
         }
     }
 
@@ -2520,6 +2719,31 @@ mod tests {
             "notes record the diagnostic (locked) calibration state: {:?}",
             report.notes
         );
+
+        // Confusion here is TP=1 (calib-agree), FN=1 (calib-disagree-1:
+        // expected true, judge said false), FP=1 (calib-disagree-2: expected
+        // false, judge said true), TN=0 — named FP/FN rate fields, not just
+        // the aggregate agreement/κ (report §6 item 7 / §11).
+        let fp_rate = evidence["calibration"]["false_positive_rate"]
+            .as_f64()
+            .unwrap();
+        let fn_rate = evidence["calibration"]["false_negative_rate"]
+            .as_f64()
+            .unwrap();
+        assert!(
+            (fp_rate - 1.0).abs() < 1e-9,
+            "FP rate is 1/(1+0): {fp_rate}"
+        );
+        assert!(
+            (fn_rate - 0.5).abs() < 1e-9,
+            "FN rate is 1/(1+1): {fn_rate}"
+        );
+
+        // Calibration unlock state is queryable across runs by a stable
+        // licence key (model + judge prompt + calibration rubric set).
+        let licence_key = evidence["calibration"]["licence_key"].as_str().unwrap();
+        assert!(!licence_key.is_empty());
+        assert!(licence_key.starts_with("judge-licence:v1:test/judge:"));
     }
 
     #[test]
@@ -2579,6 +2803,302 @@ mod tests {
     }
 
     #[test]
+    fn agentic_judge_records_self_evaluation_bias_risk_when_judge_and_generator_share_a_family() {
+        let temp =
+            std::env::temp_dir().join(format!("crucible-judge-bias-risk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-bias-risk.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let mut config = agentic_judge_config();
+        config.model = "openai/gpt-4o".to_string();
+        config.generator_model = Some("openai/gpt-4o-mini".to_string());
+        let tasks = vec![
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "A correct answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+            },
+            AgenticJudgeTask {
+                task_id: "calib-1".to_string(),
+                candidate: "Agrees.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: Some(true),
+                refuse_on_mismatch: false,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec!["VERDICT: PASS\nreal", "VERDICT: PASS\nagrees"]);
+
+        let report = run_agentic_judge_with_client(
+            &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
+        )
+        .expect("agentic judge runs");
+
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("Self-evaluation bias risk")),
+            "notes surface the same-family risk rather than silently allowing it: {:?}",
+            report.notes
+        );
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["calibration"]["self_evaluation_bias_risk"], true);
+        assert_eq!(
+            evidence["calibration"]["generator_id"],
+            "openai/gpt-4o-mini"
+        );
+    }
+
+    #[test]
+    fn agentic_judge_records_no_bias_risk_for_a_different_generator_family() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-no-bias-risk-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-no-bias-risk.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let mut config = agentic_judge_config();
+        config.model = "openai/gpt-4o".to_string();
+        config.generator_model = Some("anthropic/claude-opus-4".to_string());
+        let tasks = vec![
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "A correct answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+            },
+            AgenticJudgeTask {
+                task_id: "calib-1".to_string(),
+                candidate: "Agrees.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: Some(true),
+                refuse_on_mismatch: false,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec!["VERDICT: PASS\nreal", "VERDICT: PASS\nagrees"]);
+
+        let report = run_agentic_judge_with_client(
+            &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
+        )
+        .expect("agentic judge runs");
+        assert!(
+            !report
+                .notes
+                .iter()
+                .any(|note| note.contains("Self-evaluation bias risk")),
+            "a different generator family must not raise a bias-risk note: {:?}",
+            report.notes
+        );
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["calibration"]["self_evaluation_bias_risk"], false);
+    }
+
+    #[test]
+    fn agentic_judge_unknown_scored_verdict_is_excluded_not_coerced() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-unknown-scored-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-unknown-scored.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        let tasks = vec![
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "A correct answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+            },
+            AgenticJudgeTask {
+                task_id: "real-2-ambiguous".to_string(),
+                candidate: "An underspecified answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec![
+            "VERDICT: PASS\nreal",
+            "VERDICT: UNKNOWN\nnot enough information in the rubric to decide",
+        ]);
+
+        let report = run_agentic_judge_with_client(
+            &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
+        )
+        .expect("an UNKNOWN scored verdict does not abort the run");
+
+        assert_eq!(
+            report.score.n, 1,
+            "the UNKNOWN task is excluded, not counted as a fail"
+        );
+        assert_eq!(report.score.successes, 1);
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("excluded from the score's denominator")),
+            "notes explain the exclusion: {:?}",
+            report.notes
+        );
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["tasks"][1]["verdict"], "unknown");
+        assert_eq!(
+            evidence["tasks"][1]["passed"], false,
+            "the legacy bool mirror never reads UNKNOWN as a pass"
+        );
+        assert_eq!(evidence["judge_stats"]["unknown_verdict_count"], 1);
+        assert!(evidence["judge_stats"]["failure_rate"].as_f64().unwrap() > 0.0);
+    }
+
+    #[test]
+    fn agentic_judge_unknown_canary_verdict_does_not_trip_the_gaming_guard() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-unknown-canary-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-unknown-canary.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        let tasks = vec![
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "A correct answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+            },
+            AgenticJudgeTask {
+                task_id: "canary".to_string(),
+                candidate: "Nonsense.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: Some(false),
+                refuse_on_mismatch: true,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        // An honest judge that admits it cannot tell on the canary. This is
+        // not rubber-stamping (it never says PASS), so the guard must not
+        // trip — but the disagreement/agreement measurement must exclude it.
+        let client = QueuedModelClient::new(vec![
+            "VERDICT: PASS\nreal",
+            "VERDICT: UNKNOWN\ncannot determine from the given rubric",
+        ]);
+
+        let report = run_agentic_judge_with_client(
+            &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
+        )
+        .expect("an UNKNOWN verdict on a canary must not trip the judge-gaming guard");
+
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("returned UNKNOWN — diagnostic")),
+            "notes record the excluded calibration probe: {:?}",
+            report.notes
+        );
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert!(
+            evidence["calibration"].is_null(),
+            "no decisive calibration verdicts were measured: {evidence}"
+        );
+        assert_eq!(evidence["judge_stats"]["unknown_verdict_count"], 1);
+    }
+
+    #[test]
+    fn agentic_judge_evidence_records_judge_run_stats() {
+        let temp =
+            std::env::temp_dir().join(format!("crucible-judge-run-stats-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-run-stats.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        let tasks = vec![AgenticJudgeTask {
+            task_id: "real-1".to_string(),
+            candidate: "A correct answer.".to_string(),
+            rubric: "Must be correct.".to_string(),
+            expected_pass: None,
+            refuse_on_mismatch: false,
+        }];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec!["VERDICT: PASS\nreal"]);
+
+        run_agentic_judge_with_client(&spec, &runner, &spec_path, &temp, &config, &tasks, &client)
+            .expect("agentic judge runs");
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["judge_stats"]["call_count"], 1);
+        assert_eq!(evidence["judge_stats"]["unknown_verdict_count"], 0);
+        assert_eq!(evidence["judge_stats"]["failure_rate"], 0.0);
+        assert!(evidence["judge_stats"]["total_cost_usd"].is_number());
+        assert!(evidence["judge_stats"]["total_latency_ms"].is_u64());
+    }
+
+    #[test]
     fn agentic_judge_requires_a_declared_agentic_grader() {
         let temp =
             std::env::temp_dir().join(format!("crucible-judge-no-grader-{}", std::process::id()));
@@ -2612,10 +3132,29 @@ mod tests {
 
     #[test]
     fn parse_judge_verdict_refuses_ambiguous_output() {
-        assert!(parse_judge_verdict("VERDICT: PASS\nreason").unwrap());
-        assert!(!parse_judge_verdict("VERDICT: FAIL\nreason").unwrap());
+        assert_eq!(
+            parse_judge_verdict("VERDICT: PASS\nreason").unwrap(),
+            JudgeVerdict::Pass
+        );
+        assert_eq!(
+            parse_judge_verdict("VERDICT: FAIL\nreason").unwrap(),
+            JudgeVerdict::Fail
+        );
         assert!(parse_judge_verdict("no verdict here").is_err());
         assert!(parse_judge_verdict("VERDICT: PASS and also VERDICT: FAIL").is_err());
+    }
+
+    #[test]
+    fn parse_judge_verdict_accepts_an_explicit_unknown() {
+        assert_eq!(
+            parse_judge_verdict("VERDICT: UNKNOWN\nnot enough information to decide").unwrap(),
+            JudgeVerdict::Unknown
+        );
+        assert!(
+            parse_judge_verdict("VERDICT: PASS and also VERDICT: UNKNOWN").is_err(),
+            "UNKNOWN alongside another tag is still ambiguous, not a silent fallback"
+        );
+        assert!(parse_judge_verdict("VERDICT: FAIL and also VERDICT: UNKNOWN").is_err());
     }
 
     fn task_result(task_id: &str, missed: u64, false_positives: u64) -> TaskResult {

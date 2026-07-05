@@ -187,6 +187,57 @@ struct EvidenceMetadata {
     temperature: Option<f64>,
     max_output_units: Option<u64>,
     prompt_tasks: Vec<PromptTaskInsert>,
+    /// A judge's calibration measurement from this run, when the evidence is
+    /// `crucible.agentic_judge_evidence.v1` and carries a non-null
+    /// `calibration` (backlog 029). Upserted into `judge_licences` so a
+    /// judge's unlock state is queryable across runs by
+    /// [`crucible_core::judge_licence_key`], not recomputed from scratch and
+    /// discarded each run.
+    judge_licence: Option<JudgeLicenceInsert>,
+}
+
+#[derive(Debug, Clone)]
+struct JudgeLicenceInsert {
+    licence_key: String,
+    judge_model: String,
+    unlocked: bool,
+    n: u64,
+    agreement: f64,
+    cohen_kappa: f64,
+    false_positive_rate: f64,
+    false_negative_rate: f64,
+    unlock_threshold: f64,
+    self_evaluation_bias_risk: bool,
+    generator_id: Option<String>,
+    calibration_json: String,
+}
+
+/// A judge's standing calibration licence, as of its most recent measurement
+/// under this exact (model, prompt, rubric-set) identity — see
+/// [`crucible_core::judge_licence_key`]. `None` from [`judge_licence_status`]
+/// means no run has ever measured this exact identity: locked/unlicensed,
+/// the same as a judge that failed calibration, since there is no positive
+/// evidence to license it.
+#[derive(Debug, Serialize)]
+pub struct JudgeLicenceStatus {
+    pub schema_version: &'static str,
+    pub licence_key: String,
+    pub judge_model: String,
+    pub unlocked: bool,
+    pub n: u64,
+    pub agreement: f64,
+    pub cohen_kappa: f64,
+    pub false_positive_rate: f64,
+    pub false_negative_rate: f64,
+    pub unlock_threshold: f64,
+    pub self_evaluation_bias_risk: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generator_id: Option<String>,
+    pub run_id: String,
+    pub updated_at_unix_ms: i64,
+    /// The full `CalibrationRecord` JSON from the run that set this licence,
+    /// for a consumer that wants more than the flattened columns above.
+    pub calibration_json: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -329,6 +380,10 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
         )
         .with_context(|| format!("inserting durable run record for {}", eval.id))?;
 
+        if let Some(licence) = &metadata.judge_licence {
+            upsert_judge_licence(&tx, licence, &run_id, now_ms)?;
+        }
+
         for task in metadata.prompt_tasks {
             tx.execute(
                 "INSERT INTO prompt_task_results (
@@ -374,6 +429,107 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
         run_records: report.evals.len(),
         prompt_task_results,
     })
+}
+
+/// Upsert a judge's calibration measurement into the standing `judge_licences`
+/// ledger, keyed by [`JudgeLicenceInsert::licence_key`] (backlog 029): a
+/// judge's unlock state becomes queryable across runs — [`judge_licence_status`]
+/// answers "is this judge (this model, this prompt, this rubric set)
+/// currently licensed" without recomputing calibration from scratch — rather
+/// than being recomputed per run and discarded. The `WHERE` guard only
+/// applies an update when this measurement is at least as new as the stored
+/// one, so replaying an older run's evidence cannot clobber a newer
+/// measurement under the same key.
+fn upsert_judge_licence(
+    tx: &rusqlite::Transaction<'_>,
+    licence: &JudgeLicenceInsert,
+    run_id: &str,
+    now_ms: i64,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO judge_licences (
+            licence_key, judge_model, unlocked, n, agreement, cohen_kappa,
+            false_positive_rate, false_negative_rate, unlock_threshold,
+            self_evaluation_bias_risk, generator_id, run_id,
+            updated_at_unix_ms, calibration_json
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        ON CONFLICT(licence_key) DO UPDATE SET
+            judge_model = excluded.judge_model,
+            unlocked = excluded.unlocked,
+            n = excluded.n,
+            agreement = excluded.agreement,
+            cohen_kappa = excluded.cohen_kappa,
+            false_positive_rate = excluded.false_positive_rate,
+            false_negative_rate = excluded.false_negative_rate,
+            unlock_threshold = excluded.unlock_threshold,
+            self_evaluation_bias_risk = excluded.self_evaluation_bias_risk,
+            generator_id = excluded.generator_id,
+            run_id = excluded.run_id,
+            updated_at_unix_ms = excluded.updated_at_unix_ms,
+            calibration_json = excluded.calibration_json
+        WHERE excluded.updated_at_unix_ms >= judge_licences.updated_at_unix_ms",
+        params![
+            licence.licence_key,
+            licence.judge_model,
+            licence.unlocked,
+            to_i64(licence.n)?,
+            licence.agreement,
+            licence.cohen_kappa,
+            licence.false_positive_rate,
+            licence.false_negative_rate,
+            licence.unlock_threshold,
+            licence.self_evaluation_bias_risk,
+            licence.generator_id,
+            run_id,
+            now_ms,
+            licence.calibration_json,
+        ],
+    )
+    .with_context(|| format!("upserting judge licence {}", licence.licence_key))?;
+    Ok(())
+}
+
+/// Look up a judge's standing calibration licence by its
+/// [`crucible_core::judge_licence_key`]. `Ok(None)` means no run has ever
+/// measured this exact (model, prompt, rubric-set) identity — read as
+/// locked/unlicensed, the safe default a caller should treat identically to
+/// an explicit `unlocked: false`.
+pub fn judge_licence_status(
+    db_path: &Path,
+    licence_key: &str,
+) -> Result<Option<JudgeLicenceStatus>> {
+    let conn = open_initialized(db_path)?;
+    conn.query_row(
+        "SELECT licence_key, judge_model, unlocked, n, agreement, cohen_kappa,
+                false_positive_rate, false_negative_rate, unlock_threshold,
+                self_evaluation_bias_risk, generator_id, run_id,
+                updated_at_unix_ms, calibration_json
+         FROM judge_licences
+         WHERE licence_key = ?1",
+        params![licence_key],
+        |row| {
+            let calibration_json: String = row.get(13)?;
+            Ok(JudgeLicenceStatus {
+                schema_version: RUN_STORE_SCHEMA,
+                licence_key: row.get(0)?,
+                judge_model: row.get(1)?,
+                unlocked: row.get(2)?,
+                n: i64_to_u64(row.get(3)?),
+                agreement: row.get(4)?,
+                cohen_kappa: row.get(5)?,
+                false_positive_rate: row.get(6)?,
+                false_negative_rate: row.get(7)?,
+                unlock_threshold: row.get(8)?,
+                self_evaluation_bias_risk: row.get(9)?,
+                generator_id: row.get(10)?,
+                run_id: row.get(11)?,
+                updated_at_unix_ms: row.get(12)?,
+                calibration_json: serde_json::from_str(&calibration_json).unwrap_or(Value::Null),
+            })
+        },
+    )
+    .optional()
+    .context("querying judge licence status")
 }
 
 fn validate_db_write_path(db_path: &Path) -> Result<()> {
@@ -815,6 +971,23 @@ fn init_schema(conn: &Connection) -> Result<()> {
             evaluation_card_schema_version TEXT NOT NULL,
             evaluation_card_json TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS judge_licences (
+            licence_key TEXT PRIMARY KEY,
+            judge_model TEXT NOT NULL,
+            unlocked INTEGER NOT NULL,
+            n INTEGER NOT NULL,
+            agreement REAL NOT NULL,
+            cohen_kappa REAL NOT NULL,
+            false_positive_rate REAL NOT NULL,
+            false_negative_rate REAL NOT NULL,
+            unlock_threshold REAL NOT NULL,
+            self_evaluation_bias_risk INTEGER NOT NULL,
+            generator_id TEXT,
+            run_id TEXT NOT NULL,
+            updated_at_unix_ms INTEGER NOT NULL,
+            calibration_json TEXT NOT NULL
+        );
         ",
     )
     .context("initializing run-store schema")?;
@@ -978,6 +1151,10 @@ fn merge_prompt_metadata(
         .or(metadata.max_output_units.take());
     metadata.evidence_path = Some(artifact.to_string());
 
+    if config_prefix == "judge" {
+        metadata.judge_licence = judge_licence_from_evidence(value);
+    }
+
     let provider = metadata.provider.as_deref().unwrap_or("provider");
     let model = metadata.model.as_deref().unwrap_or("model");
     let temperature = metadata
@@ -1028,6 +1205,65 @@ fn merge_prompt_metadata(
         });
     }
     Ok(())
+}
+
+/// Extract a [`JudgeLicenceInsert`] from an agentic-judge evidence JSON's
+/// `calibration` object, when present and non-null. Reads the fields
+/// verbatim from the evidence's already-computed `CalibrationRecord` — this
+/// does not recompute agreement, κ, or the licence key, it only shapes them
+/// for the `judge_licences` upsert.
+fn judge_licence_from_evidence(value: &Value) -> Option<JudgeLicenceInsert> {
+    let calibration = value.get("calibration")?;
+    if calibration.is_null() {
+        return None;
+    }
+    let licence_key = calibration.get("licence_key")?.as_str()?.to_string();
+    if licence_key.is_empty() {
+        // A calibration record predating the licence_key field (or one built
+        // outside this run's licence-key computation) has nothing stable to
+        // key a standing licence on — skip rather than collide every
+        // key-less record onto one empty-string row.
+        return None;
+    }
+    Some(JudgeLicenceInsert {
+        licence_key,
+        judge_model: calibration
+            .get("judge_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        unlocked: calibration
+            .get("unlocked")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        n: calibration.get("n").and_then(Value::as_u64).unwrap_or(0),
+        agreement: calibration
+            .get("agreement")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        cohen_kappa: calibration
+            .get("cohen_kappa")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        false_positive_rate: calibration
+            .get("false_positive_rate")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        false_negative_rate: calibration
+            .get("false_negative_rate")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        unlock_threshold: calibration
+            .get("unlock_threshold")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        self_evaluation_bias_risk: calibration
+            .get("self_evaluation_bias_risk")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        generator_id: opt_string(calibration.get("generator_id")),
+        calibration_json: calibration.to_string(),
+    })
 }
 
 fn merge_spec_metadata(metadata: &mut EvidenceMetadata, artifact: &str, value: &Value) {
@@ -1593,6 +1829,133 @@ mod tests {
                 notes: Vec::new(),
             }],
         }
+    }
+
+    /// Like [`agentic_judge_report`] but with a `calibration` object attached
+    /// to the judge evidence — the shape `run_agentic_judge_with_client`
+    /// writes when the run declared calibration tasks (backlog 029).
+    fn agentic_judge_report_with_calibration(
+        root: &Path,
+        model: &str,
+        licence_key: &str,
+        unlocked: bool,
+    ) -> RunReport {
+        let report = agentic_judge_report(root, model, true);
+        let evidence_path = Path::new(&report.evals[0].artifacts[1]).to_path_buf();
+        let mut evidence: Value =
+            serde_json::from_str(&std::fs::read_to_string(&evidence_path).unwrap()).unwrap();
+        evidence["calibration"] = serde_json::json!({
+            "schema_version": "crucible.calibration_record.v1",
+            "judge_id": model,
+            "n": 5,
+            "agreement": if unlocked { 0.9 } else { 0.4 },
+            "cohen_kappa": if unlocked { 0.8 } else { 0.1 },
+            "confusion": {
+                "true_positive": 4, "false_positive": 1, "false_negative": 0, "true_negative": 0
+            },
+            "false_positive_rate": 1.0,
+            "false_negative_rate": 0.0,
+            "unknown_count": 0,
+            "generator_id": "test/generator",
+            "self_evaluation_bias_risk": false,
+            "unlock_threshold": 0.8,
+            "unlocked": unlocked,
+            "licence_key": licence_key,
+        });
+        std::fs::write(
+            &evidence_path,
+            serde_json::to_string_pretty(&evidence).unwrap(),
+        )
+        .expect("rewrite judge evidence with calibration");
+        report
+    }
+
+    #[test]
+    fn judge_calibration_licence_is_queryable_across_runs() {
+        let root = temp_dir("judge-licence");
+        let db = root.join("runs.sqlite");
+        let licence_key = "judge-licence:v1:test/judge-model:hash-a:hash-b";
+
+        assert!(
+            judge_licence_status(&db, licence_key)
+                .expect("query before any run")
+                .is_none(),
+            "no run has measured this identity yet — reads as locked/unlicensed"
+        );
+
+        let report =
+            agentic_judge_report_with_calibration(&root, "test/judge-model", licence_key, true);
+        persist_report(&db, &report).expect("persist judge report with calibration");
+
+        let status = judge_licence_status(&db, licence_key)
+            .expect("query after a run")
+            .expect("a licence now exists for this key");
+        assert_eq!(status.judge_model, "test/judge-model");
+        assert!(status.unlocked);
+        assert_eq!(status.n, 5);
+        assert!((status.agreement - 0.9).abs() < 1e-9);
+        assert_eq!(status.generator_id.as_deref(), Some("test/generator"));
+        assert_eq!(status.calibration_json["licence_key"], licence_key);
+    }
+
+    #[test]
+    fn judge_calibration_licence_is_invalidated_by_a_different_key() {
+        // Same judge model, but a different prompt/rubric identity (a
+        // different licence key) — querying the OLD key after a run measured
+        // under a NEW key must not resurrect a stale unlock: the two keys are
+        // simply unrelated rows.
+        let root = temp_dir("judge-licence-invalidate");
+        let db = root.join("runs.sqlite");
+        let old_key = "judge-licence:v1:test/judge-model:old-prompt-hash:old-rubric-hash";
+        let new_key = "judge-licence:v1:test/judge-model:new-prompt-hash:new-rubric-hash";
+
+        let old_report =
+            agentic_judge_report_with_calibration(&root, "test/judge-model", old_key, true);
+        persist_report(&db, &old_report).expect("persist run under the old key");
+        assert!(
+            judge_licence_status(&db, old_key)
+                .expect("query old key")
+                .expect("old key is licensed")
+                .unlocked
+        );
+
+        // A prompt/rubric change yields a new key; that new identity starts
+        // unmeasured even though the same judge model already has a licence
+        // under the old key.
+        assert!(
+            judge_licence_status(&db, new_key)
+                .expect("query new key")
+                .is_none(),
+            "a changed prompt/rubric must not inherit the old key's unlock state"
+        );
+    }
+
+    #[test]
+    fn judge_calibration_licence_reflects_the_latest_measurement_under_the_same_key() {
+        let root = temp_dir("judge-licence-update");
+        let db = root.join("runs.sqlite");
+        let licence_key = "judge-licence:v1:test/judge-model:hash-a:hash-b";
+
+        let locked_report =
+            agentic_judge_report_with_calibration(&root, "test/judge-model", licence_key, false);
+        persist_report(&db, &locked_report).expect("persist the locked run");
+        assert!(
+            !judge_licence_status(&db, licence_key)
+                .unwrap()
+                .unwrap()
+                .unlocked
+        );
+
+        let unlocked_report =
+            agentic_judge_report_with_calibration(&root, "test/judge-model", licence_key, true);
+        persist_report(&db, &unlocked_report).expect("persist the unlocked run");
+        assert!(
+            judge_licence_status(&db, licence_key)
+                .unwrap()
+                .unwrap()
+                .unlocked,
+            "a later run under the same licence key updates the standing licence"
+        );
     }
 
     #[test]
