@@ -19,7 +19,7 @@ use serde::Serialize;
 use crate::spec_run::{
     check_prompt_regexes, load_spec, preflight_spec, resolve_spec_path_with_alias,
 };
-use crucible_core::{CorpusSpec, EvalSpec, RunnerKind};
+use crucible_core::{required_sample_size, CorpusSpec, EvalSpec, RunnerKind};
 
 /// Schema identifier for a persisted [`ValidationReport`].
 pub const VALIDATE_REPORT_SCHEMA: &str = "crucible.validate_report.v1";
@@ -94,6 +94,7 @@ pub fn validate(spec_path: &Path) -> anyhow::Result<ValidationReport> {
 
     check_baselines(&spec, &mut warnings);
     check_portability(spec_path, &spec, &mut warnings);
+    check_power(&spec, &mut warnings);
 
     Ok(ValidationReport {
         schema_version: VALIDATE_REPORT_SCHEMA,
@@ -119,6 +120,84 @@ fn check_baselines(spec: &EvalSpec, warnings: &mut Vec<ValidationIssue>) {
                 spec.baselines
             ),
         });
+    }
+}
+
+/// Significance/power targets `check_power` warns against — Kotawala's own
+/// convention (*Resolution Diagnostics for Paired LLM Evaluation*,
+/// arXiv:2605.30315), and the same `(alpha, power)` pair
+/// `run_store::RESOLUTION_TARGET_POWER`/`DEFAULT_ALPHA` use for the
+/// retrospective `runs compare` diagnostic — so a spec's prospective and
+/// retrospective power checks agree on what "adequately powered" means.
+const POWER_CHECK_ALPHA: f64 = 0.05;
+const POWER_CHECK_POWER: f64 = 0.8;
+
+/// Conservative (worst-case) baseline proportion for `check_power`'s
+/// one-sample proxy: `p(1-p)` is maximized at `p = 0.5`, the largest
+/// variance — and therefore the largest required-N — any Bernoulli baseline
+/// could have. Validate time has no paired discordance data yet (the eval
+/// has not run), so there is no better baseline estimate to plug in; `0.5`
+/// guarantees this check never under-warns by picking an optimistic
+/// baseline no data supports.
+const POWER_CHECK_CONSERVATIVE_BASELINE: f64 = 0.5;
+
+/// Warn when the spec declares `min_effect_of_interest` but its own declared
+/// task count cannot resolve that effect at `(alpha=0.05, power=0.8)`.
+///
+/// This is deliberately the SIMPLE one-sample [`required_sample_size`] proxy,
+/// not the correct paired-Bernoulli formula `runs compare` uses
+/// ([`crucible_core::required_n_paired`]): that formula needs real observed
+/// discordant counts (`b`, `c`) from an actual paired run, which does not
+/// exist yet at validate time. A conservative prospective sanity check
+/// ("this many tasks probably can't resolve this effect") is honest about
+/// what it is; a fabricated paired estimate from data that doesn't exist
+/// would not be.
+fn check_power(spec: &EvalSpec, warnings: &mut Vec<ValidationIssue>) {
+    let Some(min_effect) = spec.min_effect_of_interest else {
+        return;
+    };
+    let Some(runner) = &spec.runner else {
+        return;
+    };
+    let Some(declared_n) = declared_task_count(&runner.corpus) else {
+        return;
+    };
+    let Some(required_n) = required_sample_size(
+        POWER_CHECK_CONSERVATIVE_BASELINE,
+        min_effect,
+        POWER_CHECK_ALPHA,
+        POWER_CHECK_POWER,
+    ) else {
+        return;
+    };
+    if declared_n < required_n {
+        warnings.push(ValidationIssue {
+            field: "min_effect_of_interest".to_string(),
+            message: format!(
+                "declared {declared_n} task(s) cannot resolve an effect of {min_effect} at \
+                 (alpha={POWER_CHECK_ALPHA}, power={POWER_CHECK_POWER}) — at least {required_n} \
+                 would be needed (conservative one-sample proxy at a worst-case baseline of \
+                 {POWER_CHECK_CONSERVATIVE_BASELINE}); see docs/design-references.md §1 \
+                 (Kotawala, arXiv:2605.30315) for why an underpowered comparison can look \
+                 identical to a genuine \"no difference\" verdict"
+            ),
+        });
+    }
+}
+
+/// The task/trial count a corpus declares, when it is knowable from the
+/// spec alone. `None` for [`CorpusSpec::DaedalusTrials`]: its `tasks` field
+/// is an ALLOWLIST (empty means "every trial in the referenced file"), so
+/// neither its length nor zero is the honest executed count without reading
+/// that external file — which validate deliberately avoids for portability
+/// reasons (see [`check_portability`]).
+fn declared_task_count(corpus: &CorpusSpec) -> Option<u64> {
+    match corpus {
+        CorpusSpec::DaedalusTrials { .. } => None,
+        CorpusSpec::CerberusReceiptBundles { tasks, .. } => Some(tasks.len() as u64),
+        CorpusSpec::PromptBenchmark { tasks, .. } => Some(tasks.len() as u64),
+        CorpusSpec::AgenticJudge { tasks, .. } => Some(tasks.len() as u64),
+        CorpusSpec::HarborTasks { tasks, .. } => Some(tasks.len() as u64),
     }
 }
 
@@ -200,6 +279,7 @@ mod tests {
             aggregation: AggregationMethod::Proportion,
             uncertainty: UncertaintyRule::default(),
             decision: String::new(),
+            min_effect_of_interest: None,
             runner: None,
         }
     }
@@ -290,6 +370,124 @@ mod tests {
         assert!(report.valid, "{:?}", report.errors);
         assert!(report.runnable);
         assert!(report.errors.is_empty());
+    }
+
+    fn agentic_judge_spec_with_n_tasks(n: usize) -> EvalSpec {
+        let mut spec = base_spec();
+        spec.graders = GraderManifest {
+            graders: vec![Grader {
+                id: "model-judge".to_string(),
+                kind: GraderKind::Agentic,
+            }],
+        };
+        spec.runner = Some(RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: AgenticJudgeConfig {
+                    provider: ModelProvider::OpenRouter,
+                    model: "test/judge".to_string(),
+                    judge_prompt: "Grade it.".to_string(),
+                    credential_env: "OPENROUTER_API_KEY".to_string(),
+                    temperature: None,
+                    generator_model: None,
+                    harness: None,
+                    tool_allowlist: Vec::new(),
+                    format_sensitivity_check: false,
+                },
+                tasks: (0..n)
+                    .map(|i| AgenticJudgeTask {
+                        task_id: format!("t{i}"),
+                        candidate: "answer".to_string(),
+                        rubric: "must be correct".to_string(),
+                        expected_pass: None,
+                        refuse_on_mismatch: false,
+                        reference: None,
+                    })
+                    .collect(),
+            },
+        });
+        spec
+    }
+
+    #[test]
+    fn check_power_warns_when_declared_tasks_cannot_resolve_the_effect() {
+        let dir = temp_dir("power-underpowered");
+        let mut spec = agentic_judge_spec_with_n_tasks(2);
+        // At a conservative 0.5 baseline, resolving a 0.05 effect at
+        // (alpha=0.05, power=0.8) needs ~783 tasks — 2 is nowhere close.
+        spec.min_effect_of_interest = Some(0.05);
+        let path = write_spec(&dir, "spec.json", &spec);
+        let report = validate(&path).unwrap();
+        assert!(
+            report.valid,
+            "a power warning is non-fatal: {:?}",
+            report.errors
+        );
+        let warning = report
+            .warnings
+            .iter()
+            .find(|w| w.field == "min_effect_of_interest")
+            .expect("declared task count cannot resolve the effect");
+        assert!(warning.message.contains("2 task"), "{}", warning.message);
+        assert!(warning.message.contains("0.05"), "{}", warning.message);
+        assert!(
+            warning.message.contains("arXiv:2605.30315"),
+            "{}",
+            warning.message
+        );
+    }
+
+    #[test]
+    fn check_power_is_silent_when_declared_tasks_can_resolve_the_effect() {
+        let dir = temp_dir("power-adequate");
+        let mut spec = agentic_judge_spec_with_n_tasks(10);
+        // At a conservative 0.5 baseline, resolving a 0.45 effect at
+        // (alpha=0.05, power=0.8) needs only 7 tasks — 10 clears it.
+        spec.min_effect_of_interest = Some(0.45);
+        let path = write_spec(&dir, "spec.json", &spec);
+        let report = validate(&path).unwrap();
+        assert!(report.valid, "{:?}", report.errors);
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|w| w.field == "min_effect_of_interest"),
+            "declared task count adequately resolves the effect: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn check_power_is_silent_when_no_effect_of_interest_is_declared() {
+        let dir = temp_dir("power-undeclared");
+        let spec = agentic_judge_spec_with_n_tasks(1); // adequate for nothing, but nothing was asked
+        assert_eq!(spec.min_effect_of_interest, None);
+        let path = write_spec(&dir, "spec.json", &spec);
+        let report = validate(&path).unwrap();
+        assert!(report.valid, "{:?}", report.errors);
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|w| w.field == "min_effect_of_interest"),
+            "no effect declared, nothing to check: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn declared_task_count_is_none_for_a_daedalus_trials_allowlist_corpus() {
+        // The `tasks` field on a DaedalusTrials corpus is an allowlist, not
+        // an executed count — empty means "every trial in the file", so
+        // neither its length nor zero is the honest count without reading
+        // that external file.
+        let corpus = CorpusSpec::DaedalusTrials {
+            arena_dir: "arena".to_string(),
+            trials_jsonl: "trials.jsonl".to_string(),
+            candidate_id: "candidate".to_string(),
+            tasks: Vec::new(),
+        };
+        assert_eq!(declared_task_count(&corpus), None);
     }
 
     #[test]

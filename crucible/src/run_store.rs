@@ -13,8 +13,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use crucible_core::{
-    EvalSpec, EvaluationCard, FixtureRef, McnemarOutcome, PairedComparison, Provenance, RunRecord,
-    RunScore, EVALUATION_CARD_SCHEMA, RUN_RECORD_SCHEMA, TRACE_SCHEMA,
+    minimum_detectable_effect_paired, required_n_paired, DeltaVerdict, EvalSpec, EvaluationCard,
+    FixtureRef, McnemarOutcome, PairedComparison, Provenance, RunRecord, RunScore,
+    EVALUATION_CARD_SCHEMA, RUN_RECORD_SCHEMA, TRACE_SCHEMA,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
@@ -30,6 +31,13 @@ pub const DEFAULT_DB_PATH: &str = "runs/local/crucible-runs.sqlite";
 /// Default significance threshold for the paired McNemar verdict in
 /// [`compare_configs`].
 pub const DEFAULT_ALPHA: f64 = 0.05;
+
+/// Target power for [`PowerResolution`]'s resolution ratio and MDE
+/// (Kotawala's own `(alpha=.05, power=.8)` convention, arXiv:2605.30315).
+/// Fixed, not user-configurable today — `--alpha` already threads through to
+/// the McNemar verdict itself; adding a second CLI knob for power is not
+/// justified until an operator actually needs a different target.
+pub const RESOLUTION_TARGET_POWER: f64 = 0.8;
 
 const RUN_STORE_SCHEMA: &str = "crucible.run_store.v1";
 static INVOCATION_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -244,6 +252,10 @@ pub struct ConfigComparison {
     /// `common_tasks > 0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paired: Option<McnemarOutcome>,
+    /// Kotawala's resolution diagnostic (arXiv:2605.30315) for `paired`,
+    /// present under the same condition. `None` alongside `paired`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<PowerResolution>,
     pub class_breakdowns: Vec<ClassComparison>,
     pub comparison_kind: &'static str,
     pub note: &'static str,
@@ -262,6 +274,95 @@ pub struct ClassComparison {
     pub common_tasks: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paired: Option<McnemarOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<PowerResolution>,
+}
+
+/// Kotawala's resolution diagnostic (*Resolution Diagnostics for Paired LLM
+/// Evaluation*, arXiv:2605.30315) for one paired McNemar comparison: does
+/// `common_tasks` actually carry enough paired trials to resolve the effect
+/// this comparison observed, and — separately — what effect size its actual
+/// sample size *could* have resolved. His audit found 11/40 Open LLM
+/// Leaderboard v1 pairwise rankings and 4-6/9 MMLU-Pro adjacent-rank pairs
+/// unresolved at `(alpha=.05, power=.8)` despite being reported as ranked
+/// differences.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PowerResolution {
+    /// `q = common_tasks / required_n`: this comparison's actual paired
+    /// sample size over the minimum needed to resolve its own observed
+    /// discordant imbalance at `(alpha, power)`. `q >= 1.0` means the
+    /// comparison was adequately powered for the effect it actually showed.
+    /// `None` when the observed imbalance is exactly zero (`b == c`) — no
+    /// finite required-N exists to divide by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_ratio: Option<f64>,
+    /// N* — the denominator behind `resolution_ratio`. `None` alongside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_n: Option<u64>,
+    /// The smallest `|delta|` this comparison's actual `common_tasks` count,
+    /// at its observed paired variance, could resolve at `(alpha, power)`.
+    /// `None` only when there were no discordant pairs at all to estimate a
+    /// variance from (`b + c == 0`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_detectable_effect: Option<f64>,
+    pub alpha: f64,
+    pub power: f64,
+    /// For an `InsideNoiseFloor` verdict, distinguishes "no_effect"
+    /// (adequately powered to see an effect this size and found none) from
+    /// "underpowered" (the sample size could not have resolved an effect
+    /// this size, so `InsideNoiseFloor` here means "unknown", not "equal").
+    /// Always `"signal"` for a `Signal` verdict — the distinction only
+    /// matters when the null was not rejected. `"no_discordance"` is the
+    /// edge case where the two configs agreed on literally every shared
+    /// task (`b + c == 0`): there is no discordance to be underpowered
+    /// *about*, distinct from a measured-but-balanced imbalance.
+    pub diagnosis: &'static str,
+}
+
+/// Build the [`PowerResolution`] for one [`McnemarOutcome`] over `n` shared
+/// paired trials, at `alpha` (mirrors the comparison's own `--alpha`) and
+/// the fixed [`RESOLUTION_TARGET_POWER`].
+fn resolve_power(paired: &McnemarOutcome, n: usize, alpha: f64) -> PowerResolution {
+    let n = n as u64;
+    let power = RESOLUTION_TARGET_POWER;
+    let required_n = required_n_paired(paired.b, paired.c, n, alpha, power);
+    let resolution_ratio = required_n.map(|required| n as f64 / required as f64);
+    let minimum_detectable_effect =
+        minimum_detectable_effect_paired(paired.b, paired.c, n, alpha, power);
+    let diagnosis = match paired.verdict {
+        DeltaVerdict::Signal => "signal",
+        DeltaVerdict::InsideNoiseFloor if paired.b == paired.c => {
+            if paired.b.saturating_add(paired.c) == 0 {
+                // No discordant pairs at all: the two configs agreed on
+                // literally every shared task. There is no discordance to
+                // be "underpowered" about.
+                "no_discordance"
+            } else {
+                // A measured, perfectly balanced tie (e.g. b = c = 5): this
+                // IS McNemar's own strongest "no evidence of a difference"
+                // case, not an artifact of too little data.
+                "no_effect"
+            }
+        }
+        DeltaVerdict::InsideNoiseFloor => match resolution_ratio {
+            Some(q) if q >= 1.0 => "no_effect",
+            // Covers both "adequately measured but the ratio is < 1" and the
+            // degenerate case where `required_n_paired` itself returns
+            // `None` (e.g. every shared task is discordant and unanimous in
+            // one direction — the per-pair variance estimate collapses to
+            // zero from too few pairs to show any spread, not from a real
+            // absence of effect).
+            _ => "underpowered",
+        },
+    };
+    PowerResolution {
+        resolution_ratio,
+        required_n,
+        minimum_detectable_effect,
+        alpha,
+        power,
+        diagnosis,
+    }
 }
 
 #[derive(Debug, Default)]
@@ -951,6 +1052,10 @@ pub fn compare_configs(
         ),
     };
 
+    let resolution = paired
+        .as_ref()
+        .map(|outcome| resolve_power(outcome, common_tasks, alpha));
+
     Ok(ConfigComparison {
         schema_version: RUN_STORE_SCHEMA,
         db: db_path.display().to_string(),
@@ -962,6 +1067,7 @@ pub fn compare_configs(
         delta_point,
         common_tasks,
         paired,
+        resolution,
         class_breakdowns,
         comparison_kind,
         note,
@@ -1130,6 +1236,9 @@ fn compare_by_class(
                 Some((outcome, n)) => (Some(outcome), n),
                 None => (None, 0),
             };
+            let resolution = paired
+                .as_ref()
+                .map(|outcome| resolve_power(outcome, common_tasks, alpha));
             ClassComparison {
                 class,
                 left_successes,
@@ -1141,6 +1250,7 @@ fn compare_by_class(
                 delta_point,
                 common_tasks,
                 paired,
+                resolution,
             }
         })
         .collect()
@@ -2135,6 +2245,100 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    // ---- resolve_power / PowerResolution -------------------------------
+    //
+    // Kotawala's resolution diagnostic (arXiv:2605.30315) beside a paired
+    // McNemar comparison. Reference (b, c, n) cases below are pinned against
+    // hand-verified McNemar p-values and `required_n_paired` outputs (see
+    // `crucible-core/src/measure/power.rs` for the underlying formula's own
+    // pinned tests) — this module only checks that `resolve_power` wires
+    // them together correctly and produces the right `diagnosis` label.
+
+    fn mcnemar_outcome(b: u64, c: u64, alpha: f64) -> McnemarOutcome {
+        let cmp = PairedComparison::mcnemar(b, c);
+        McnemarOutcome {
+            b: cmp.b,
+            c: cmp.c,
+            statistic: cmp.statistic,
+            p_value: cmp.p_value,
+            verdict: cmp.verdict(alpha),
+        }
+    }
+
+    #[test]
+    fn resolve_power_reports_signal_diagnosis_regardless_of_resolution_ratio() {
+        // b=1, c=9 (n=10): exact binomial p ~= 0.0215 < 0.05 -> Signal.
+        let outcome = mcnemar_outcome(1, 9, 0.05);
+        assert_eq!(outcome.verdict, DeltaVerdict::Signal);
+        let resolution = resolve_power(&outcome, 10, 0.05);
+        assert_eq!(resolution.diagnosis, "signal");
+    }
+
+    #[test]
+    fn resolve_power_distinguishes_no_effect_from_underpowered_at_the_same_alpha() {
+        // Two InsideNoiseFloor comparisons at the same alpha, but one was
+        // adequately powered for the effect it showed (q >= 1: "no_effect")
+        // and the other was not (q < 1: "underpowered") — the exact
+        // distinction acceptance criterion 4 requires.
+
+        // b=0, c=5, n=10: chi2-path p ~= 0.0625 > 0.05 -> InsideNoiseFloor,
+        // but required_n_paired(0, 5, 10) == 8 <= 10, so q = 10/8 = 1.25.
+        let adequately_powered = mcnemar_outcome(0, 5, 0.05);
+        assert_eq!(adequately_powered.verdict, DeltaVerdict::InsideNoiseFloor);
+        let resolution = resolve_power(&adequately_powered, 10, 0.05);
+        assert_eq!(resolution.required_n, Some(8));
+        let q = resolution
+            .resolution_ratio
+            .expect("resolution ratio is defined");
+        assert!(q >= 1.0, "q = {q}");
+        assert_eq!(resolution.diagnosis, "no_effect");
+
+        // b=3, c=7, n=10: p ~= 0.34 > 0.05 -> InsideNoiseFloor, but
+        // required_n_paired(3, 7, 10) == 42 > 10, so q = 10/42 ~= 0.24.
+        let underpowered = mcnemar_outcome(3, 7, 0.05);
+        assert_eq!(underpowered.verdict, DeltaVerdict::InsideNoiseFloor);
+        let resolution = resolve_power(&underpowered, 10, 0.05);
+        assert_eq!(resolution.required_n, Some(42));
+        let q = resolution
+            .resolution_ratio
+            .expect("resolution ratio is defined");
+        assert!(q < 1.0, "q = {q}");
+        assert_eq!(resolution.diagnosis, "underpowered");
+    }
+
+    #[test]
+    fn resolve_power_reports_no_discordance_when_every_pair_concords() {
+        let outcome = mcnemar_outcome(0, 0, 0.05);
+        assert_eq!(outcome.verdict, DeltaVerdict::InsideNoiseFloor);
+        let resolution = resolve_power(&outcome, 20, 0.05);
+        assert_eq!(resolution.resolution_ratio, None);
+        assert_eq!(resolution.required_n, None);
+        assert_eq!(resolution.minimum_detectable_effect, None);
+        assert_eq!(resolution.diagnosis, "no_discordance");
+    }
+
+    #[test]
+    fn resolve_power_reports_no_effect_for_a_balanced_tie() {
+        // b = c = 5: a real, measured, perfectly balanced discordance —
+        // McNemar's own strongest "no evidence of a difference" case, not a
+        // sign of too little data (MDE is still well-defined here).
+        let outcome = mcnemar_outcome(5, 5, 0.05);
+        assert_eq!(outcome.verdict, DeltaVerdict::InsideNoiseFloor);
+        let resolution = resolve_power(&outcome, 20, 0.05);
+        assert_eq!(resolution.resolution_ratio, None);
+        assert_eq!(resolution.required_n, None);
+        assert!(resolution.minimum_detectable_effect.is_some());
+        assert_eq!(resolution.diagnosis, "no_effect");
+    }
+
+    #[test]
+    fn resolve_power_uses_the_fixed_target_power_and_the_caller_alpha() {
+        let outcome = mcnemar_outcome(1, 9, 0.01);
+        let resolution = resolve_power(&outcome, 10, 0.01);
+        assert_eq!(resolution.alpha, 0.01);
+        assert_eq!(resolution.power, RESOLUTION_TARGET_POWER);
     }
 
     fn prompt_report(root: &Path, model: &str, success: bool) -> RunReport {

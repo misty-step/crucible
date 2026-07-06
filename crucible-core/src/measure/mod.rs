@@ -23,7 +23,10 @@
 //!   binary outcomes, a matched-pairs rate-delta interval, and the
 //!   [`DeltaVerdict`] that refuses a delta inside the noise floor.
 //! - [`power`](self) — the [`required_sample_size`] to detect an effect and the
-//!   [`power_warning`] that flags an underpowered fixture set.
+//!   [`power_warning`] that flags an underpowered fixture set (one-sample
+//!   proxy, used prospectively before any run exists); [`required_n_paired`]
+//!   and [`minimum_detectable_effect_paired`] are the correct paired-Bernoulli
+//!   formula for a comparison with real observed discordant counts.
 //! - [`bootstrap`](self) — a deterministic, seeded [`bootstrap_interval`] for a
 //!   composite/derived metric, and the seed-robust [`bootstrap_envelope`] whose
 //!   directional "excludes 0" decision is invariant to the seed.
@@ -40,7 +43,10 @@ pub use bootstrap::{bootstrap_envelope, bootstrap_interval, BootstrapInterval, E
 pub use paired::{
     paired_rate_delta_interval, DeltaVerdict, PairedComparison, PairedRateDeltaInterval,
 };
-pub use power::{power_warning, required_sample_size, PowerWarning};
+pub use power::{
+    minimum_detectable_effect_paired, power_warning, required_n_paired, required_sample_size,
+    PowerWarning,
+};
 pub use rate::{proportion, wilson_interval};
 
 /// The inverse standard-normal CDF, exposed crate-internally so a caller that

@@ -971,6 +971,9 @@ fn print_config_comparison(comparison: &run_store::ConfigComparison) {
             paired.verdict.label()
         );
     }
+    if let Some(resolution) = &comparison.resolution {
+        println!("  {}", format_resolution_line(resolution));
+    }
     if !comparison.class_breakdowns.is_empty() {
         println!("  classes");
         for row in &comparison.class_breakdowns {
@@ -994,9 +997,35 @@ fn print_config_comparison(comparison: &run_store::ConfigComparison) {
                 row.common_tasks,
                 verdict
             );
+            if let Some(resolution) = &row.resolution {
+                println!("      {}", format_resolution_line(resolution));
+            }
         }
     }
     println!("  note      {}", comparison.note);
+}
+
+/// One line reporting Kotawala's resolution ratio and MDE (arXiv:2605.30315)
+/// beside a paired comparison's `DeltaVerdict` — see `docs/design-references.md`
+/// §1 for why an underpowered comparison can look identical to a genuine
+/// "no difference" verdict.
+fn format_resolution_line(resolution: &run_store::PowerResolution) -> String {
+    let q = resolution
+        .resolution_ratio
+        .map(|q| format!("{q:.2}"))
+        .unwrap_or_else(|| "n/a".to_string());
+    let required_n = resolution
+        .required_n
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "n/a".to_string());
+    let mde = resolution
+        .minimum_detectable_effect
+        .map(|mde| format!("{mde:.4}"))
+        .unwrap_or_else(|| "n/a".to_string());
+    format!(
+        "resolution q={q} (required_n={required_n})  mde={mde}  (alpha={:.2}, power={:.2})  {}",
+        resolution.alpha, resolution.power, resolution.diagnosis
+    )
 }
 
 fn print_score_history(history: &run_store::ScoreHistory) {

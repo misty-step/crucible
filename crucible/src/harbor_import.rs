@@ -172,6 +172,7 @@ fn import_harbor(args: &HarborImportArgs) -> anyhow::Result<HarborImportReport> 
         aggregation: AggregationMethod::Proportion,
         uncertainty: UncertaintyRule::default(),
         decision: args.decision.clone().unwrap_or_default(),
+        min_effect_of_interest: None,
         runner: Some(RunnerSpec {
             kind: RunnerKind::HarborTask,
             corpus: CorpusSpec::HarborTasks {

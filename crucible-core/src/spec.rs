@@ -547,6 +547,17 @@ pub struct EvalSpec {
     /// The decision this eval informs, in one human sentence. Defaults to empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub decision: String,
+    /// The smallest absolute rate delta that would change `decision` — the
+    /// effect this eval actually needs to be able to see. `crucible validate`
+    /// warns (does not error) when the declared task count cannot resolve
+    /// this effect at `(alpha=0.05, power=0.8)`, using a conservative
+    /// one-sample proxy (`required_sample_size` at a worst-case 0.5
+    /// baseline) since no paired discordance data exists before a run.
+    /// `None` when the author has not declared one — Kotawala's resolution
+    /// diagnostic (arXiv:2605.30315) still applies retrospectively via
+    /// `runs compare`'s `resolution` field regardless of this being set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_effect_of_interest: Option<f64>,
     /// Executable runner declaration. Omitted specs are definition-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runner: Option<RunnerSpec>,
@@ -663,6 +674,7 @@ mod tests {
             aggregation: AggregationMethod::Proportion,
             uncertainty: UncertaintyRule::default(),
             decision: String::new(),
+            min_effect_of_interest: None,
             runner: None,
         };
         // Every empty optional is skipped; only the required + non-empty
@@ -727,6 +739,7 @@ mod tests {
                 confidence: 0.9,
             },
             decision: "ship the config with the higher calibrated keep-rate".to_string(),
+            min_effect_of_interest: None,
             runner: Some(RunnerSpec {
                 kind: RunnerKind::KeyRecall,
                 corpus: CorpusSpec::DaedalusTrials {

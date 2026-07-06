@@ -406,6 +406,7 @@ impl AuthorInputs {
             aggregation: AggregationMethod::Proportion,
             uncertainty: UncertaintyRule::default(),
             decision: self.decision,
+            min_effect_of_interest: None,
             runner: Some(RunnerSpec {
                 kind: self.runner.kind,
                 corpus: self.runner.corpus,

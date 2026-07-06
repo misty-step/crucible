@@ -149,9 +149,10 @@ pub use judgment::{
 pub use key::{score_against_expected_key, AnswerKey, Defect, ExpectedKey, KeyFinding, SpanGrade};
 pub use label::{Label, LABEL_SCHEMA};
 pub use measure::{
-    agreement, bootstrap_envelope, bootstrap_interval, cohen_kappa, paired_rate_delta_interval,
-    power_warning, proportion, required_sample_size, wilson_interval, BootstrapInterval,
-    DeltaVerdict, EnsembleInterval, PairedComparison, PairedRateDeltaInterval, PowerWarning,
+    agreement, bootstrap_envelope, bootstrap_interval, cohen_kappa,
+    minimum_detectable_effect_paired, paired_rate_delta_interval, power_warning, proportion,
+    required_n_paired, required_sample_size, wilson_interval, BootstrapInterval, DeltaVerdict,
+    EnsembleInterval, PairedComparison, PairedRateDeltaInterval, PowerWarning,
 };
 pub use provenance::{
     EvaluationCard, Provenance, RunRecord, RunScore, EVALUATION_CARD_SCHEMA, RUN_RECORD_SCHEMA,

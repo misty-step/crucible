@@ -398,6 +398,7 @@ mod tests {
                 p_value: 0.001,
                 verdict,
             }),
+            resolution: None,
             class_breakdowns: Vec::<ClassComparison>::new(),
             comparison_kind: "paired_mcnemar",
             note: "Paired McNemar comparison over prompt tasks common to both runs; see paired.verdict for the noise-floor decision.",
