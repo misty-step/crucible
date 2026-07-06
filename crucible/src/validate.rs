@@ -231,6 +231,7 @@ mod tests {
                     generator_model: None,
                     harness: None,
                     tool_allowlist: Vec::new(),
+                    format_sensitivity_check: false,
                 },
                 tasks: vec![AgenticJudgeTask {
                     task_id: "t1".to_string(),
@@ -238,6 +239,7 @@ mod tests {
                     rubric: "must be correct".to_string(),
                     expected_pass: None,
                     refuse_on_mismatch: false,
+                    reference: None,
                 }],
             },
         });
@@ -271,6 +273,7 @@ mod tests {
                     generator_model: None,
                     harness: None,
                     tool_allowlist: Vec::new(),
+                    format_sensitivity_check: false,
                 },
                 tasks: vec![AgenticJudgeTask {
                     task_id: "t1".to_string(),
@@ -278,6 +281,7 @@ mod tests {
                     rubric: "must be correct".to_string(),
                     expected_pass: None,
                     refuse_on_mismatch: false,
+                    reference: None,
                 }],
             },
         });
