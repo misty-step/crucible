@@ -684,6 +684,43 @@ fn require_under_home(resolved: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Job name every harbor trial runs under. A single fixed name, not a
+/// per-invocation unique id: [`prepare_harbor_job_dir`] clears this slot
+/// before every run, so reuse is intentional (the isolation guarantee is "no
+/// artifact survives across a reused slot", not "every slot is unique").
+const HARBOR_JOB_NAME: &str = "run";
+
+/// The job output directory a harbor task's trial writes to:
+/// `jobs_root/<task_id>/<HARBOR_JOB_NAME>`. Pure path construction, no I/O —
+/// [`prepare_harbor_job_dir`] is the version that also enforces the
+/// isolation contract (docs/AGENTS.md "Trial isolation"): distinct task ids
+/// get distinct, non-overlapping directories under `jobs_root`.
+fn harbor_job_dir(jobs_root: &Path, task_id: &str) -> std::path::PathBuf {
+    jobs_root.join(task_id).join(HARBOR_JOB_NAME)
+}
+
+/// Prepare a harbor trial's job output directory: create `jobs_root/task_id`
+/// and clear any stale `HARBOR_JOB_NAME` slot left by a prior run of the same
+/// task id, so a new trial never inherits artifacts a previous trial wrote
+/// there. This is the isolation contract's "no access to
+/// sibling-trial or prior-run artifacts" and "fresh working directory"
+/// guarantees, mechanically enforced (docs/AGENTS.md "Trial isolation") —
+/// exercised directly by this module's `harbor_job_directory_clears_prior_trial_artifacts_before_reuse`
+/// and `harbor_job_directories_are_disjoint_across_task_ids` tests, without
+/// needing a live `harbor`/Docker install.
+fn prepare_harbor_job_dir(jobs_root: &Path, task_id: &str) -> anyhow::Result<std::path::PathBuf> {
+    let jobs_dir = jobs_root.join(task_id);
+    std::fs::create_dir_all(&jobs_dir)
+        .with_context(|| format!("creating harbor jobs directory {}", jobs_dir.display()))?;
+    let job_dir = harbor_job_dir(jobs_root, task_id);
+    if job_dir.exists() {
+        std::fs::remove_dir_all(&job_dir).with_context(|| {
+            format!("clearing stale harbor job directory {}", job_dir.display())
+        })?;
+    }
+    Ok(job_dir)
+}
+
 fn run_one_harbor_task(
     spec_path: &Path,
     config: &HarborRunConfig,
@@ -701,15 +738,7 @@ fn run_one_harbor_task(
     require_under_home(&task_dir)?;
 
     let jobs_dir = jobs_root.join(&task.task_id);
-    std::fs::create_dir_all(&jobs_dir)
-        .with_context(|| format!("creating harbor jobs directory {}", jobs_dir.display()))?;
-    const JOB_NAME: &str = "run";
-    let job_dir = jobs_dir.join(JOB_NAME);
-    if job_dir.exists() {
-        std::fs::remove_dir_all(&job_dir).with_context(|| {
-            format!("clearing stale harbor job directory {}", job_dir.display())
-        })?;
-    }
+    let job_dir = prepare_harbor_job_dir(jobs_root, &task.task_id)?;
 
     let mut command = Command::new("harbor");
     command
@@ -721,7 +750,7 @@ fn run_one_harbor_task(
         .arg("-o")
         .arg(&jobs_dir)
         .arg("--job-name")
-        .arg(JOB_NAME)
+        .arg(HARBOR_JOB_NAME)
         // Auto-confirm host-environment-access prompts: this subprocess has
         // no interactive stdin, so an unconfirmed prompt would otherwise hang
         // until the timeout below kills it rather than failing fast.
@@ -2919,6 +2948,83 @@ mod tests {
         let err = read_harbor_trial_result(&dir).unwrap_err();
         assert!(err.to_string().contains("exactly one trial subdirectory"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- trial isolation (docs/AGENTS.md "Trial isolation", crucible-975) ----
+    //
+    // These are the gate-level leakage probes the isolation contract
+    // requires: they run against the REAL `prepare_harbor_job_dir` /
+    // `harbor_job_dir` production code paths `run_one_harbor_task` uses, not
+    // a parallel test-only implementation, and need no live `harbor`/Docker
+    // install (that's why `read_harbor_trial_result_*` above and these tests
+    // never spawn the `harbor` CLI: this file's existing pattern is to prove
+    // the directory/parsing contract Crucible itself owns without depending
+    // on the external tool CI does not install).
+
+    #[test]
+    fn harbor_job_directory_clears_prior_trial_artifacts_before_reuse() {
+        let jobs_root = unique_temp_dir("crucible-harbor-isolation-reuse").expect("temp dir");
+
+        let job_dir = prepare_harbor_job_dir(&jobs_root, "task-a").expect("prepare job dir");
+        std::fs::create_dir_all(&job_dir).unwrap();
+        let leaked_marker = job_dir.join("prior-trial-secret.txt");
+        std::fs::write(&leaked_marker, "leaked-from-prior-trial").unwrap();
+        assert!(
+            leaked_marker.exists(),
+            "sanity: the simulated prior-trial artifact was actually written"
+        );
+
+        // The probe: prepare the SAME task id's job directory again, as a
+        // second trial would. If isolation ever regressed (e.g. the clearing
+        // step were removed), the leaked marker from the "prior trial" above
+        // would still be readable here — this assertion is the leakage
+        // probe, and it fails on any cross-trial visibility.
+        let job_dir_again =
+            prepare_harbor_job_dir(&jobs_root, "task-a").expect("prepare job dir again");
+        assert_eq!(job_dir_again, job_dir, "same task id reuses the same slot");
+        assert!(
+            !leaked_marker.exists(),
+            "a prior trial's artifact must not be visible to the next trial reusing this slot"
+        );
+        assert!(
+            !job_dir_again.exists() || std::fs::read_dir(&job_dir_again).unwrap().next().is_none(),
+            "the prepared job directory is either absent or empty, never pre-populated"
+        );
+
+        let _ = std::fs::remove_dir_all(&jobs_root);
+    }
+
+    #[test]
+    fn harbor_job_directories_are_disjoint_across_task_ids() {
+        let jobs_root = unique_temp_dir("crucible-harbor-isolation-disjoint").expect("temp dir");
+
+        let job_dir_a = prepare_harbor_job_dir(&jobs_root, "task-a").expect("prepare task-a");
+        std::fs::create_dir_all(&job_dir_a).unwrap();
+        let secret_a = job_dir_a.join("task-a-secret.txt");
+        std::fs::write(&secret_a, "belongs to task-a only").unwrap();
+
+        // The probe: a DIFFERENT task id's job directory must not contain, or
+        // resolve to any path under, task-a's directory — a sibling trial
+        // must have no way to see task-a's artifact through Crucible's own
+        // directory layout.
+        let job_dir_b = prepare_harbor_job_dir(&jobs_root, "task-b").expect("prepare task-b");
+        assert_ne!(job_dir_a, job_dir_b, "distinct task ids get distinct slots");
+        assert!(
+            !job_dir_b.starts_with(&job_dir_a) && !job_dir_a.starts_with(&job_dir_b),
+            "task-b's directory must not nest inside (or contain) task-a's: {job_dir_a:?} vs {job_dir_b:?}"
+        );
+        assert!(
+            secret_a.exists(),
+            "preparing a sibling task's job dir must not touch an unrelated task's artifacts"
+        );
+        assert!(
+            std::fs::read_dir(&job_dir_b)
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(true),
+            "task-b's freshly prepared directory contains none of task-a's files"
+        );
+
+        let _ = std::fs::remove_dir_all(&jobs_root);
     }
 
     struct FakeModelClient {
