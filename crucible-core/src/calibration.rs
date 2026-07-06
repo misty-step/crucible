@@ -188,6 +188,24 @@ pub struct CalibrationRecord {
     /// safe (locked/unknown) direction.
     #[serde(default)]
     pub licence_key: String,
+    /// Fraction of the decisive calibration verdicts that flipped when the
+    /// same rubric/candidate pair was re-judged with a purely cosmetic
+    /// prompt perturbation (rubric/candidate section order swapped) — the
+    /// format-sensitivity self-check (*Evaluating Scoring Bias in
+    /// LLM-as-a-Judge*, arXiv:2506.22316). `None` when the check was not run
+    /// (opt-in via [`crate::AgenticJudgeConfig::format_sensitivity_check`]),
+    /// distinct from `Some(0.0)` (checked, and stable).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::serde_util::serialize_finite_option"
+    )]
+    pub format_sensitivity_flip_rate: Option<f64>,
+    /// Number of calibration items the format-sensitivity check re-judged to
+    /// produce [`Self::format_sensitivity_flip_rate`]. `0` when the check was
+    /// not run or had no decisive calibration items to sample.
+    #[serde(default)]
+    pub format_sensitivity_n: u64,
 }
 
 fn calibration_record_schema() -> String {
@@ -235,6 +253,8 @@ mod tests {
             unlock_threshold: 0.6,
             unlocked: true,
             licence_key: "judge-licence:v1:claude-judge:hash1:hash2".to_string(),
+            format_sensitivity_flip_rate: Some(0.1),
+            format_sensitivity_n: 10,
         };
         let json = serde_json::to_string(&rec).unwrap();
         let back: CalibrationRecord = serde_json::from_str(&json).unwrap();
@@ -247,6 +267,8 @@ mod tests {
             back.licence_key,
             "judge-licence:v1:claude-judge:hash1:hash2"
         );
+        assert_eq!(back.format_sensitivity_flip_rate, Some(0.1));
+        assert_eq!(back.format_sensitivity_n, 10);
     }
 
     #[test]
@@ -282,6 +304,11 @@ mod tests {
             "an omitted bias-risk flag must default to false, not a silent true"
         );
         assert_eq!(rec.licence_key, "");
+        assert_eq!(
+            rec.format_sensitivity_flip_rate, None,
+            "an omitted format-sensitivity flip rate defaults to None (not run), not Some(0.0)"
+        );
+        assert_eq!(rec.format_sensitivity_n, 0);
     }
 
     #[test]
@@ -303,6 +330,8 @@ mod tests {
             unlock_threshold: 0.6,
             unlocked: false,
             licence_key: "judge-licence:v1:claude-judge:hash1:hash2".to_string(),
+            format_sensitivity_flip_rate: Some(0.0),
+            format_sensitivity_n: 4,
         };
         for set in [
             |r: &mut CalibrationRecord| r.agreement = f64::NAN,
@@ -310,6 +339,7 @@ mod tests {
             |r: &mut CalibrationRecord| r.unlock_threshold = f64::NEG_INFINITY,
             |r: &mut CalibrationRecord| r.false_positive_rate = f64::NAN,
             |r: &mut CalibrationRecord| r.false_negative_rate = f64::INFINITY,
+            |r: &mut CalibrationRecord| r.format_sensitivity_flip_rate = Some(f64::NAN),
         ] {
             let mut bad = rec.clone();
             set(&mut bad);

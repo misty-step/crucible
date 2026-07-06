@@ -1240,10 +1240,50 @@ fn prompt_text_for_task(spec_path: &Path, task: &PromptBenchmarkTask) -> anyhow:
 
 /// Judge protocol suffix appended to every judge call's system prompt so the
 /// response is parseable regardless of what the operator wrote in
-/// `judge_prompt`: exactly one `VERDICT: PASS`, `VERDICT: FAIL`, or
-/// `VERDICT: UNKNOWN` line (report §6 checklist item 8: "give the judge an
-/// explicit `unknown`/`insufficient_information` option").
-const JUDGE_VERDICT_PROTOCOL: &str = "\n\nRespond with exactly one line in the form `VERDICT: PASS`, `VERDICT: FAIL`, or `VERDICT: UNKNOWN`, followed by one sentence of reasoning on the next line. Do not rubber-stamp: a candidate that fails the rubric must get VERDICT: FAIL even if it is close. Use VERDICT: UNKNOWN only when the rubric and candidate genuinely do not give you enough information to decide — never guess a PASS or FAIL you are not confident in.";
+/// `judge_prompt`: reasoning first, then exactly one `VERDICT: PASS`,
+/// `VERDICT: FAIL`, or `VERDICT: UNKNOWN` line as the FINAL line (report §6
+/// checklist item 8: "give the judge an explicit `unknown`/
+/// `insufficient_information` option"; RubricEval, arXiv:2603.25133:
+/// reasoning-before-verdict adds 6.7-9.0 balanced-accuracy points over
+/// verdict-first — this protocol was previously exactly backwards).
+/// [`parse_judge_verdict`] is tail-anchored to match: it reads only the
+/// final line, so the verdict must come last.
+const JUDGE_VERDICT_PROTOCOL: &str = "\n\nRespond with your reasoning first: a short paragraph explaining how the candidate does or does not meet the rubric. Do not rubber-stamp: a candidate that fails the rubric must get VERDICT: FAIL even if it is close. Use VERDICT: UNKNOWN only when the rubric and candidate genuinely do not give you enough information to decide — never guess a PASS or FAIL you are not confident in. End your response with exactly one line, and nothing after it, in the form `VERDICT: PASS`, `VERDICT: FAIL`, or `VERDICT: UNKNOWN`.";
+
+/// Build the judge's user prompt for one task: the rubric, an optional
+/// reference exemplar, and the candidate output. The reference — when
+/// present — is labeled as a known-perfect exemplar and never presented as
+/// the candidate being judged; *Evaluating Scoring Bias in LLM-as-a-Judge*
+/// (arXiv:2506.22316) found this reliably improves scoring accuracy across
+/// judges and normalizes skewed scoring tendencies.
+///
+/// `cosmetic_reorder` swaps the rubric/candidate section order without
+/// changing their content — used only by the format-sensitivity self-check
+/// (same paper: purely cosmetic prompt perturbations move scores in
+/// judge-specific directions) to probe whether that perturbation alone
+/// flips the judge's verdict.
+fn judge_user_prompt(task: &AgenticJudgeTask, cosmetic_reorder: bool) -> String {
+    let reference_block = task
+        .reference
+        .as_deref()
+        .map(|reference| {
+            format!(
+                "\n\nReference answer (a known-perfect exemplar for this rubric — NOT the candidate being judged):\n{reference}"
+            )
+        })
+        .unwrap_or_default();
+    if cosmetic_reorder {
+        format!(
+            "Candidate output:\n{}{reference_block}\n\nRubric:\n{}",
+            task.candidate, task.rubric
+        )
+    } else {
+        format!(
+            "Rubric:\n{}{reference_block}\n\nCandidate output:\n{}",
+            task.rubric, task.candidate
+        )
+    }
+}
 
 /// A judge's verdict on one task: pass, fail, or a genuine inability to
 /// decide (report §6 item 8). `Unknown` is a distinct, first-class outcome —
@@ -1339,6 +1379,10 @@ fn run_agentic_judge_with_client(
     let mut calibration_human = Vec::new();
     let mut calibration_rubric_hashes = Vec::new();
     let mut unknown_calibration = 0u64;
+    // Every decisive calibration item, paired with the judge's original
+    // verdict — the sample the format-sensitivity self-check re-probes with
+    // a cosmetically reordered prompt (config.format_sensitivity_check).
+    let mut calibration_probe_items: Vec<(&AgenticJudgeTask, bool)> = Vec::new();
     // Judge-specific run stats (report §6 item 11), distinct from any
     // candidate-generation cost this runner does not itself incur (candidates
     // here are authored strings, not live-generated).
@@ -1354,10 +1398,7 @@ fn run_agentic_judge_with_client(
     let mut trace_sequence: u64 = 0;
 
     for task in tasks {
-        let user_prompt = format!(
-            "Rubric:\n{}\n\nCandidate output:\n{}",
-            task.rubric, task.candidate
-        );
+        let user_prompt = judge_user_prompt(task, false);
         let started = Instant::now();
         let response = model_client.complete(ModelRequest {
             model: &config.model,
@@ -1464,6 +1505,7 @@ fn run_agentic_judge_with_client(
                     }
                     calibration_judge.push(verdict_bool);
                     calibration_human.push(expected);
+                    calibration_probe_items.push((task, verdict_bool));
                     canary_notes.push(format!(
                         "calibration task {:?} disagreed with the judge (expected {expected}, got {verdict}) but did not refuse the run.",
                         task.task_id
@@ -1471,6 +1513,7 @@ fn run_agentic_judge_with_client(
                 } else {
                     calibration_judge.push(verdict_bool);
                     calibration_human.push(expected);
+                    calibration_probe_items.push((task, verdict_bool));
                     canary_notes.push(format!(
                         "calibration task {:?} matched its expected verdict.",
                         task.task_id
@@ -1520,6 +1563,63 @@ fn run_agentic_judge_with_client(
         );
     }
 
+    // Format-sensitivity self-check (opt-in, arXiv:2506.22316): re-judge every
+    // decisive calibration item with a cosmetically reordered prompt and
+    // measure the fraction whose verdict flips. A single calibration run
+    // cannot see this on its own — cosmetic perturbations move scores in
+    // judge-specific directions, so the fragility has to be probed directly.
+    let mut format_sensitivity_flip_rate = None;
+    let mut format_sensitivity_n = 0u64;
+    if config.format_sensitivity_check && !calibration_probe_items.is_empty() {
+        let mut flips = 0u64;
+        for (probe_task, original_verdict_bool) in &calibration_probe_items {
+            let probe_prompt = judge_user_prompt(probe_task, true);
+            let started = Instant::now();
+            let response = model_client.complete(ModelRequest {
+                model: &config.model,
+                system_prompt: &judge_system_prompt,
+                user_prompt: &probe_prompt,
+                max_output_units: None,
+                temperature: config.temperature,
+            })?;
+            let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+            total_latency_ms = total_latency_ms.saturating_add(latency_ms);
+            if let Some(cost) = response.cost_usd {
+                total_cost_usd += cost;
+                any_cost_recorded = true;
+            }
+            let probe_verdict = parse_judge_verdict(&response.output).with_context(|| {
+                format!(
+                    "format-sensitivity probe for task {:?} returned an unparseable verdict",
+                    probe_task.task_id
+                )
+            })?;
+            let flipped = probe_verdict.as_bool() != Some(*original_verdict_bool);
+            push_trace_step(
+                &mut trace_steps,
+                &mut trace_sequence,
+                "format_sensitivity_probe",
+                &probe_task.task_id,
+                serde_json::json!({
+                    "cosmetic_reorder": true,
+                    "raw_output": response.output,
+                    "original_verdict": original_verdict_bool,
+                    "flipped": flipped,
+                }),
+                Some(match probe_verdict {
+                    JudgeVerdict::Pass => "pass",
+                    JudgeVerdict::Fail => "fail",
+                    JudgeVerdict::Unknown => "unknown",
+                }),
+            );
+            if flipped {
+                flips += 1;
+            }
+        }
+        format_sensitivity_n = calibration_probe_items.len() as u64;
+        format_sensitivity_flip_rate = Some(flips as f64 / format_sensitivity_n as f64);
+    }
+
     calibration_rubric_hashes.sort();
     let calibration_rubric_hash = stable_hash(
         &calibration_rubric_hashes
@@ -1537,6 +1637,8 @@ fn run_agentic_judge_with_client(
         generator_id: config.generator_model.as_deref(),
         self_evaluation_bias_risk,
         licence_key: &licence_key,
+        format_sensitivity_flip_rate,
+        format_sensitivity_n,
     });
 
     let call_count = task_results.len() as u64;
@@ -1653,12 +1755,28 @@ fn run_agentic_judge_with_client(
 }
 
 /// Parse a judge response for the `VERDICT: PASS`/`VERDICT: FAIL`/`VERDICT:
-/// UNKNOWN` line the judge protocol requires. Refuses to guess: an ambiguous
-/// (more than one verdict tag present) or missing verdict is still an error,
-/// never silently defaulted — `UNKNOWN` is a verdict the judge states
-/// explicitly, not a fallback for a response this parser can't read.
+/// UNKNOWN` line the reasoning-first judge protocol requires as the FINAL
+/// line ([`JUDGE_VERDICT_PROTOCOL`]).
+///
+/// Tail-anchored: only the last non-empty line is read for the tag. This is
+/// deliberate, not incidental — RubricEval (arXiv:2603.25133) found
+/// reasoning-before-verdict adds 6.7-9.0 balanced-accuracy points over
+/// verdict-first, so the protocol puts the verdict last; a reasoning
+/// paragraph is free to discuss the word "verdict" or mention a tag in
+/// passing without creating ambiguity, because only the final line's tag is
+/// ever taken. A response in the pre-2026-07-06 verdict-first format (tag on
+/// the first line, reasoning after) is rejected here, not silently accepted:
+/// its final line carries no tag.
+///
+/// Still refuses to guess: a missing tag, or more than one tag, on that
+/// final line is an error, never silently defaulted — `UNKNOWN` is a verdict
+/// the judge states explicitly, not a fallback for a response this parser
+/// can't read.
 fn parse_judge_verdict(output: &str) -> anyhow::Result<JudgeVerdict> {
-    let upper = output.to_uppercase();
+    let Some(last_line) = output.lines().map(str::trim).rfind(|l| !l.is_empty()) else {
+        anyhow::bail!("judge response was empty: {output:?}");
+    };
+    let upper = last_line.to_uppercase();
     let pass = upper.contains("VERDICT: PASS") || upper.contains("VERDICT:PASS");
     let fail = upper.contains("VERDICT: FAIL") || upper.contains("VERDICT:FAIL");
     let unknown = upper.contains("VERDICT: UNKNOWN") || upper.contains("VERDICT:UNKNOWN");
@@ -1667,10 +1785,14 @@ fn parse_judge_verdict(output: &str) -> anyhow::Result<JudgeVerdict> {
         (false, true, false) => Ok(JudgeVerdict::Fail),
         (false, false, true) => Ok(JudgeVerdict::Unknown),
         (false, false, false) => {
-            anyhow::bail!("judge response had no VERDICT: PASS/FAIL/UNKNOWN line: {output:?}")
+            anyhow::bail!(
+                "judge response's final line carried no VERDICT: PASS/FAIL/UNKNOWN tag — the reasoning-first protocol requires the verdict as the last line: {output:?}"
+            )
         }
         _ => {
-            anyhow::bail!("judge response had more than one VERDICT tag: {output:?}")
+            anyhow::bail!(
+                "judge response's final line had more than one VERDICT tag: {last_line:?}"
+            )
         }
     }
 }
@@ -1688,6 +1810,11 @@ struct BuildCalibrationInput<'a> {
     generator_id: Option<&'a str>,
     self_evaluation_bias_risk: bool,
     licence_key: &'a str,
+    /// Format-sensitivity self-check outputs (see the runner's
+    /// `format_sensitivity_check` config flag). `None`/`0` when the check was
+    /// not run.
+    format_sensitivity_flip_rate: Option<f64>,
+    format_sensitivity_n: u64,
 }
 
 /// Build the judge's [`CalibrationRecord`] (backlog 012) from the paired
@@ -1717,6 +1844,8 @@ fn build_calibration_record(input: BuildCalibrationInput<'_>) -> Option<Calibrat
         generator_id,
         self_evaluation_bias_risk,
         licence_key,
+        format_sensitivity_flip_rate,
+        format_sensitivity_n,
     } = input;
     if judge_verdicts.is_empty() {
         return None;
@@ -1749,6 +1878,8 @@ fn build_calibration_record(input: BuildCalibrationInput<'_>) -> Option<Calibrat
         unlock_threshold: CALIBRATION_AGREEMENT_THRESHOLD,
         unlocked: observed_agreement >= CALIBRATION_AGREEMENT_THRESHOLD,
         licence_key: licence_key.to_string(),
+        format_sensitivity_flip_rate,
+        format_sensitivity_n,
     })
 }
 
@@ -2810,21 +2941,33 @@ mod tests {
 
     /// A fake judge that replies with each queued output in call order — one
     /// per task, so different tasks (e.g. a real candidate vs. a canary) get
-    /// distinct verdicts.
+    /// distinct verdicts. Also records every `user_prompt` it was called
+    /// with, in order, so tests can assert on exactly what was sent (e.g.
+    /// that a reference exemplar was injected, or that a format-sensitivity
+    /// probe reordered the prompt) without a separate mock.
     struct QueuedModelClient {
         outputs: std::cell::RefCell<std::collections::VecDeque<&'static str>>,
+        prompts: std::cell::RefCell<Vec<String>>,
     }
 
     impl QueuedModelClient {
         fn new(outputs: Vec<&'static str>) -> Self {
             Self {
                 outputs: std::cell::RefCell::new(outputs.into_iter().collect()),
+                prompts: std::cell::RefCell::new(Vec::new()),
             }
+        }
+
+        fn recorded_prompts(&self) -> Vec<String> {
+            self.prompts.borrow().clone()
         }
     }
 
     impl ModelClient for QueuedModelClient {
         fn complete(&self, request: ModelRequest<'_>) -> anyhow::Result<ModelResponse> {
+            self.prompts
+                .borrow_mut()
+                .push(request.user_prompt.to_string());
             let output = self
                 .outputs
                 .borrow_mut()
@@ -2874,6 +3017,7 @@ mod tests {
             generator_model: None,
             harness: None,
             tool_allowlist: Vec::new(),
+            format_sensitivity_check: false,
         }
     }
 
@@ -3498,6 +3642,7 @@ mod tests {
                 rubric: "The answer must be correct and well-reasoned.".to_string(),
                 expected_pass: None,
                 refuse_on_mismatch: false,
+                reference: None,
             },
             AgenticJudgeTask {
                 task_id: "canary".to_string(),
@@ -3505,6 +3650,7 @@ mod tests {
                 rubric: "The answer must be correct and well-reasoned.".to_string(),
                 expected_pass: Some(false),
                 refuse_on_mismatch: true,
+                reference: None,
             },
         ];
         let runner = RunnerSpec {
@@ -3518,8 +3664,8 @@ mod tests {
         // The real task's candidate earns VERDICT: PASS; the canary's bad
         // candidate correctly earns VERDICT: FAIL — the judge is not gaming.
         let client = QueuedModelClient::new(vec![
-            "VERDICT: PASS\nThe answer is correct.",
-            "VERDICT: FAIL\nThe answer does not address the rubric.",
+            "The answer is correct.\nVERDICT: PASS",
+            "The answer does not address the rubric.\nVERDICT: FAIL",
         ]);
 
         let report = run_agentic_judge_with_client(
@@ -3593,6 +3739,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: None,
                 refuse_on_mismatch: false,
+                reference: None,
             },
             AgenticJudgeTask {
                 task_id: "calib-agree".to_string(),
@@ -3600,6 +3747,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
+                reference: None,
             },
             AgenticJudgeTask {
                 task_id: "calib-disagree-1".to_string(),
@@ -3607,6 +3755,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
+                reference: None,
             },
             AgenticJudgeTask {
                 task_id: "calib-disagree-2".to_string(),
@@ -3614,6 +3763,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: Some(false),
                 refuse_on_mismatch: false,
+                reference: None,
             },
         ];
         let runner = RunnerSpec {
@@ -3624,10 +3774,10 @@ mod tests {
             },
         };
         let client = QueuedModelClient::new(vec![
-            "VERDICT: PASS\nreal task passes",
-            "VERDICT: PASS\nagrees",
-            "VERDICT: FAIL\ndisagrees with expected true",
-            "VERDICT: PASS\ndisagrees with expected false",
+            "real task passes\nVERDICT: PASS",
+            "agrees\nVERDICT: PASS",
+            "disagrees with expected true\nVERDICT: FAIL",
+            "disagrees with expected false\nVERDICT: PASS",
         ]);
 
         let report = run_agentic_judge_with_client(
@@ -3701,6 +3851,7 @@ mod tests {
                 rubric: "The answer must be correct and well-reasoned.".to_string(),
                 expected_pass: None,
                 refuse_on_mismatch: false,
+                reference: None,
             },
             AgenticJudgeTask {
                 task_id: "canary".to_string(),
@@ -3708,6 +3859,7 @@ mod tests {
                 rubric: "The answer must be correct and well-reasoned.".to_string(),
                 expected_pass: Some(false),
                 refuse_on_mismatch: true,
+                reference: None,
             },
         ];
         let runner = RunnerSpec {
@@ -3721,8 +3873,8 @@ mod tests {
         // A rubber-stamping judge: it passes the canary's obviously-bad
         // candidate too. The guard must refuse the whole run.
         let client = QueuedModelClient::new(vec![
-            "VERDICT: PASS\nLooks fine.",
-            "VERDICT: PASS\nLooks fine.",
+            "Looks fine.\nVERDICT: PASS",
+            "Looks fine.\nVERDICT: PASS",
         ]);
 
         let err = run_agentic_judge_with_client(
@@ -3759,6 +3911,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: None,
                 refuse_on_mismatch: false,
+                reference: None,
             },
             AgenticJudgeTask {
                 task_id: "calib-1".to_string(),
@@ -3766,6 +3919,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
+                reference: None,
             },
         ];
         let runner = RunnerSpec {
@@ -3775,7 +3929,7 @@ mod tests {
                 tasks: tasks.clone(),
             },
         };
-        let client = QueuedModelClient::new(vec!["VERDICT: PASS\nreal", "VERDICT: PASS\nagrees"]);
+        let client = QueuedModelClient::new(vec!["real\nVERDICT: PASS", "agrees\nVERDICT: PASS"]);
 
         let report = run_agentic_judge_with_client(
             &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
@@ -3822,6 +3976,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: None,
                 refuse_on_mismatch: false,
+                reference: None,
             },
             AgenticJudgeTask {
                 task_id: "calib-1".to_string(),
@@ -3829,6 +3984,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
+                reference: None,
             },
         ];
         let runner = RunnerSpec {
@@ -3838,7 +3994,7 @@ mod tests {
                 tasks: tasks.clone(),
             },
         };
-        let client = QueuedModelClient::new(vec!["VERDICT: PASS\nreal", "VERDICT: PASS\nagrees"]);
+        let client = QueuedModelClient::new(vec!["real\nVERDICT: PASS", "agrees\nVERDICT: PASS"]);
 
         let report = run_agentic_judge_with_client(
             &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
@@ -3878,6 +4034,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: None,
                 refuse_on_mismatch: false,
+                reference: None,
             },
             AgenticJudgeTask {
                 task_id: "real-2-ambiguous".to_string(),
@@ -3885,6 +4042,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: None,
                 refuse_on_mismatch: false,
+                reference: None,
             },
         ];
         let runner = RunnerSpec {
@@ -3895,8 +4053,8 @@ mod tests {
             },
         };
         let client = QueuedModelClient::new(vec![
-            "VERDICT: PASS\nreal",
-            "VERDICT: UNKNOWN\nnot enough information in the rubric to decide",
+            "real\nVERDICT: PASS",
+            "not enough information in the rubric to decide\nVERDICT: UNKNOWN",
         ]);
 
         let report = run_agentic_judge_with_client(
@@ -3949,6 +4107,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: None,
                 refuse_on_mismatch: false,
+                reference: None,
             },
             AgenticJudgeTask {
                 task_id: "canary".to_string(),
@@ -3956,6 +4115,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: Some(false),
                 refuse_on_mismatch: true,
+                reference: None,
             },
         ];
         let runner = RunnerSpec {
@@ -3969,8 +4129,8 @@ mod tests {
         // not rubber-stamping (it never says PASS), so the guard must not
         // trip — but the disagreement/agreement measurement must exclude it.
         let client = QueuedModelClient::new(vec![
-            "VERDICT: PASS\nreal",
-            "VERDICT: UNKNOWN\ncannot determine from the given rubric",
+            "real\nVERDICT: PASS",
+            "cannot determine from the given rubric\nVERDICT: UNKNOWN",
         ]);
 
         let report = run_agentic_judge_with_client(
@@ -4013,6 +4173,7 @@ mod tests {
             rubric: "Must be correct.".to_string(),
             expected_pass: None,
             refuse_on_mismatch: false,
+            reference: None,
         }];
         let runner = RunnerSpec {
             kind: RunnerKind::AgenticJudge,
@@ -4021,7 +4182,7 @@ mod tests {
                 tasks: tasks.clone(),
             },
         };
-        let client = QueuedModelClient::new(vec!["VERDICT: PASS\nreal"]);
+        let client = QueuedModelClient::new(vec!["real\nVERDICT: PASS"]);
 
         run_agentic_judge_with_client(&spec, &runner, &spec_path, &temp, &config, &tasks, &client)
             .expect("agentic judge runs");
@@ -4033,6 +4194,280 @@ mod tests {
         assert_eq!(evidence["judge_stats"]["failure_rate"], 0.0);
         assert!(evidence["judge_stats"]["total_cost_usd"].is_number());
         assert!(evidence["judge_stats"]["total_latency_ms"].is_u64());
+    }
+
+    #[test]
+    fn agentic_judge_injects_reference_exemplar_labeled_not_as_the_candidate() {
+        let temp =
+            std::env::temp_dir().join(format!("crucible-judge-reference-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-reference.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        let tasks = vec![AgenticJudgeTask {
+            task_id: "real-1".to_string(),
+            candidate: "A partially correct answer.".to_string(),
+            rubric: "Must fully answer the question.".to_string(),
+            expected_pass: None,
+            refuse_on_mismatch: false,
+            reference: Some("The known-perfect answer text.".to_string()),
+        }];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec!["real\nVERDICT: PASS"]);
+
+        run_agentic_judge_with_client(&spec, &runner, &spec_path, &temp, &config, &tasks, &client)
+            .expect("agentic judge runs");
+
+        let prompts = client.recorded_prompts();
+        assert_eq!(prompts.len(), 1);
+        assert!(
+            prompts[0].contains("The known-perfect answer text."),
+            "the reference exemplar is injected into the judge's prompt: {:?}",
+            prompts[0]
+        );
+        assert!(
+            prompts[0].contains("known-perfect exemplar"),
+            "the reference is labeled as a known-perfect exemplar, not presented as the candidate: {:?}",
+            prompts[0]
+        );
+        assert!(
+            prompts[0].contains("A partially correct answer."),
+            "the actual candidate is still present and distinguishable from the reference: {:?}",
+            prompts[0]
+        );
+    }
+
+    #[test]
+    fn agentic_judge_omits_the_reference_block_when_no_reference_is_declared() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-no-reference-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-no-reference.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        let tasks = vec![AgenticJudgeTask {
+            task_id: "real-1".to_string(),
+            candidate: "An answer.".to_string(),
+            rubric: "Must be correct.".to_string(),
+            expected_pass: None,
+            refuse_on_mismatch: false,
+            reference: None,
+        }];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec!["real\nVERDICT: PASS"]);
+
+        run_agentic_judge_with_client(&spec, &runner, &spec_path, &temp, &config, &tasks, &client)
+            .expect("agentic judge runs");
+
+        let prompts = client.recorded_prompts();
+        assert!(
+            !prompts[0].contains("known-perfect exemplar"),
+            "no reference block appears when the task declares no reference: {:?}",
+            prompts[0]
+        );
+    }
+
+    #[test]
+    fn format_sensitivity_check_records_a_zero_flip_rate_when_the_judge_is_stable() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-format-sensitivity-stable-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-format-sensitivity-stable.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let mut config = agentic_judge_config();
+        config.format_sensitivity_check = true;
+        let tasks = vec![
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "A correct answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+            AgenticJudgeTask {
+                task_id: "calib-1".to_string(),
+                candidate: "Agrees.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: Some(true),
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        // Two ordinary calls, then one format-sensitivity re-probe of the one
+        // decisive calibration item ("calib-1") — same verdict both times, so
+        // the flip rate is 0.0, not None (checked, and stable).
+        let client = QueuedModelClient::new(vec![
+            "real\nVERDICT: PASS",
+            "agrees\nVERDICT: PASS",
+            "still agrees under reordering\nVERDICT: PASS",
+        ]);
+
+        run_agentic_judge_with_client(&spec, &runner, &spec_path, &temp, &config, &tasks, &client)
+            .expect("agentic judge runs");
+
+        let prompts = client.recorded_prompts();
+        assert_eq!(
+            prompts.len(),
+            3,
+            "the probe call is a real extra model call"
+        );
+        assert!(
+            prompts[2].starts_with("Candidate output:"),
+            "the format-sensitivity probe reorders the prompt (candidate section first): {:?}",
+            prompts[2]
+        );
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["calibration"]["format_sensitivity_flip_rate"], 0.0);
+        assert_eq!(evidence["calibration"]["format_sensitivity_n"], 1);
+    }
+
+    #[test]
+    fn format_sensitivity_check_records_a_nonzero_flip_rate_when_the_judge_is_fragile() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-format-sensitivity-fragile-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-format-sensitivity-fragile.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let mut config = agentic_judge_config();
+        config.format_sensitivity_check = true;
+        let tasks = vec![
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "A correct answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+            AgenticJudgeTask {
+                task_id: "calib-1".to_string(),
+                candidate: "Agrees.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: Some(true),
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        // Original verdict PASS; the cosmetically reordered re-probe flips to
+        // FAIL — a judge whose verdict is sensitive to a purely cosmetic
+        // perturbation, which the flip rate must surface.
+        let client = QueuedModelClient::new(vec![
+            "real\nVERDICT: PASS",
+            "agrees\nVERDICT: PASS",
+            "flips under reordering\nVERDICT: FAIL",
+        ]);
+
+        run_agentic_judge_with_client(&spec, &runner, &spec_path, &temp, &config, &tasks, &client)
+            .expect("agentic judge runs; format-sensitivity flips do not abort the run");
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["calibration"]["format_sensitivity_flip_rate"], 1.0);
+        assert_eq!(evidence["calibration"]["format_sensitivity_n"], 1);
+    }
+
+    #[test]
+    fn format_sensitivity_check_is_opt_in_and_absent_by_default() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-format-sensitivity-off-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-format-sensitivity-off.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config(); // format_sensitivity_check: false
+        let tasks = vec![
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "A correct answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+            AgenticJudgeTask {
+                task_id: "calib-1".to_string(),
+                candidate: "Agrees.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: Some(true),
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec!["real\nVERDICT: PASS", "agrees\nVERDICT: PASS"]);
+
+        run_agentic_judge_with_client(&spec, &runner, &spec_path, &temp, &config, &tasks, &client)
+            .expect("agentic judge runs");
+
+        assert_eq!(
+            client.recorded_prompts().len(),
+            2,
+            "no extra probe call is made when format_sensitivity_check is false"
+        );
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert!(
+            evidence["calibration"]["format_sensitivity_flip_rate"].is_null(),
+            "an unrun check reports None, not a fabricated rate: {evidence}"
+        );
+        assert_eq!(evidence["calibration"]["format_sensitivity_n"], 0);
     }
 
     #[test]
@@ -4055,6 +4490,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: None,
                 refuse_on_mismatch: false,
+                reference: None,
             },
             AgenticJudgeTask {
                 task_id: "real-2-ambiguous".to_string(),
@@ -4062,6 +4498,7 @@ mod tests {
                 rubric: "Must be correct.".to_string(),
                 expected_pass: None,
                 refuse_on_mismatch: false,
+                reference: None,
             },
         ];
         let runner = RunnerSpec {
@@ -4072,8 +4509,8 @@ mod tests {
             },
         };
         let client = QueuedModelClient::new(vec![
-            "VERDICT: PASS\nreal",
-            "VERDICT: UNKNOWN\nnot enough information in the rubric to decide",
+            "real\nVERDICT: PASS",
+            "not enough information in the rubric to decide\nVERDICT: UNKNOWN",
         ]);
 
         let report = run_agentic_judge_with_client(
@@ -4167,6 +4604,7 @@ mod tests {
             rubric: "Must be correct.".to_string(),
             expected_pass: None,
             refuse_on_mismatch: false,
+            reference: None,
         }];
         let runner = RunnerSpec {
             kind: RunnerKind::AgenticJudge,
@@ -4175,7 +4613,7 @@ mod tests {
                 tasks: tasks.clone(),
             },
         };
-        let client = QueuedModelClient::new(vec!["VERDICT: PASS\nreal"]);
+        let client = QueuedModelClient::new(vec!["real\nVERDICT: PASS"]);
 
         let report = run_agentic_judge_with_client(
             &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
@@ -4222,6 +4660,7 @@ mod tests {
             rubric: "Must be correct.".to_string(),
             expected_pass: None,
             refuse_on_mismatch: false,
+            reference: None,
         }];
         let runner = RunnerSpec {
             kind: RunnerKind::AgenticJudge,
@@ -4237,13 +4676,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_judge_verdict_refuses_ambiguous_output() {
+    fn parse_judge_verdict_reads_the_final_line_reasoning_first() {
         assert_eq!(
-            parse_judge_verdict("VERDICT: PASS\nreason").unwrap(),
+            parse_judge_verdict("The candidate is correct.\nVERDICT: PASS").unwrap(),
             JudgeVerdict::Pass
         );
         assert_eq!(
-            parse_judge_verdict("VERDICT: FAIL\nreason").unwrap(),
+            parse_judge_verdict("The candidate misses the rubric.\nVERDICT: FAIL").unwrap(),
             JudgeVerdict::Fail
         );
         assert!(parse_judge_verdict("no verdict here").is_err());
@@ -4251,16 +4690,44 @@ mod tests {
     }
 
     #[test]
+    fn parse_judge_verdict_rejects_the_old_verdict_first_format() {
+        // Pre-2026-07-06 format: the tag came first, reasoning after. The
+        // reasoning-first protocol requires the tag as the FINAL line, so a
+        // response shaped like the old protocol must be rejected, not
+        // silently accepted from wherever the tag happens to sit.
+        let err = parse_judge_verdict("VERDICT: PASS\nThe answer is correct.").unwrap_err();
+        assert!(
+            err.to_string().contains("final line"),
+            "error names the final-line requirement: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_judge_verdict_takes_the_last_tag_ignoring_earlier_mentions() {
+        // Reasoning that mentions "VERDICT: FAIL" in passing (e.g. weighing
+        // it and then rejecting it) must not create ambiguity — only the
+        // tag on the true final line counts.
+        let output = "A stricter reading might suggest VERDICT: FAIL, but on balance the candidate meets the rubric.\nVERDICT: PASS";
+        assert_eq!(parse_judge_verdict(output).unwrap(), JudgeVerdict::Pass);
+    }
+
+    #[test]
     fn parse_judge_verdict_accepts_an_explicit_unknown() {
         assert_eq!(
-            parse_judge_verdict("VERDICT: UNKNOWN\nnot enough information to decide").unwrap(),
+            parse_judge_verdict("not enough information to decide\nVERDICT: UNKNOWN").unwrap(),
             JudgeVerdict::Unknown
         );
         assert!(
             parse_judge_verdict("VERDICT: PASS and also VERDICT: UNKNOWN").is_err(),
-            "UNKNOWN alongside another tag is still ambiguous, not a silent fallback"
+            "UNKNOWN alongside another tag on the final line is still ambiguous, not a silent fallback"
         );
         assert!(parse_judge_verdict("VERDICT: FAIL and also VERDICT: UNKNOWN").is_err());
+    }
+
+    #[test]
+    fn parse_judge_verdict_refuses_an_empty_response() {
+        assert!(parse_judge_verdict("").is_err());
+        assert!(parse_judge_verdict("   \n  \n").is_err());
     }
 
     fn task_result(task_id: &str, missed: u64, false_positives: u64) -> TaskResult {

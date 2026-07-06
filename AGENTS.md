@@ -19,7 +19,15 @@
   (`backlog.d/012-*`) is real: a live judge call, a `CalibrationRecord`
   measuring judge-vs-deterministic agreement on labeled calibration tasks, and
   a judge-gaming canary that hard-refuses a run (no evidence persisted) if the
-  judge rubber-stamps a known-bad candidate. The agentic-judge runner also
+  judge rubber-stamps a known-bad candidate. The judge protocol is
+  reasoning-first (`crucible-969`): the judge is instructed to reason before
+  the verdict, `parse_judge_verdict` is tail-anchored (only the final line's
+  `VERDICT:` tag is read, so a pre-2026-07-06 verdict-first response is
+  rejected, not silently accepted). `AgenticJudgeTask.reference` injects an
+  optional known-perfect exemplar labeled as such (never as the candidate);
+  `AgenticJudgeConfig.format_sensitivity_check` (opt-in) re-probes every
+  decisive calibration item with a cosmetically reordered prompt and records
+  the flip rate as `CalibrationRecord.format_sensitivity_flip_rate`/`_n`. The agentic-judge runner also
   persists a `Trace` (`crucible-core::trace`, `backlog.d/030-*`) — an ordered
   judge_call/verdict_parsed/calibration_check step sequence pointed to from
   `run_records.trace_path` and surfaced via `runs list/show`/MCP the same way

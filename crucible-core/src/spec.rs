@@ -340,6 +340,18 @@ pub struct AgenticJudgeConfig {
     /// [`PromptModelConfig::tool_allowlist`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_allowlist: Vec<String>,
+    /// When `true`, the runner re-issues every decisive (non-`UNKNOWN`)
+    /// calibration call with a cosmetically reordered prompt (rubric and
+    /// candidate sections swapped) and records the fraction of verdicts that
+    /// flip under that purely cosmetic perturbation on the judge's
+    /// [`crate::CalibrationRecord`]. *Evaluating Scoring Bias in
+    /// LLM-as-a-Judge* (arXiv:2506.22316) found cosmetic prompt perturbations
+    /// move scores in judge-specific directions — a single calibration run
+    /// cannot detect this on its own. Defaults to `false`: the check doubles
+    /// the judge calls for the calibration set, so it is opt-in per run, not
+    /// automatic.
+    #[serde(default)]
+    pub format_sensitivity_check: bool,
 }
 
 /// One candidate output for the judge to score against a rubric.
@@ -372,6 +384,14 @@ pub struct AgenticJudgeTask {
     /// guard: set it on a canary the judge must reject.
     #[serde(default)]
     pub refuse_on_mismatch: bool,
+    /// An optional known-perfect answer for this task's rubric, injected into
+    /// the judge's user prompt labeled as a reference exemplar — never as the
+    /// candidate. *Evaluating Scoring Bias in LLM-as-a-Judge* (arXiv:2506.22316)
+    /// found this reliably improves scoring accuracy across judges and
+    /// normalizes skewed scoring tendencies. `None` when no reference answer
+    /// is available; the judge then scores from the rubric alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
 
 /// Shared Harbor invocation config for a `harbor_task` runner's corpus
@@ -893,6 +913,7 @@ mod tests {
             generator_model: None,
             harness: Some("codex".to_string()),
             tool_allowlist: vec!["apply_patch".to_string()],
+            format_sensitivity_check: true,
         };
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains(r#""harness":"codex""#), "{json}");
@@ -900,8 +921,26 @@ mod tests {
             json.contains(r#""tool_allowlist":["apply_patch"]"#),
             "{json}"
         );
+        assert!(
+            json.contains(r#""format_sensitivity_check":true"#),
+            "{json}"
+        );
         let back: AgenticJudgeConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back, config);
+    }
+
+    #[test]
+    fn agentic_judge_config_format_sensitivity_check_defaults_to_false() {
+        let json = r#"{
+            "provider": "open_router",
+            "model": "test/judge",
+            "judge_prompt": "Grade it."
+        }"#;
+        let config: AgenticJudgeConfig = serde_json::from_str(json).unwrap();
+        assert!(
+            !config.format_sensitivity_check,
+            "an omitted format_sensitivity_check must default to false (opt-in, not automatic)"
+        );
     }
 
     #[test]
