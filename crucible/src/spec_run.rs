@@ -3109,6 +3109,7 @@ mod tests {
             aggregation: AggregationMethod::Proportion,
             uncertainty: crucible_core::UncertaintyRule::default(),
             decision: String::new(),
+            min_effect_of_interest: None,
             runner: None,
         }
     }
@@ -3204,6 +3205,7 @@ mod tests {
             aggregation: AggregationMethod::Proportion,
             uncertainty: crucible_core::UncertaintyRule::default(),
             decision: String::new(),
+            min_effect_of_interest: None,
             runner: None,
         };
         let runner = RunnerSpec {
@@ -3291,6 +3293,7 @@ mod tests {
             aggregation: AggregationMethod::Proportion,
             uncertainty: crucible_core::UncertaintyRule::default(),
             decision: String::new(),
+            min_effect_of_interest: None,
             runner: None,
         };
         let runner = RunnerSpec {
@@ -3445,6 +3448,7 @@ mod tests {
             aggregation: AggregationMethod::Proportion,
             uncertainty: crucible_core::UncertaintyRule::default(),
             decision: String::new(),
+            min_effect_of_interest: None,
             runner: None,
         };
         let task_ids = ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"];
@@ -3690,6 +3694,7 @@ mod tests {
             aggregation: AggregationMethod::Proportion,
             uncertainty: crucible_core::UncertaintyRule::default(),
             decision: String::new(),
+            min_effect_of_interest: None,
             runner: None,
         };
         let runner = RunnerSpec {

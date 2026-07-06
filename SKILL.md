@@ -259,6 +259,34 @@ For prompt benchmarks that declare per-task `class`, `runs compare` emits
 `class_breakdowns` rows with per-class pass counts, deltas, paired task counts,
 and McNemar noise-floor verdicts in addition to the overall comparison.
 
+Every paired comparison (`comparison.paired` and each `class_breakdowns[].paired`)
+carries a `resolution` alongside its `DeltaVerdict` — Kotawala's resolution
+diagnostic (*Resolution Diagnostics for Paired LLM Evaluation*, arXiv:2605.30315),
+which audited real leaderboards and found 11/40 Open LLM Leaderboard v1 pairwise
+rankings and 4-6/9 MMLU-Pro adjacent-rank pairs reported as ranked differences
+without the statistical power to support them at `(alpha=.05, power=.8)`.
+`resolution.resolution_ratio` is `q = n / N*`: this comparison's actual paired
+sample size (`common_tasks`) over `N*`, the minimum `required_n` needed to
+resolve the effect it actually showed at `(alpha, power=0.8)` — `q >= 1.0` means
+adequately powered for that effect, `q < 1.0` means underpowered.
+`resolution.minimum_detectable_effect` (MDE) is the smallest effect size this
+comparison's actual sample size *could* have resolved — the complementary
+question to `q`. Both use the **correct paired-Bernoulli variance formula**
+(derived from the observed discordant counts `b`/`c`), not the common
+unpaired-Cohen's-h-times-`(1-rho)` shortcut Kotawala documents as wrong by
+roughly 2x in the close-comparison regime. `resolution.diagnosis` reads the
+combination for you: `"signal"` (a real, defensible delta), `"no_effect"`
+(adequately powered and found nothing), `"underpowered"` (cannot rule out an
+effect of the size observed — an `InsideNoiseFloor` verdict here means
+"unknown", not "equal"), or `"no_discordance"` (the two configs agreed on
+literally every shared task). This is the load-bearing distinction: an
+`InsideNoiseFloor` verdict alone cannot tell you which of the last three you're
+looking at — `resolution.diagnosis` can. An `EvalSpec` can also declare
+`min_effect_of_interest` (the smallest delta that would change its `decision`);
+`crucible validate` then warns — non-fatally — when the declared task count
+cannot resolve that effect at `(alpha=0.05, power=0.8)`, using a conservative
+one-sample proxy since no paired discordance data exists before a run.
+
 Use an isolated ledger for tests or one-off proof:
 
 ```sh

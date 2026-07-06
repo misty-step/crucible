@@ -234,6 +234,7 @@ fn import_promptfoo(args: &PromptfooImportArgs) -> anyhow::Result<ImportReport> 
         aggregation: AggregationMethod::Proportion,
         uncertainty: UncertaintyRule::default(),
         decision: args.decision.clone().unwrap_or_default(),
+        min_effect_of_interest: None,
         runner: Some(RunnerSpec {
             kind: RunnerKind::PromptBenchmark,
             corpus: CorpusSpec::PromptBenchmark {

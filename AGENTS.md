@@ -11,7 +11,18 @@
   list/show/compare/history/pivot` (CLI + MCP) — config identity now carries
   explicit `harness`/`tool_allowlist` fields (`backlog.d/027-*`), `history`
   is one config's score trend over time, `pivot` is one benchmark's latest
-  run per model narrowable to one harness. `crucible validate`/MCP `crucible_validate`
+  run per model narrowable to one harness. Every paired comparison
+  (`compare`'s `paired`/`class_breakdowns[].paired`) also carries a
+  `resolution` (`crucible-950`): Kotawala's resolution ratio `q = n/N*` and
+  minimum detectable effect, from the correct paired-Bernoulli variance
+  formula (`crucible_core::required_n_paired`/`minimum_detectable_effect_paired`,
+  not the unpaired Cohen's-h-times-`(1-rho)` shortcut), with a `diagnosis`
+  that distinguishes an `InsideNoiseFloor` verdict's "no_effect" (adequately
+  powered, found nothing) from "underpowered" (cannot rule out an effect of
+  that size) from "no_discordance" (perfect agreement). `EvalSpec.min_effect_of_interest`
+  is the prospective counterpart: `crucible validate` warns (conservative
+  one-sample proxy, no paired data exists pre-run) when the declared task
+  count cannot resolve it at `(alpha=0.05, power=0.8)`. `crucible validate`/MCP `crucible_validate`
   checks a spec's `{valid, runnable, errors, warnings}` before it runs, and the
   runner refuses (not silently ignores) an unsupported `aggregation`,
   `uncertainty.method`/`confidence`, or a missing grader of the kind the
