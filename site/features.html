@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en" data-ae-theme="violet">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crucible features</title>
+    <meta
+      name="description"
+      content="What Crucible does: author and validate EvalSpecs, run three eval runner kinds, compare with Wilson intervals and a noise-floor verdict, and grade with a calibrated, canary-guarded judge."
+    />
+    <script>
+      try {
+        var m = localStorage.getItem('ae-mode');
+        if (m === 'dark' || m === 'light') {
+          document.documentElement.classList.add(m);
+          document.documentElement.style.colorScheme = m;
+        }
+      } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="aesthetic.css" />
+    <link rel="stylesheet" href="marketing.css" />
+  </head>
+  <body>
+    <svg aria-hidden="true" width="0" height="0" style="position: absolute">
+      <symbol id="i-flask-conical" viewBox="0 0 24 24">
+        <path
+          d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"
+        />
+        <path d="M6.453 15h11.094" />
+        <path d="M8.5 2h7" />
+      </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2" />
+        <path d="M12 20v2" />
+        <path d="m4.93 4.93 1.41 1.41" />
+        <path d="m17.66 17.66 1.41 1.41" />
+        <path d="M2 12h2" />
+        <path d="M20 12h2" />
+        <path d="m6.34 17.66-1.41 1.41" />
+        <path d="m19.07 4.93-1.41 1.41" />
+      </symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+      </symbol>
+      <symbol id="i-circle-check" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10" />
+        <path d="m9 12 2 2 4-4" />
+      </symbol>
+      <symbol id="i-x" viewBox="0 0 24 24">
+        <path d="M18 6 6 18" />
+        <path d="m6 6 12 12" />
+      </symbol>
+      <symbol id="i-github" viewBox="0 0 24 24">
+        <path
+          d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"
+        />
+        <path d="M9 18c-4.51 2-5-2-7-2" />
+      </symbol>
+    </svg>
+
+    <div class="ae-screen ae-wide">
+      <header class="ae-bar msk-bar">
+        <a class="ae-logo" href="./" aria-label="Crucible home">
+          <span class="ae-app-mark" aria-hidden="true">
+            <svg class="ae-icon" data-lucide="flask-conical">
+              <use href="#i-flask-conical" />
+            </svg>
+          </span>
+          <span class="ae-name">Crucible</span>
+        </a>
+        <nav class="ae-chrome msk-nav" aria-label="Site">
+          <a href="features.html" aria-current="page">features</a>
+          <a href="get-started.html">get started</a>
+          <a href="changelog.html">changelog</a>
+          <a href="https://github.com/misty-step/crucible">github</a>
+        </nav>
+      </header>
+
+      <main class="ae-stage ae-stage-scroll" id="content">
+        <div class="msk-page">
+          <section class="msk-hero" aria-labelledby="hero-title">
+            <p class="ae-chrome">EVAL AND BENCHMARK WORKBENCH</p>
+            <h1 class="ae-h" id="hero-title">
+              Measurement discipline for AI systems.
+            </h1>
+            <p class="msk-pitch">
+              Crucible designs, runs, judges, calibrates, and reports evals
+              for Misty Step's AI and agent work. Every rate carries a
+              confidence interval. Every judge needs calibration before it is
+              trusted. Rank gaps inside the noise floor come back
+              inconclusive, not as wins.
+            </p>
+            <p class="ae-status">
+              <svg class="ae-icon ae-ok" data-lucide="circle-check">
+                <use href="#i-circle-check" />
+              </svg>
+              <span class="ae-status-label"
+                >CLI, MCP server, and workbench UI read the same run
+                ledger.</span
+              >
+            </p>
+          </section>
+
+          <section
+            class="msk-section"
+            id="features"
+            aria-labelledby="features-title"
+          >
+            <h2 class="ae-h" id="features-title">Why it matters</h2>
+            <div class="ae-list-rows">
+              <div class="ae-list-row">
+                <span class="ae-list-cell">
+                  <span class="ae-list-label">author</span>
+                  <span class="ae-list-value"
+                    >A validated <code>EvalSpec</code>.</span
+                  >
+                </span>
+                <span class="ae-list-cell">
+                  <span class="ae-list-label">measure</span>
+                  <span class="ae-list-value"
+                    >A Wilson interval on every rate.</span
+                  >
+                </span>
+              </div>
+              <div class="ae-list-row">
+                <span class="ae-list-cell">
+                  <span class="ae-list-label">compare</span>
+                  <span class="ae-list-value">Admits the noise floor.</span>
+                </span>
+                <span class="ae-list-cell">
+                  <span class="ae-list-label">judge</span>
+                  <span class="ae-list-value"
+                    >Canary-guarded, calibration-scored judges.</span
+                  >
+                </span>
+              </div>
+              <div class="ae-list-row">
+                <span class="ae-list-cell">
+                  <span class="ae-list-label">verify</span>
+                  <span class="ae-list-value">Doctor check, zero spend.</span>
+                </span>
+                <span class="ae-list-cell">
+                  <span class="ae-list-label">interop</span>
+                  <span class="ae-list-value"
+                    >Cerberus, Harbor, and MCP adapters.</span
+                  >
+                </span>
+              </div>
+            </div>
+          </section>
+
+          <section
+            class="msk-section"
+            id="screens"
+            aria-labelledby="screens-title"
+          >
+            <div class="msk-section-head">
+              <h2 class="ae-h" id="screens-title">Screenshots</h2>
+              <p class="ae-dim">
+                Click a frame to inspect it. These are real captures of a live
+                <code>crucible serve</code> instance reading an actual SQLite
+                run ledger — no mockups.
+              </p>
+            </div>
+            <div class="msk-gallery" aria-label="Product screenshots">
+              <button
+                class="msk-shot"
+                type="button"
+                data-full="assets/screenshots/01-noise-floor-verdict.png"
+                data-title="Noise-floor verdict, live"
+              >
+                <img
+                  src="assets/screenshots/01-noise-floor-verdict.png"
+                  alt="Crucible comparison view showing a real paired McNemar result between two OpenRouter models, verdict inside_noise_floor"
+                />
+                <span class="ae-chrome">Noise-floor verdict, live</span>
+              </button>
+              <button
+                class="msk-shot"
+                type="button"
+                data-full="assets/screenshots/02-benchmark-library.png"
+                data-title="Benchmark library"
+              >
+                <img
+                  src="assets/screenshots/02-benchmark-library.png"
+                  alt="Crucible benchmark library listing real declared EvalSpecs from the evals directory"
+                />
+                <span class="ae-chrome">Benchmark library</span>
+              </button>
+              <button
+                class="msk-shot"
+                type="button"
+                data-full="assets/screenshots/03-run-receipt.png"
+                data-title="Run receipt"
+              >
+                <img
+                  src="assets/screenshots/03-run-receipt.png"
+                  alt="Crucible run receipt showing per-task pass/fail verdicts, latency, and cost for a stored run"
+                />
+                <span class="ae-chrome">Run receipt</span>
+              </button>
+            </div>
+          </section>
+
+          <section
+            class="msk-section msk-release-slot"
+            aria-labelledby="release-title"
+          >
+            <h2 class="ae-h" id="release-title">Release notes</h2>
+            <p>
+              Read the <a href="changelog.html">current release notes</a> for
+              user-facing changes and the evidence behind them.
+            </p>
+          </section>
+        </div>
+      </main>
+
+      <footer class="ae-bar msk-footer">
+        <button class="ae-mode" aria-label="toggle color mode">
+          <svg class="ae-icon ae-sun"><use href="#i-sun" /></svg>
+          <svg class="ae-icon ae-moon"><use href="#i-moon" /></svg>
+        </button>
+        <p class="ae-chrome msk-footer-credit">
+          a <a href="https://mistystep.io">Misty Step</a> project
+          <a
+            class="msk-footer-gh"
+            href="https://github.com/misty-step/crucible"
+            aria-label="Crucible on GitHub"
+          >
+            <svg class="ae-icon" aria-hidden="true"><use href="#i-github" /></svg>
+          </a>
+        </p>
+      </footer>
+    </div>
+
+    <dialog class="ae-dialog msk-zoom" aria-labelledby="zoom-title">
+      <div class="msk-zoom-head">
+        <h2 class="ae-dialog-title" id="zoom-title">Screenshot</h2>
+        <button
+          class="ae-button"
+          type="button"
+          data-zoom-close
+          aria-label="Close screenshot"
+        >
+          <svg class="ae-icon" aria-hidden="true"><use href="#i-x" /></svg>
+        </button>
+      </div>
+      <img class="msk-zoom-img" alt="" />
+    </dialog>
+
+    <script src="mode.js"></script>
+    <script src="theme.js"></script>
+    <script src="marketing.js"></script>
+  </body>
+</html>

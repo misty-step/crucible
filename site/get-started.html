@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en" data-ae-theme="violet">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crucible - get started</title>
+    <meta
+      name="description"
+      content="Clone Crucible, verify the install with crucible doctor, then author, run, and compare a real eval — the exact commands from the repo's own onboarding contract."
+    />
+    <script>
+      try {
+        var m = localStorage.getItem('ae-mode');
+        if (m === 'dark' || m === 'light') {
+          document.documentElement.classList.add(m);
+          document.documentElement.style.colorScheme = m;
+        }
+      } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="aesthetic.css" />
+    <link rel="stylesheet" href="marketing.css" />
+  </head>
+  <body>
+    <svg aria-hidden="true" width="0" height="0" style="position: absolute">
+      <symbol id="i-flask-conical" viewBox="0 0 24 24">
+        <path
+          d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"
+        />
+        <path d="M6.453 15h11.094" />
+        <path d="M8.5 2h7" />
+      </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2" />
+        <path d="M12 20v2" />
+        <path d="m4.93 4.93 1.41 1.41" />
+        <path d="m17.66 17.66 1.41 1.41" />
+        <path d="M2 12h2" />
+        <path d="M20 12h2" />
+        <path d="m6.34 17.66-1.41 1.41" />
+        <path d="m19.07 4.93-1.41 1.41" />
+      </symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+      </symbol>
+      <symbol id="i-github" viewBox="0 0 24 24">
+        <path
+          d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"
+        />
+        <path d="M9 18c-4.51 2-5-2-7-2" />
+      </symbol>
+    </svg>
+
+    <div class="ae-screen ae-wide">
+      <header class="ae-bar msk-bar">
+        <a class="ae-logo" href="./" aria-label="Crucible home">
+          <span class="ae-app-mark" aria-hidden="true">
+            <svg class="ae-icon" data-lucide="flask-conical">
+              <use href="#i-flask-conical" />
+            </svg>
+          </span>
+          <span class="ae-name">Crucible</span>
+        </a>
+        <nav class="ae-chrome msk-nav" aria-label="Site">
+          <a href="features.html">features</a>
+          <a href="get-started.html" aria-current="page">get started</a>
+          <a href="changelog.html">changelog</a>
+          <a href="https://github.com/misty-step/crucible">github</a>
+        </nav>
+      </header>
+
+      <main class="ae-stage ae-stage-scroll" id="content">
+        <article class="ae-doc msk-page" aria-labelledby="get-started-title">
+          <h1 id="get-started-title">Get started</h1>
+          <p class="ae-lede">
+            Crucible is a Rust CLI (plus an MCP server and a phone-first
+            dashboard) that reads and writes the same SQLite run ledger. This
+            page is the exact command sequence Crucible's own cold-agent
+            contract (<code>SKILL.md</code>) uses to onboard — nothing here is
+            invented for the site.
+          </p>
+
+          <h2>Prerequisites</h2>
+          <ul>
+            <li>Rust <code>1.96</code> or newer (the workspace pins this as <code>rust-version</code>).</li>
+            <li>
+              An <a href="https://openrouter.ai">OpenRouter</a> API key if you
+              want to run the live-model steps — everything through
+              <code>doctor</code> works with zero spend and no key.
+            </li>
+          </ul>
+
+          <h2>1. Clone the repo</h2>
+          <pre><code>git clone https://github.com/misty-step/crucible.git
+cd crucible</code></pre>
+
+          <h2>2. Verify the install is actually live</h2>
+          <p>
+            Before running anything that spends real OpenRouter money, run
+            the doctor. It proves the CLI runs, the MCP server initializes
+            and lists its tools, <code>crucible serve</code> binds a port and
+            answers <code>/api/specs</code>, and the SQLite run ledger can be
+            created — all without a network call.
+          </p>
+          <pre><code>cargo run -p crucible -- doctor --json</code></pre>
+          <p class="ae-dim">
+            A broken check exits non-zero and names itself in the
+            <code>checks</code> array. A missing
+            <code>OPENROUTER_API_KEY</code> reports as <code>warn</code>, not
+            <code>fail</code> — it only means the live-model steps below are
+            skipped.
+          </p>
+
+          <h2>3. Validate a declared eval</h2>
+          <p>
+            The repo ships a small operator-facing benchmark you can validate
+            and run immediately:
+          </p>
+          <pre><code>cargo run -p crucible -- validate evals/operator-micro-benchmark-v0.json --json</code></pre>
+
+          <h2>4. Run it against two real models</h2>
+          <pre><code>cargo run -p crucible -- run evals/operator-micro-benchmark-v0.json \
+  --models deepseek/deepseek-v4-flash,z-ai/glm-5.2 \
+  --out runs/local/crucible-101/final \
+  --db runs/local/crucible-101/final.sqlite \
+  --json</code></pre>
+
+          <h2>5. Compare with a defensible verdict</h2>
+          <p>
+            <code>runs compare</code> reports a paired comparison with a
+            Wilson interval and a noise-floor verdict — a rank gap this small
+            comes back <code>inside_noise_floor</code> unless it is actually
+            defensible.
+          </p>
+          <pre><code>cargo run -p crucible -- runs compare \
+  --benchmark operator-micro-benchmark-v0 \
+  --left deepseek/deepseek-v4-flash \
+  --right z-ai/glm-5.2 \
+  --db runs/local/crucible-101/final.sqlite \
+  --json</code></pre>
+
+          <h2>6. Open the dashboard</h2>
+          <pre><code>cargo run -p crucible -- serve \
+  --db runs/local/crucible-101/final.sqlite \
+  --specs evals \
+  --port 4174</code></pre>
+          <p>
+            <code>crucible serve</code> reads the same run ledger the CLI
+            just wrote to: the benchmark library, the run receipt, and the
+            noise-floor comparison view.
+          </p>
+
+          <h2>Go deeper</h2>
+          <ul>
+            <li>
+              <a
+                href="https://github.com/misty-step/crucible/blob/master/docs/operator-walkthrough.md"
+                >Operator walkthrough</a
+              >
+              — the same loop above, narrated end to end from a cold read.
+            </li>
+            <li>
+              <a href="https://github.com/misty-step/crucible/blob/master/docs/glossary.md"
+                >Glossary</a
+              >
+              — plain-language definitions for Wilson interval, noise floor,
+              judge-gaming canary, and the rest of Crucible's terms of art.
+            </li>
+            <li>
+              <a href="https://github.com/misty-step/crucible/blob/master/SKILL.md"
+                >SKILL.md</a
+              >
+              — the full cold-agent command contract: author, validate, run
+              across all three runner kinds, adjudicate, and export.
+            </li>
+          </ul>
+        </article>
+      </main>
+
+      <footer class="ae-bar msk-footer">
+        <button class="ae-mode" aria-label="toggle color mode">
+          <svg class="ae-icon ae-sun"><use href="#i-sun" /></svg>
+          <svg class="ae-icon ae-moon"><use href="#i-moon" /></svg>
+        </button>
+        <p class="ae-chrome msk-footer-credit">
+          a <a href="https://mistystep.io">Misty Step</a> project
+          <a
+            class="msk-footer-gh"
+            href="https://github.com/misty-step/crucible"
+            aria-label="Crucible on GitHub"
+          >
+            <svg class="ae-icon" aria-hidden="true"><use href="#i-github" /></svg>
+          </a>
+        </p>
+      </footer>
+    </div>
+
+    <script src="mode.js"></script>
+    <script src="theme.js"></script>
+  </body>
+</html>
