@@ -110,6 +110,7 @@ use crucible_core::{
     LabelConditions, Leaderboard, SkipReason,
 };
 use serde::Serialize;
+use tracing_subscriber::prelude::*;
 
 mod adjudication_panel;
 mod adjudication_server;
@@ -520,6 +521,17 @@ fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(err) => err.exit(),
     };
+    // Install the panic hook and tracing→Canary layer before anything else
+    // runs, so a panic or `tracing::error!` anywhere below — including deep
+    // inside `serve`/`mcp`'s standing-service loops — is captured. The fmt
+    // layer writes to stderr, never stdout: `mcp` uses stdout as its
+    // JSON-RPC protocol channel, and log lines on that stream would corrupt
+    // it.
+    canary::install_panic_hook();
+    let _ = tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(canary::CanaryLayer)
+        .try_init();
     // Fire as early as possible so every invocation is observed, even one
     // that fails deep inside a subcommand below.
     canary::check_in();

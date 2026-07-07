@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::author::{self, AuthorArgs, AuthorExpectationKind, AuthorRunnerKind};
+use crate::canary;
 use crate::eval_run::{self, RunEval};
 use crate::run_store;
 use crate::spec_run;
@@ -21,6 +22,11 @@ use crate::validate;
 const PROTOCOL_VERSION: &str = "2025-11-25";
 
 pub fn run_stdio() -> Result<()> {
+    // `mcp` is a standing service (a stdio loop that runs for the life of
+    // the client session), not a one-shot CLI invocation — same falsely-
+    // overdue risk `serve` has without a continuous health loop.
+    canary::start_health_loop();
+
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
 
@@ -49,11 +55,14 @@ pub fn run_stdio() -> Result<()> {
         if let Some(id) = id {
             let response = match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32603, "message": err.to_string() }
-                }),
+                Err(err) => {
+                    tracing::error!("mcp: tool call failed for method {method:?}: {err:#}");
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32603, "message": err.to_string() }
+                    })
+                }
             };
             writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
             stdout.flush()?;
