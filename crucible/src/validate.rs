@@ -312,6 +312,7 @@ mod tests {
                     harness: None,
                     tool_allowlist: Vec::new(),
                     format_sensitivity_check: false,
+                    previous_evidence_path: None,
                 },
                 tasks: vec![AgenticJudgeTask {
                     task_id: "t1".to_string(),
@@ -354,6 +355,7 @@ mod tests {
                     harness: None,
                     tool_allowlist: Vec::new(),
                     format_sensitivity_check: false,
+                    previous_evidence_path: None,
                 },
                 tasks: vec![AgenticJudgeTask {
                     task_id: "t1".to_string(),
@@ -393,6 +395,7 @@ mod tests {
                     harness: None,
                     tool_allowlist: Vec::new(),
                     format_sensitivity_check: false,
+                    previous_evidence_path: None,
                 },
                 tasks: (0..n)
                     .map(|i| AgenticJudgeTask {

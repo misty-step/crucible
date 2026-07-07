@@ -15,12 +15,23 @@
 //! decision *as made* against the data present at calibration time, preserved —
 //! not recomputed from the threshold at read time.
 //!
-//! No CLI subcommand emits a record yet: it is exported now as the durable
-//! judge-gate schema that epic 005 (the phone-adjudication calibration loop) and
-//! Daedalus read, so the wire shape is fixed (schema-tagged, serde round-tripped)
-//! before there is a writer — part of backlog 004's persisted-artifact contract.
+//! `crucible run` on an `agentic_judge` spec writes one record per run
+//! (`build_calibration_record` in `crucible/src/spec_run.rs`); ground truth is
+//! normally the spec author's declared `expected_pass`, though
+//! [`expected_verdicts_from_labels`] lets a caller source (or supplement) it
+//! from collected human [`crate::Label`] judgments instead, via a documented
+//! Keep/Nit→pass, Wrong/Noise→fail mapping. Backlog 970 (v2) adds: fail-class
+//! precision/recall (a bare Cohen's κ hides minority-class blindness), a
+//! `task_family` axis folded into [`judge_licence_key`] so a licence earned on
+//! one task family never silently covers another, and an opt-in cross-run
+//! drift check ([`probe_drift`]) distinct from the within-run
+//! format-sensitivity self-check.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+
+use crate::{Label, Verdict};
 
 /// Schema identifier for a persisted [`CalibrationRecord`].
 pub const CALIBRATION_RECORD_SCHEMA: &str = "crucible.calibration_record.v1";
@@ -50,14 +61,26 @@ pub fn shares_model_family(a: &str, b: &str) -> bool {
 }
 
 /// Stable identity for a judge's calibration state: unique per (judge model,
-/// judge system prompt, calibration rubric set). This is what makes
-/// calibration state "invalidated when judge model/prompt/rubric changes"
-/// mechanical rather than a separate check to remember: any change to one of
-/// the three inputs yields a different key, so looking up the new key simply
-/// finds no prior licence — locked/unlicensed until a run under the new key
-/// establishes one. See [`CalibrationRecord::licence_key`].
-pub fn judge_licence_key(judge_model: &str, system_prompt_hash: &str, rubric_hash: &str) -> String {
-    format!("judge-licence:v1:{judge_model}:{system_prompt_hash}:{rubric_hash}")
+/// judge system prompt, calibration rubric set, **task family**). This is what
+/// makes calibration state "invalidated when judge model/prompt/rubric/family
+/// changes" mechanical rather than a separate check to remember: any change to
+/// one of the four inputs yields a different key, so looking up the new key
+/// simply finds no prior licence — locked/unlicensed until a run under the new
+/// key establishes one. See [`CalibrationRecord::licence_key`].
+///
+/// The `v2` prefix (bumped from backlog 970's predecessor, which had no
+/// `task_family` segment) is deliberate: an old key can never collide with a
+/// new one even if a caller mistakenly reused a `v1`-shaped lookup, so
+/// cross-family (and cross-version) reuse of a calibration is structurally
+/// impossible rather than merely discouraged (backlog 970's "why": a judge
+/// trusted on code-review must not be silently trusted on a new task family).
+pub fn judge_licence_key(
+    judge_model: &str,
+    system_prompt_hash: &str,
+    rubric_hash: &str,
+    task_family: &str,
+) -> String {
+    format!("judge-licence:v2:{judge_model}:{system_prompt_hash}:{rubric_hash}:{task_family}")
 }
 
 /// A rate in `[0.0, 1.0]` — `numerator / denominator`, defined as `0.0` when
@@ -114,6 +137,89 @@ impl ConfusionMatrix {
             self.false_negative + self.true_positive,
         )
     }
+
+    /// Precision of the judge's **fail** (negative) calls: of the cases the
+    /// judge called fail, the fraction the human reference also called fail.
+    /// This is the minority-class metric a bare Cohen's κ hides (Hamel;
+    /// Yan: 80-87% raw agreement collapsing to κ 0.3-0.5 under class
+    /// imbalance) — derived from the existing counts, no new measurement.
+    /// `0.0` when the judge never called fail (never `NaN`).
+    pub fn fail_precision(&self) -> f64 {
+        safe_rate(self.true_negative, self.true_negative + self.false_negative)
+    }
+
+    /// Recall of the judge's **fail** (negative) calls: of the cases the human
+    /// reference marked fail, the fraction the judge also called fail. `0.0`
+    /// when there are no actual-fail cases (never `NaN`).
+    pub fn fail_recall(&self) -> f64 {
+        safe_rate(self.true_negative, self.true_negative + self.false_positive)
+    }
+}
+
+/// Compare a judge's calibration verdicts across two runs of the *same* probe
+/// set — the cross-run drift check backlog 970 asks for: "the same judge+prompt
+/// re-run on a different day swings 8-15%" (Scale AI), a fragility no single
+/// calibration run can see on its own. Distinct from
+/// [`CalibrationRecord::format_sensitivity_flip_rate`] (a within-run cosmetic
+/// perturbation self-check) — this measures the identical call repeated across
+/// sessions.
+///
+/// Matches `current` against `baseline` by task id and reports the fraction of
+/// the *shared* tasks whose verdict flipped, plus how many tasks were shared.
+/// `None` when there is no overlap — a probe set with zero shared task ids
+/// cannot report a rate about "the same call repeated," so this refuses to
+/// fabricate a `0.0` over an empty or wholly disjoint intersection.
+pub fn probe_drift(
+    baseline: &BTreeMap<String, bool>,
+    current: &BTreeMap<String, bool>,
+) -> Option<(f64, u64)> {
+    let mut n = 0u64;
+    let mut flips = 0u64;
+    for (task_id, current_verdict) in current {
+        if let Some(baseline_verdict) = baseline.get(task_id) {
+            n += 1;
+            if baseline_verdict != current_verdict {
+                flips += 1;
+            }
+        }
+    }
+    if n == 0 {
+        return None;
+    }
+    Some((flips as f64 / n as f64, n))
+}
+
+/// The documented mapping from a human adjudication [`Verdict`] to a
+/// calibration-style pass/fail boolean (backlog 970): `Keep`/`Nit` are
+/// "pass-ish" (the finding was judged correct, whether or not it was trivial)
+/// and `Wrong`/`Noise` are "fail-ish" (the finding was judged incorrect or not
+/// real). This mapping is a policy choice, not a derivation — it is named here,
+/// once, so every caller sourcing calibration ground truth from human labels
+/// uses the same rule rather than inventing its own.
+pub fn label_calibration_verdict(verdict: Verdict) -> bool {
+    matches!(verdict, Verdict::Keep | Verdict::Nit)
+}
+
+/// Project collected human [`Label`]s into calibration ground truth: `(finding_id,
+/// expected_pass)` pairs a caller pairs against a judge's own verdict on the
+/// same finding to build a [`CalibrationRecord`] sourced from human judgment
+/// rather than (or alongside) a spec author's declared `expected_pass`.
+///
+/// Labels with `saw_grader_before_commit: true` are excluded: per
+/// [`crate::label`]'s own contract, a judgment made after the grader's verdict
+/// was revealed is not valid *blind* calibration data — including it here would
+/// let a judge's own answer contaminate the ground truth measuring it.
+pub fn expected_verdicts_from_labels(labels: &[Label]) -> Vec<(String, bool)> {
+    labels
+        .iter()
+        .filter(|label| !label.saw_grader_before_commit)
+        .map(|label| {
+            (
+                label.finding_id.clone(),
+                label_calibration_verdict(label.verdict),
+            )
+        })
+        .collect()
 }
 
 /// A judge's calibration record: the measured agreement that licenses its use.
@@ -206,6 +312,46 @@ pub struct CalibrationRecord {
     /// not run or had no decisive calibration items to sample.
     #[serde(default)]
     pub format_sensitivity_n: u64,
+    /// Precision of the judge's fail calls against the human/deterministic
+    /// reference ([`ConfusionMatrix::fail_precision`]) — the minority-class
+    /// metric a bare [`Self::cohen_kappa`] hides. Defaults to `0.0`.
+    #[serde(default, serialize_with = "crate::serde_util::serialize_finite")]
+    pub fail_class_precision: f64,
+    /// Recall of the judge's fail calls ([`ConfusionMatrix::fail_recall`]).
+    /// Defaults to `0.0`.
+    #[serde(default, serialize_with = "crate::serde_util::serialize_finite")]
+    pub fail_class_recall: f64,
+    /// The task family this calibration is scoped to (e.g. [`crate::spec::EvalSpec::task`]),
+    /// folded into [`judge_licence_key`] so a licence earned on one family
+    /// cannot silently cover another. Defaults to empty for records that
+    /// predate this field (backlog 970) — an empty family matches no
+    /// family-scoped licence lookup, the safe (locked/unknown) direction.
+    #[serde(default)]
+    pub task_family: String,
+    /// Fraction of the shared calibration probe tasks whose judge verdict
+    /// flipped versus a prior run over the same probe set — [`probe_drift`]'s
+    /// output, the cross-run/cross-session drift check. `None` when no prior
+    /// run was supplied for comparison, distinct from `Some(0.0)` (compared,
+    /// and stable). Distinct from [`Self::format_sensitivity_flip_rate`] (a
+    /// within-run cosmetic-perturbation self-check, not a repeated identical
+    /// call).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::serde_util::serialize_finite_option"
+    )]
+    pub drift_flip_rate: Option<f64>,
+    /// Number of shared probe tasks [`probe_drift`] matched between the two
+    /// runs. `0` when the check was not run or the two probe sets shared no
+    /// task ids.
+    #[serde(default)]
+    pub drift_probe_n: u64,
+    /// Caller-supplied Unix-seconds timestamp of when the drift check ran.
+    /// `None` when no drift check was performed. Nothing in this module reads
+    /// the clock, mirroring [`crate::Label::timestamp`]'s caller-supplied
+    /// discipline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_checked_at: Option<i64>,
 }
 
 fn calibration_record_schema() -> String {
@@ -252,9 +398,15 @@ mod tests {
             self_evaluation_bias_risk: false,
             unlock_threshold: 0.6,
             unlocked: true,
-            licence_key: "judge-licence:v1:claude-judge:hash1:hash2".to_string(),
+            licence_key: "judge-licence:v2:claude-judge:hash1:hash2:code-review".to_string(),
             format_sensitivity_flip_rate: Some(0.1),
             format_sensitivity_n: 10,
+            fail_class_precision: 0.85,
+            fail_class_recall: 0.85,
+            task_family: "code-review".to_string(),
+            drift_flip_rate: Some(0.05),
+            drift_probe_n: 20,
+            drift_checked_at: Some(1_783_000_000),
         };
         let json = serde_json::to_string(&rec).unwrap();
         let back: CalibrationRecord = serde_json::from_str(&json).unwrap();
@@ -265,10 +417,16 @@ mod tests {
         assert_eq!(back.generator_id.as_deref(), Some("claude-generator"));
         assert_eq!(
             back.licence_key,
-            "judge-licence:v1:claude-judge:hash1:hash2"
+            "judge-licence:v2:claude-judge:hash1:hash2:code-review"
         );
         assert_eq!(back.format_sensitivity_flip_rate, Some(0.1));
         assert_eq!(back.format_sensitivity_n, 10);
+        assert_eq!(back.fail_class_precision, 0.85);
+        assert_eq!(back.fail_class_recall, 0.85);
+        assert_eq!(back.task_family, "code-review");
+        assert_eq!(back.drift_flip_rate, Some(0.05));
+        assert_eq!(back.drift_probe_n, 20);
+        assert_eq!(back.drift_checked_at, Some(1_783_000_000));
     }
 
     #[test]
@@ -309,6 +467,24 @@ mod tests {
             "an omitted format-sensitivity flip rate defaults to None (not run), not Some(0.0)"
         );
         assert_eq!(rec.format_sensitivity_n, 0);
+        assert_eq!(
+            rec.fail_class_precision, 0.0,
+            "an omitted fail-class precision defaults to 0.0"
+        );
+        assert_eq!(
+            rec.fail_class_recall, 0.0,
+            "an omitted fail-class recall defaults to 0.0"
+        );
+        assert_eq!(
+            rec.task_family, "",
+            "an omitted task family defaults to empty — matches no family-scoped lookup"
+        );
+        assert_eq!(
+            rec.drift_flip_rate, None,
+            "an omitted drift flip rate defaults to None (not checked), not Some(0.0)"
+        );
+        assert_eq!(rec.drift_probe_n, 0);
+        assert_eq!(rec.drift_checked_at, None);
     }
 
     #[test]
@@ -329,9 +505,15 @@ mod tests {
             self_evaluation_bias_risk: false,
             unlock_threshold: 0.6,
             unlocked: false,
-            licence_key: "judge-licence:v1:claude-judge:hash1:hash2".to_string(),
+            licence_key: "judge-licence:v2:claude-judge:hash1:hash2:code-review".to_string(),
             format_sensitivity_flip_rate: Some(0.0),
             format_sensitivity_n: 4,
+            fail_class_precision: 0.9,
+            fail_class_recall: 0.9,
+            task_family: "code-review".to_string(),
+            drift_flip_rate: Some(0.0),
+            drift_probe_n: 4,
+            drift_checked_at: Some(1_783_000_000),
         };
         for set in [
             |r: &mut CalibrationRecord| r.agreement = f64::NAN,
@@ -340,6 +522,9 @@ mod tests {
             |r: &mut CalibrationRecord| r.false_positive_rate = f64::NAN,
             |r: &mut CalibrationRecord| r.false_negative_rate = f64::INFINITY,
             |r: &mut CalibrationRecord| r.format_sensitivity_flip_rate = Some(f64::NAN),
+            |r: &mut CalibrationRecord| r.fail_class_precision = f64::NAN,
+            |r: &mut CalibrationRecord| r.fail_class_recall = f64::INFINITY,
+            |r: &mut CalibrationRecord| r.drift_flip_rate = Some(f64::NAN),
         ] {
             let mut bad = rec.clone();
             set(&mut bad);
@@ -399,26 +584,61 @@ mod tests {
     }
 
     #[test]
-    fn judge_licence_key_changes_with_any_of_its_three_inputs() {
-        let base = judge_licence_key("openai/gpt-4o", "prompt-hash-1", "rubric-hash-1");
+    fn judge_licence_key_changes_with_any_of_its_four_inputs() {
+        let base = judge_licence_key(
+            "openai/gpt-4o",
+            "prompt-hash-1",
+            "rubric-hash-1",
+            "code-review",
+        );
         assert_ne!(
             base,
-            judge_licence_key("anthropic/claude-opus-4", "prompt-hash-1", "rubric-hash-1"),
+            judge_licence_key(
+                "anthropic/claude-opus-4",
+                "prompt-hash-1",
+                "rubric-hash-1",
+                "code-review"
+            ),
             "a different judge model must yield a different licence key"
         );
         assert_ne!(
             base,
-            judge_licence_key("openai/gpt-4o", "prompt-hash-2", "rubric-hash-1"),
+            judge_licence_key(
+                "openai/gpt-4o",
+                "prompt-hash-2",
+                "rubric-hash-1",
+                "code-review"
+            ),
             "a different judge prompt must yield a different licence key"
         );
         assert_ne!(
             base,
-            judge_licence_key("openai/gpt-4o", "prompt-hash-1", "rubric-hash-2"),
+            judge_licence_key(
+                "openai/gpt-4o",
+                "prompt-hash-1",
+                "rubric-hash-2",
+                "code-review"
+            ),
             "a different rubric set must yield a different licence key"
+        );
+        assert_ne!(
+            base,
+            judge_licence_key(
+                "openai/gpt-4o",
+                "prompt-hash-1",
+                "rubric-hash-1",
+                "doc-review"
+            ),
+            "a different task family must yield a different licence key — cross-family reuse is structurally impossible"
         );
         assert_eq!(
             base,
-            judge_licence_key("openai/gpt-4o", "prompt-hash-1", "rubric-hash-1"),
+            judge_licence_key(
+                "openai/gpt-4o",
+                "prompt-hash-1",
+                "rubric-hash-1",
+                "code-review"
+            ),
             "identical inputs are deterministic"
         );
     }
@@ -452,5 +672,116 @@ mod tests {
         };
         assert_eq!(confusion.false_positive_rate(), 0.0);
         assert_eq!(confusion.false_negative_rate(), 0.0);
+    }
+
+    // ---- fail-class precision/recall -----------------------------------------
+
+    #[test]
+    fn fail_class_precision_and_recall_are_the_negative_class_metrics() {
+        let confusion = ConfusionMatrix {
+            true_positive: 20,
+            false_positive: 4,
+            false_negative: 4,
+            true_negative: 22,
+        };
+        // Of the 26 judge-called-fail cases (4 FN + 22 TN), 22 were actually fail.
+        assert!((confusion.fail_precision() - (22.0 / 26.0)).abs() < 1e-9);
+        // Of the 26 actually-fail cases (4 FP + 22 TN), 22 were called fail.
+        assert!((confusion.fail_recall() - (22.0 / 26.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fail_class_metrics_are_zero_not_nan_when_the_judge_never_calls_fail() {
+        // TN=0, FN=0: the judge never called fail, so fail-class precision has
+        // no denominator to divide by (never NaN).
+        let confusion = ConfusionMatrix {
+            true_positive: 10,
+            false_positive: 0,
+            false_negative: 0,
+            true_negative: 0,
+        };
+        assert_eq!(confusion.fail_precision(), 0.0);
+        assert_eq!(confusion.fail_recall(), 0.0);
+    }
+
+    // ---- drift check -----------------------------------------------------------
+
+    #[test]
+    fn probe_drift_reports_the_flip_rate_over_shared_task_ids() {
+        let baseline = BTreeMap::from([
+            ("t1".to_string(), true),
+            ("t2".to_string(), false),
+            ("t3".to_string(), true),
+            ("t4".to_string(), true),
+        ]);
+        let current = BTreeMap::from([
+            ("t1".to_string(), true),  // stable
+            ("t2".to_string(), true),  // flipped
+            ("t3".to_string(), false), // flipped
+            ("t4".to_string(), true),  // stable
+        ]);
+        let (rate, n) = probe_drift(&baseline, &current).expect("all four tasks overlap");
+        assert_eq!(n, 4);
+        assert!((rate - 0.5).abs() < 1e-9, "2 of 4 flipped: {rate}");
+    }
+
+    #[test]
+    fn probe_drift_only_counts_shared_task_ids() {
+        let baseline = BTreeMap::from([("t1".to_string(), true), ("t2".to_string(), false)]);
+        let current = BTreeMap::from([("t2".to_string(), true), ("t3".to_string(), true)]);
+        // Only t2 is shared, and it flipped.
+        let (rate, n) = probe_drift(&baseline, &current).expect("t2 overlaps");
+        assert_eq!(n, 1);
+        assert_eq!(rate, 1.0);
+    }
+
+    #[test]
+    fn probe_drift_is_none_when_the_probe_sets_share_no_task_ids() {
+        let baseline = BTreeMap::from([("t1".to_string(), true)]);
+        let current = BTreeMap::from([("t2".to_string(), true)]);
+        assert_eq!(
+            probe_drift(&baseline, &current),
+            None,
+            "zero overlap cannot report a rate about 'the same call repeated'"
+        );
+    }
+
+    // ---- human-label calibration sourcing --------------------------------------
+
+    fn label(finding_id: &str, verdict: Verdict, saw_grader_before_commit: bool) -> Label {
+        Label {
+            schema_version: crate::label::LABEL_SCHEMA.to_string(),
+            finding_id: finding_id.to_string(),
+            verdict,
+            disposition: crate::Disposition { in_scope: true },
+            latency_ms: 0,
+            saw_grader_before_commit,
+            timestamp: String::new(),
+        }
+    }
+
+    #[test]
+    fn label_calibration_verdict_maps_keep_and_nit_to_pass_wrong_and_noise_to_fail() {
+        assert!(label_calibration_verdict(Verdict::Keep));
+        assert!(label_calibration_verdict(Verdict::Nit));
+        assert!(!label_calibration_verdict(Verdict::Wrong));
+        assert!(!label_calibration_verdict(Verdict::Noise));
+    }
+
+    #[test]
+    fn expected_verdicts_from_labels_maps_blind_labels_only() {
+        let labels = vec![
+            label("F1", Verdict::Keep, false),
+            label("F2", Verdict::Wrong, false),
+            // Revealed (saw the grader's verdict first) — not valid blind
+            // calibration data, must be excluded.
+            label("F3", Verdict::Keep, true),
+        ];
+        let expected = expected_verdicts_from_labels(&labels);
+        assert_eq!(
+            expected,
+            vec![("F1".to_string(), true), ("F2".to_string(), false),],
+            "F3 is excluded: it was labeled after the grader's verdict was revealed"
+        );
     }
 }

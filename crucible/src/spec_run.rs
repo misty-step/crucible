@@ -6,7 +6,7 @@
 //! handed off with receipt bundles. New runner families should earn their own
 //! explicit branch in the spec schema and here.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::BufRead;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use crucible_core::{
-    agreement, cohen_kappa, findings_from_artifact, judge_licence_key, schema_valid,
+    agreement, cohen_kappa, findings_from_artifact, judge_licence_key, probe_drift, schema_valid,
     shares_model_family, to_key_findings, AgenticJudgeConfig, AgenticJudgeTask, AggregationMethod,
     CalibrationRecord, CerberusReceiptTask, ConfusionMatrix, CorpusSpec, EvalSpec, ExpectedKey,
     GraderKind, HarborRunConfig, HarborTaskSpec, IntervalMethod, KeyFinding, ModelProvider,
@@ -1656,8 +1656,23 @@ fn run_agentic_judge_with_client(
             .map(String::as_str)
             .collect::<Vec<_>>(),
     );
-    let licence_key =
-        judge_licence_key(&config.model, &system_prompt_hash, &calibration_rubric_hash);
+    let licence_key = judge_licence_key(
+        &config.model,
+        &system_prompt_hash,
+        &calibration_rubric_hash,
+        &spec.task,
+    );
+    // This run's decisive calibration verdicts keyed by task id — the probe
+    // set the drift check (backlog 970) compares against a prior run's.
+    let current_probe_verdicts: BTreeMap<String, bool> = calibration_probe_items
+        .iter()
+        .map(|(task, verdict)| (task.task_id.clone(), *verdict))
+        .collect();
+    let previous_probe_verdicts = config
+        .previous_evidence_path
+        .as_deref()
+        .map(load_previous_probe_verdicts)
+        .transpose()?;
     let calibration = build_calibration_record(BuildCalibrationInput {
         judge_id: &config.model,
         judge_verdicts: &calibration_judge,
@@ -1666,8 +1681,12 @@ fn run_agentic_judge_with_client(
         generator_id: config.generator_model.as_deref(),
         self_evaluation_bias_risk,
         licence_key: &licence_key,
+        task_family: &spec.task,
         format_sensitivity_flip_rate,
         format_sensitivity_n,
+        current_probe_verdicts: &current_probe_verdicts,
+        previous_probe_verdicts: previous_probe_verdicts.as_ref(),
+        drift_checked_at: unix_now_seconds()?,
     });
 
     let call_count = task_results.len() as u64;
@@ -1839,11 +1858,25 @@ struct BuildCalibrationInput<'a> {
     generator_id: Option<&'a str>,
     self_evaluation_bias_risk: bool,
     licence_key: &'a str,
+    /// The eval's task family ([`EvalSpec::task`]), stamped onto the record
+    /// alongside being folded into `licence_key` (backlog 970).
+    task_family: &'a str,
     /// Format-sensitivity self-check outputs (see the runner's
     /// `format_sensitivity_check` config flag). `None`/`0` when the check was
     /// not run.
     format_sensitivity_flip_rate: Option<f64>,
     format_sensitivity_n: u64,
+    /// This run's decisive calibration verdicts keyed by task id — the probe
+    /// set the drift check compares against a prior run's.
+    current_probe_verdicts: &'a std::collections::BTreeMap<String, bool>,
+    /// A prior run's calibration verdicts over the same probe set, keyed by
+    /// task id (backlog 970's drift check, `AgenticJudgeConfig::previous_evidence_path`).
+    /// `None` when no prior run was supplied for comparison.
+    previous_probe_verdicts: Option<&'a std::collections::BTreeMap<String, bool>>,
+    /// Caller-supplied Unix-seconds timestamp for the drift comparison.
+    /// Ignored (the record's `drift_checked_at` stays `None`) when
+    /// `previous_probe_verdicts` is `None`.
+    drift_checked_at: i64,
 }
 
 /// Build the judge's [`CalibrationRecord`] (backlog 012) from the paired
@@ -1873,8 +1906,12 @@ fn build_calibration_record(input: BuildCalibrationInput<'_>) -> Option<Calibrat
         generator_id,
         self_evaluation_bias_risk,
         licence_key,
+        task_family,
         format_sensitivity_flip_rate,
         format_sensitivity_n,
+        current_probe_verdicts,
+        previous_probe_verdicts,
+        drift_checked_at,
     } = input;
     if judge_verdicts.is_empty() {
         return None;
@@ -1892,6 +1929,15 @@ fn build_calibration_record(input: BuildCalibrationInput<'_>) -> Option<Calibrat
     }
     let false_positive_rate = confusion.false_positive_rate();
     let false_negative_rate = confusion.false_negative_rate();
+    let fail_class_precision = confusion.fail_precision();
+    let fail_class_recall = confusion.fail_recall();
+    let (drift_flip_rate, drift_probe_n, drift_checked_at) = match previous_probe_verdicts {
+        Some(previous) => match probe_drift(previous, current_probe_verdicts) {
+            Some((rate, n)) => (Some(rate), n, Some(drift_checked_at)),
+            None => (None, 0, None),
+        },
+        None => (None, 0, None),
+    };
     Some(CalibrationRecord {
         schema_version: CALIBRATION_RECORD_SCHEMA.to_string(),
         judge_id: judge_id.to_string(),
@@ -1909,6 +1955,12 @@ fn build_calibration_record(input: BuildCalibrationInput<'_>) -> Option<Calibrat
         licence_key: licence_key.to_string(),
         format_sensitivity_flip_rate,
         format_sensitivity_n,
+        fail_class_precision,
+        fail_class_recall,
+        task_family: task_family.to_string(),
+        drift_flip_rate,
+        drift_probe_n,
+        drift_checked_at,
     })
 }
 
@@ -2351,6 +2403,60 @@ fn temp_dir_nonce() -> anyhow::Result<u128> {
         .duration_since(UNIX_EPOCH)
         .context("system clock is before Unix epoch")?
         .as_nanos())
+}
+
+/// Current Unix-seconds timestamp — the only clock read in the drift-check
+/// path; [`crucible_core::CalibrationRecord::drift_checked_at`] is otherwise
+/// entirely caller-supplied.
+fn unix_now_seconds() -> anyhow::Result<i64> {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before Unix epoch")?
+        .as_secs();
+    Ok(secs as i64)
+}
+
+/// Load a prior run's decisive calibration verdicts from its
+/// `agentic-judge-run.json` evidence file, keyed by task id — the baseline
+/// [`probe_drift`] compares this run's probe set against
+/// (`AgenticJudgeConfig::previous_evidence_path`). Only tasks that carried a
+/// known `expected_pass` in the prior run count as probe tasks, and only a
+/// decisive (`pass`/`fail`) verdict is recorded — an `unknown` verdict is
+/// excluded, matching how the current run's own probe set is built.
+fn load_previous_probe_verdicts(path: &Path) -> anyhow::Result<BTreeMap<String, bool>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading previous calibration evidence {}", path.display()))?;
+    let evidence: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing previous calibration evidence {}", path.display()))?;
+    let tasks = evidence
+        .get("tasks")
+        .and_then(|v| v.as_array())
+        .with_context(|| {
+            format!(
+                "previous calibration evidence {} has no \"tasks\" array",
+                path.display()
+            )
+        })?;
+    let mut verdicts = BTreeMap::new();
+    for task in tasks {
+        if task
+            .get("expected_pass")
+            .and_then(|v| v.as_bool())
+            .is_none()
+        {
+            continue; // not a calibration probe in the prior run
+        }
+        let Some(task_id) = task.get("task_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let verdict = match task.get("verdict").and_then(|v| v.as_str()) {
+            Some("pass") => true,
+            Some("fail") => false,
+            _ => continue, // unknown or missing — not decisive, excluded
+        };
+        verdicts.insert(task_id.to_string(), verdict);
+    }
+    Ok(verdicts)
 }
 
 /// Compile a `Regex` expectation's pattern, with an error that names the
@@ -3125,6 +3231,7 @@ mod tests {
             harness: None,
             tool_allowlist: Vec::new(),
             format_sensitivity_check: false,
+            previous_evidence_path: None,
         }
     }
 
@@ -3938,10 +4045,36 @@ mod tests {
         );
 
         // Calibration unlock state is queryable across runs by a stable
-        // licence key (model + judge prompt + calibration rubric set).
+        // licence key (model + judge prompt + calibration rubric set + task
+        // family, backlog 970).
         let licence_key = evidence["calibration"]["licence_key"].as_str().unwrap();
         assert!(!licence_key.is_empty());
-        assert!(licence_key.starts_with("judge-licence:v1:test/judge:"));
+        assert!(licence_key.starts_with("judge-licence:v2:test/judge:"));
+        assert!(
+            licence_key.ends_with(":agentic-judge-smoke"),
+            "the task family is folded into the licence key: {licence_key}"
+        );
+
+        // Fail-class precision/recall (backlog 970): TN=0, FN=1, FP=1 — the
+        // judge never correctly called fail, so both are 0.0.
+        assert_eq!(
+            evidence["calibration"]["fail_class_precision"]
+                .as_f64()
+                .unwrap(),
+            0.0
+        );
+        assert_eq!(
+            evidence["calibration"]["fail_class_recall"]
+                .as_f64()
+                .unwrap(),
+            0.0
+        );
+        assert_eq!(
+            evidence["calibration"]["task_family"].as_str().unwrap(),
+            "agentic-judge-smoke"
+        );
+        // No previous_evidence_path was configured, so no drift check ran.
+        assert!(evidence["calibration"]["drift_flip_rate"].is_null());
     }
 
     #[test]
@@ -4579,6 +4712,180 @@ mod tests {
             "an unrun check reports None, not a fabricated rate: {evidence}"
         );
         assert_eq!(evidence["calibration"]["format_sensitivity_n"], 0);
+    }
+
+    #[test]
+    fn drift_check_records_the_flip_rate_against_a_prior_run_when_configured() {
+        // Baseline run: the judge agrees with expected_pass on the one
+        // calibration task.
+        let baseline_out = std::env::temp_dir().join(format!(
+            "crucible-judge-drift-baseline-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&baseline_out);
+        std::fs::create_dir_all(&baseline_out).expect("create baseline dir");
+        let baseline_spec_path = baseline_out.join("agentic-judge-drift.json");
+        std::fs::write(&baseline_spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config(); // previous_evidence_path: None
+        let tasks = vec![
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "A correct answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+            AgenticJudgeTask {
+                task_id: "calib-1".to_string(),
+                candidate: "Agrees.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: Some(true),
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let baseline_client =
+            QueuedModelClient::new(vec!["real\nVERDICT: PASS", "agrees\nVERDICT: PASS"]);
+        run_agentic_judge_with_client(
+            &spec,
+            &runner,
+            &baseline_spec_path,
+            &baseline_out,
+            &config,
+            &tasks,
+            &baseline_client,
+        )
+        .expect("baseline run succeeds");
+        let baseline_evidence_path = baseline_out.join("agentic-judge-run.json");
+        assert!(
+            evidence_task_verdict(&baseline_evidence_path, "calib-1") == Some(true),
+            "baseline judge verdict on calib-1 is PASS"
+        );
+
+        // Second run over the *same* probe set (same task id), configured to
+        // compare against the baseline evidence — this time the judge's
+        // verdict flips to FAIL.
+        let current_out = std::env::temp_dir().join(format!(
+            "crucible-judge-drift-current-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&current_out);
+        std::fs::create_dir_all(&current_out).expect("create current dir");
+        let current_spec_path = current_out.join("agentic-judge-drift.json");
+        std::fs::write(&current_spec_path, "{}").expect("write placeholder spec path");
+
+        let mut drifted_config = config.clone();
+        drifted_config.previous_evidence_path = Some(baseline_evidence_path.clone());
+        let drifted_runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: drifted_config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let current_client =
+            QueuedModelClient::new(vec!["real\nVERDICT: PASS", "disagrees now\nVERDICT: FAIL"]);
+        run_agentic_judge_with_client(
+            &spec,
+            &drifted_runner,
+            &current_spec_path,
+            &current_out,
+            &drifted_config,
+            &tasks,
+            &current_client,
+        )
+        .expect("current run succeeds; a locked calibration does not abort");
+
+        let evidence = std::fs::read_to_string(current_out.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(
+            evidence["calibration"]["drift_flip_rate"], 1.0,
+            "the one shared probe task flipped from PASS to FAIL: {evidence}"
+        );
+        assert_eq!(evidence["calibration"]["drift_probe_n"], 1);
+        assert!(
+            evidence["calibration"]["drift_checked_at"]
+                .as_i64()
+                .is_some(),
+            "a drift check that ran stamps a timestamp: {evidence}"
+        );
+    }
+
+    #[test]
+    fn drift_check_is_none_by_default_when_no_previous_evidence_is_configured() {
+        let temp =
+            std::env::temp_dir().join(format!("crucible-judge-drift-off-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-drift-off.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config(); // previous_evidence_path: None
+        let tasks = vec![
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "A correct answer.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: None,
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+            AgenticJudgeTask {
+                task_id: "calib-1".to_string(),
+                candidate: "Agrees.".to_string(),
+                rubric: "Must be correct.".to_string(),
+                expected_pass: Some(true),
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec!["real\nVERDICT: PASS", "agrees\nVERDICT: PASS"]);
+        run_agentic_judge_with_client(&spec, &runner, &spec_path, &temp, &config, &tasks, &client)
+            .expect("agentic judge runs");
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert!(
+            evidence["calibration"]["drift_flip_rate"].is_null(),
+            "an unrun drift check reports None, not a fabricated rate: {evidence}"
+        );
+        assert_eq!(evidence["calibration"]["drift_probe_n"], 0);
+        assert!(evidence["calibration"]["drift_checked_at"].is_null());
+    }
+
+    /// Test helper: read a written evidence file's judge verdict (PASS=true,
+    /// FAIL=false) for one task id.
+    fn evidence_task_verdict(evidence_path: &Path, task_id: &str) -> Option<bool> {
+        let raw = std::fs::read_to_string(evidence_path).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        evidence["tasks"].as_array()?.iter().find_map(|task| {
+            if task["task_id"].as_str() != Some(task_id) {
+                return None;
+            }
+            match task["verdict"].as_str() {
+                Some("pass") => Some(true),
+                Some("fail") => Some(false),
+                _ => None,
+            }
+        })
     }
 
     #[test]
