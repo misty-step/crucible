@@ -17,6 +17,7 @@ use crucible_core::{CorpusSpec, EvalSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::canary;
 use crate::{adjudication_panel, adjudication_server, load_queue, run_store, spec_run, validate};
 
 const SPECS_SCHEMA: &str = "crucible.ui.specs.v1";
@@ -34,6 +35,11 @@ pub struct ServeOptions {
 }
 
 pub fn serve(opts: ServeOptions) -> Result<()> {
+    // `serve` is a standing service, not a one-shot CLI invocation — it must
+    // keep checking in past the check-in TTL or the "crucible" monitor reads
+    // falsely overdue while the process is perfectly healthy.
+    canary::start_health_loop();
+
     let listener = TcpListener::bind(("127.0.0.1", opts.port))
         .with_context(|| format!("binding 127.0.0.1:{}", opts.port))?;
     let bound_port = listener
@@ -54,14 +60,14 @@ pub fn serve(opts: ServeOptions) -> Result<()> {
         let stream = match stream {
             Ok(stream) => stream,
             Err(err) => {
-                eprintln!("crucible serve: accept error: {err:#}");
+                tracing::error!("crucible serve: accept error: {err:#}");
                 continue;
             }
         };
         let opts = Arc::clone(&opts);
         thread::spawn(move || {
             if let Err(err) = handle_connection(stream, &opts) {
-                eprintln!("crucible serve: connection error: {err:#}");
+                tracing::error!("crucible serve: connection error: {err:#}");
             }
         });
     }
@@ -70,10 +76,24 @@ pub fn serve(opts: ServeOptions) -> Result<()> {
 
 fn handle_connection(mut stream: TcpStream, opts: &ServeOptions) -> Result<()> {
     let request = HttpRequest::read(&stream)?;
-    match route(&request, opts) {
-        Ok(response) => response.write(&mut stream),
-        Err(err) => {
+    // Catch a panicking route handler so one bad request returns 500 and the
+    // worker thread survives, instead of resetting the connection and killing
+    // the thread — the raw-std-TCP-loop analog of Axum's `CatchPanicLayer`
+    // (this server has no router to hang a tower layer off of). The panic is
+    // *reported* by the process-global hook `canary::install_panic_hook`
+    // (installed in `main`), which fires for every panic regardless of
+    // `catch_unwind`; so we recover here without re-reporting, or the same
+    // panic would land at the hub twice.
+    let routed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| route(&request, opts)));
+    match routed {
+        Ok(Ok(response)) => response.write(&mut stream),
+        Ok(Err(err)) => {
+            tracing::error!("crucible serve: route error: {err:#}");
             let body = json!({ "error": err.to_string() });
+            HttpResponse::json(500, &body).write(&mut stream)
+        }
+        Err(_panic) => {
+            let body = json!({ "error": "internal server error" });
             HttpResponse::json(500, &body).write(&mut stream)
         }
     }
@@ -81,6 +101,15 @@ fn handle_connection(mut stream: TcpStream, opts: &ServeOptions) -> Result<()> {
 
 fn route(request: &HttpRequest, opts: &ServeOptions) -> Result<HttpResponse> {
     match (request.method.as_str(), request.path.as_str()) {
+        // Debug-only panic trigger: proves the `handle_connection`
+        // `catch_unwind` recovers (client gets a 500, the server stays up)
+        // and the global panic hook reports `crucible.panic` to Canary. The
+        // parser handles malformed input gracefully (404/200), so a real
+        // handler panic is the only way to exercise that path — this route
+        // gives one deterministically. Compiled out of release builds, so it
+        // can never ship.
+        #[cfg(debug_assertions)]
+        ("GET", "/debug/panic") => panic!("crucible debug panic"),
         ("GET", "/") | ("GET", "/index.html") => Ok(HttpResponse::html(render_index())),
         ("GET", "/favicon.ico") => Ok(HttpResponse::new(204, "image/x-icon", Vec::new())),
         ("GET", "/assets/aesthetic.css") => Ok(HttpResponse::new(

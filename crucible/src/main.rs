@@ -110,10 +110,12 @@ use crucible_core::{
     LabelConditions, Leaderboard, SkipReason,
 };
 use serde::Serialize;
+use tracing_subscriber::prelude::*;
 
 mod adjudication_panel;
 mod adjudication_server;
 mod author;
+mod canary;
 mod dashboard_html;
 mod doctor;
 mod eval_run;
@@ -519,6 +521,31 @@ fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(err) => err.exit(),
     };
+    // Install the panic hook and tracing→Canary layer before anything else
+    // runs, so a panic or `tracing::error!` anywhere below — including deep
+    // inside `serve`/`mcp`'s standing-service loops — is captured. The fmt
+    // layer writes to stderr, never stdout: `mcp` uses stdout as its
+    // JSON-RPC protocol channel, and log lines on that stream would corrupt
+    // it.
+    //
+    // The `EnvFilter` is a *per-layer* filter on the fmt layer only: it
+    // keeps a deployed `crucible serve` from drowning stderr in
+    // reqwest/hyper TRACE spam (default `info`, overridable via `RUST_LOG`).
+    // `CanaryLayer` is deliberately left unfiltered so it still observes
+    // every `ERROR` event regardless of what the console shows.
+    canary::install_panic_hook();
+    let fmt_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(fmt_filter);
+    let _ = tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(canary::CanaryLayer)
+        .try_init();
+    // Fire as early as possible so every invocation is observed, even one
+    // that fails deep inside a subcommand below.
+    canary::check_in();
     let result = match cli.command {
         Command::Adapt { artifact, json } => run_adapt(&artifact, json),
         Command::Grade {
@@ -591,13 +618,18 @@ fn main() -> ExitCode {
         },
         Command::Doctor { json } => run_doctor(json),
     };
-    match result {
+    let exit = match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err:#}");
+            canary::report_error("crucible.run.failed", &format!("{err:#}"));
             ExitCode::from(EXIT_LOAD_ERROR)
         }
-    }
+    };
+    // Give the check-in and/or error report a bounded window to reach the
+    // network before this short-lived process exits.
+    canary::flush();
+    exit
 }
 
 /// `crucible run`: execute a declared spec when supplied, otherwise run built-in
