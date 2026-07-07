@@ -25,6 +25,13 @@ const ADJUDICATION_SCHEMA: &str = "crucible.ui.adjudication.v1";
 const RUN_ACTION_SCHEMA: &str = "crucible.ui.run_action.v1";
 const RUN_COMPARISON_SCHEMA: &str = "crucible.ui.run_comparison.v1";
 const SERVE_TOKEN_ENV: &str = "CRUCIBLE_SERVE_TOKEN";
+/// Opt-out of the bearer gate for deployments that sit behind a trusted network
+/// layer (a Tailscale-private box, an authenticated reverse proxy). When set to
+/// a truthy value the operator is asserting that the front — not this process —
+/// is the access control, exactly as the Sanctum artifact shelf treats tailnet
+/// membership. Unset (the default) keeps the fail-closed bearer gate, so a bare
+/// `crucible serve` on a laptop is never silently unauthenticated.
+const SERVE_TRUST_NETWORK_ENV: &str = "CRUCIBLE_SERVE_TRUST_NETWORK";
 const AESTHETIC_CSS: &str = include_str!("ui/aesthetic.css");
 
 pub struct ServeOptions {
@@ -41,12 +48,20 @@ pub fn serve(opts: ServeOptions) -> Result<()> {
         .map(|addr| addr.port())
         .unwrap_or(opts.port);
     println!("crucible serve: http://127.0.0.1:{bound_port}");
+    if env_flag(SERVE_TRUST_NETWORK_ENV) {
+        println!(
+            "crucible serve: {SERVE_TRUST_NETWORK_ENV} is set — the bearer gate is OFF; \
+             expose this ONLY behind a trusted network (Tailscale-private box or \
+             authenticated reverse proxy), never a public endpoint"
+        );
+    }
     std::io::stdout().flush().ok();
 
     // One thread per connection: a slow, stuck, or merely chatty viewer must
     // not stall every other request behind it in the accept loop. This is a
-    // localhost-only, single-operator dev workbench (bearer-gated mutating
-    // routes), not an internet-facing service under load, so unbounded
+    // localhost-only, single-operator dev workbench (bearer-gated protected
+    // routes, unless CRUCIBLE_SERVE_TRUST_NETWORK opts out behind a trusted
+    // front), not an internet-facing service under load, so unbounded
     // thread-per-connection is the right amount of complexity — a pooled or
     // async design would be solving a load problem this server doesn't have.
     let opts = Arc::new(opts);
@@ -300,21 +315,56 @@ fn protected(
 }
 
 fn require_bearer_auth(request: &HttpRequest) -> std::result::Result<(), HttpResponse> {
-    let expected = match std::env::var(SERVE_TOKEN_ENV) {
-        Ok(token) if !token.trim().is_empty() => token,
-        _ => return Err(auth_error("serve token is not configured")),
+    let token = std::env::var(SERVE_TOKEN_ENV).ok();
+    let token = token.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    authorize(
+        env_flag(SERVE_TRUST_NETWORK_ENV),
+        token,
+        request.header("authorization"),
+    )
+    .map_err(auth_error)
+}
+
+/// The bearer-auth decision as a pure function, so it is unit-testable without
+/// mutating the process-global auth env vars (which these in-process parallel
+/// tests otherwise avoid). `trust_network` short-circuits the gate for a
+/// deployment behind a trusted front; otherwise a configured token must match.
+fn authorize(
+    trust_network: bool,
+    expected_token: Option<&str>,
+    auth_header: Option<&str>,
+) -> std::result::Result<(), &'static str> {
+    if trust_network {
+        return Ok(());
+    }
+    let Some(expected) = expected_token else {
+        return Err("serve token is not configured");
     };
-    let Some(header) = request.header("authorization") else {
-        return Err(auth_error("authorization bearer token required"));
+    let Some(header) = auth_header else {
+        return Err("authorization bearer token required");
     };
     let Some(actual) = header.strip_prefix("Bearer ") else {
-        return Err(auth_error("authorization bearer token required"));
+        return Err("authorization bearer token required");
     };
     if constant_time_eq(actual.as_bytes(), expected.as_bytes()) {
         Ok(())
     } else {
-        Err(auth_error("authorization bearer token required"))
+        Err("authorization bearer token required")
     }
+}
+
+/// A permissive truthy-env check (`1`/`true`/`yes`/`on`, case-insensitive) for
+/// the trust-network opt-out. Anything else — including unset — reads as false,
+/// so the gate stays fail-closed by default.
+fn env_flag(name: &str) -> bool {
+    matches!(
+        std::env::var(name)
+            .ok()
+            .as_deref()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
 }
 
 fn auth_error(message: &str) -> HttpResponse {
@@ -2271,7 +2321,48 @@ mod tests {
     // `tests/cli.rs` via a spawned `crucible serve` subprocess; calling it
     // here would mean mutating the process-global `CRUCIBLE_SERVE_TOKEN` env
     // var from these in-process, parallel unit tests, which is exactly the
-    // kind of shared mutable state this repo's tests otherwise avoid.
+    // kind of shared mutable state this repo's tests otherwise avoid. The
+    // decision inside that gate is extracted into the pure `authorize`, which
+    // these tests exercise directly with no env at all.
+
+    #[test]
+    fn authorize_requires_a_configured_token_by_default() {
+        // Fail-closed: no token, no trust-network => refused (the exact 401 the
+        // deployed Sanctum box hit).
+        assert_eq!(
+            authorize(false, None, Some("Bearer whatever")),
+            Err("serve token is not configured")
+        );
+    }
+
+    #[test]
+    fn authorize_matches_a_configured_bearer_token() {
+        assert_eq!(
+            authorize(false, Some("s3cret"), Some("Bearer s3cret")),
+            Ok(())
+        );
+        assert_eq!(
+            authorize(false, Some("s3cret"), Some("Bearer wrong")),
+            Err("authorization bearer token required")
+        );
+        assert_eq!(
+            authorize(false, Some("s3cret"), None),
+            Err("authorization bearer token required")
+        );
+    }
+
+    #[test]
+    fn trust_network_opts_out_of_the_gate_entirely() {
+        // Behind a trusted front the gate is off regardless of token/header —
+        // including when no token is configured, which is the whole point for a
+        // tailnet-private deployment.
+        assert_eq!(authorize(true, None, None), Ok(()));
+        assert_eq!(authorize(true, None, Some("Bearer irrelevant")), Ok(()));
+        assert_eq!(
+            authorize(true, Some("s3cret"), Some("Bearer wrong")),
+            Ok(())
+        );
+    }
 
     /// `GET /api/compare` is the serve face's analog of `crucible runs
     /// compare` and the MCP `crucible_runs_compare` tool: it must expose the
