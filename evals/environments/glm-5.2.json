@@ -1,0 +1,8 @@
+{
+  "schema_version": "crucible.environment.v1",
+  "id": "glm-5.2",
+  "description": "Z.ai GLM 5.2 on OpenRouter, temperature 0 — the routing-bench challenger.",
+  "provider": "open_router",
+  "model": "z-ai/glm-5.2",
+  "temperature": 0
+}

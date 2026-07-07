@@ -6,7 +6,24 @@
 - Current state: the author-and-run engine is real. Three runner kinds
   (`key_recall`, `prompt_benchmark`, `agentic_judge`) execute declared
   `EvalSpec`s through `crucible run`/MCP `crucible_run`, including live BYOK
-  OpenRouter model calls; every run persists to a SQLite ledger
+  OpenRouter model calls. **Operating environments** (`crucible-998`) are the
+  operator-driven workbench layer: a `crucible.environment.v1` declaration
+  (`crucible_core::Environment`, `evals/environments/*.json`) names the
+  model-invocation axes an eval runs *in* — model/provider/temp/max/harness/
+  tool_allowlist (+ harbor `resource_envelope`) — factored out of the spec and
+  reused across specs. `crucible run <spec> --env A.json --env B.json` applies
+  each environment as a pure `EvalSpec`→`EvalSpec` transform (in core, not the
+  execution layer), runs the spec once per environment, and compares them: the
+  first `--env` is the baseline, every later one a challenger. Because the two
+  runs' config identities differ only on the overridden axes, the existing
+  `runs compare` attribution (`model_delta`/`harness_delta`/`config_delta`) and
+  noise-floor/resolution discipline apply unchanged — "run eval X in env A vs
+  env B" is one honest command. Applying an environment *refuses* (never
+  silently mis-applies) a `key_recall`/definition-only spec or an axis the
+  target runner cannot accept. `--env` is CLI-first, mutually exclusive with
+  `--model`/`--models`; MCP `crucible_run` env parity and change-based
+  triggering are shaped follow-ups (`crucible-999`), not built. Every run
+  persists to a SQLite ledger
   (`runs/local/crucible-runs.sqlite`) queryable via `crucible runs
   list/show/compare/history/pivot` (CLI + MCP) — config identity now carries
   explicit `harness`/`tool_allowlist` fields (`backlog.d/027-*`), `history`

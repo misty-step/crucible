@@ -1,0 +1,8 @@
+{
+  "schema_version": "crucible.environment.v1",
+  "id": "deepseek-v4-flash",
+  "description": "DeepSeek V4 Flash on OpenRouter, temperature 0 — the routing-bench baseline.",
+  "provider": "open_router",
+  "model": "deepseek/deepseek-v4-flash",
+  "temperature": 0
+}

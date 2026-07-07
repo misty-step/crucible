@@ -105,6 +105,7 @@ pub mod adjudication;
 pub mod artifact;
 pub mod calibration;
 pub mod dashboard;
+pub mod environment;
 pub mod export;
 pub mod grade;
 pub mod import;
@@ -129,6 +130,7 @@ pub use dashboard::{
     LeaderboardEntry, LeaderboardGroup, McnemarOutcome, Pairwise, PairwiseVerdict, Run, SkipReason,
     SkippedInput, Stronger, Trial,
 };
+pub use environment::{EnvApplyError, EnvValidateError, Environment, ENVIRONMENT_SCHEMA};
 pub use error::{Error, Result};
 pub use export::{
     adjudications_from_queue, extended_expected_key, extended_key, parse_adjudications_md,

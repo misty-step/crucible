@@ -123,6 +123,7 @@ mod harbor_import;
 mod import;
 mod mcp;
 mod run_fanout;
+mod run_matrix;
 mod run_store;
 mod serve;
 mod spec_run;
@@ -277,6 +278,20 @@ enum Command {
         /// as its own run row with its own config identity.
         #[arg(long, value_name = "SLUG,SLUG")]
         models: Option<String>,
+        /// Run the spec once in each named operating environment declaration
+        /// (a `crucible.environment.v1` JSON file). Repeatable: pass `--env`
+        /// two or more times. Each environment overrides the spec's
+        /// model-invocation axes (model, provider, temperature, harness,
+        /// tool_allowlist, ...), writes under an `env-<id>` child directory,
+        /// persists as its own run row with its own config identity, and the
+        /// first environment is compared against every later one. This is the
+        /// "run eval X in env A vs env B" workbench loop.
+        #[arg(long = "env", value_name = "ENV_JSON")]
+        envs: Vec<PathBuf>,
+        /// Significance threshold for the paired McNemar verdict rendered by
+        /// the `--env` matrix comparison.
+        #[arg(long, value_name = "ALPHA", default_value_t = run_store::DEFAULT_ALPHA)]
+        alpha: f64,
         /// SQLite run ledger path. Defaults to the local gitignored run store.
         #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
         db: PathBuf,
@@ -563,6 +578,8 @@ fn main() -> ExitCode {
             json,
             model,
             models,
+            envs,
+            alpha,
             db,
         } => run_eval(
             spec.as_deref(),
@@ -571,6 +588,8 @@ fn main() -> ExitCode {
             json,
             model.as_deref(),
             models.as_deref(),
+            &envs,
+            alpha,
             &db,
         ),
         Command::Runs { command } => run_runs(command),
@@ -611,6 +630,7 @@ fn main() -> ExitCode {
 
 /// `crucible run`: execute a declared spec when supplied, otherwise run built-in
 /// eval receipts.
+#[allow(clippy::too_many_arguments)]
 fn run_eval(
     spec: Option<&Path>,
     eval: eval_run::RunEval,
@@ -618,10 +638,19 @@ fn run_eval(
     json: bool,
     model: Option<&str>,
     models: Option<&str>,
+    envs: &[PathBuf],
+    alpha: f64,
     db: &Path,
 ) -> anyhow::Result<()> {
-    if model.is_some() && models.is_some() {
-        anyhow::bail!("--model and --models are mutually exclusive");
+    let override_flags = [model.is_some(), models.is_some(), !envs.is_empty()];
+    if override_flags.iter().filter(|set| **set).count() > 1 {
+        anyhow::bail!("--model, --models, and --env are mutually exclusive");
+    }
+    if !envs.is_empty() {
+        if eval != eval_run::RunEval::All {
+            anyhow::bail!("--env selects a declared spec and cannot be combined with --eval");
+        }
+        return run_matrix::run(spec, out, json, envs, alpha, db);
     }
     if let Some(models) = models {
         return run_fanout::run(spec, eval, out, json, models, db);
@@ -958,7 +987,7 @@ fn print_run_detail(detail: &run_store::RunDetail) {
     }
 }
 
-fn print_config_comparison(comparison: &run_store::ConfigComparison) {
+pub(crate) fn print_config_comparison(comparison: &run_store::ConfigComparison) {
     println!("crucible runs compare");
     println!("  db        {}", comparison.db);
     println!("  benchmark {}", comparison.benchmark);
