@@ -180,6 +180,7 @@ fn import_harbor(args: &HarborImportArgs) -> anyhow::Result<HarborImportReport> 
                     agent: args.agent.clone(),
                     model: args.model.clone(),
                     job_timeout_ms: None,
+                    resource_envelope: None,
                 },
                 tasks,
             },

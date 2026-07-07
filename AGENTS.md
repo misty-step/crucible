@@ -70,7 +70,22 @@
   "untrusted_run_refused"`, `paired`/`resolution` left `None` — any
   comparison naming an untrusted run, which makes a Signal
   `crucible.finding.v1` from a locked judge structurally impossible (the
-  findings journal derives every finding from `paired`). The agentic-judge runner also
+  findings journal derives every finding from `paired`). `runs compare` also
+  labels every comparison's attribution (`crucible-974`): derived from the
+  real identity diff between the two resolved runs (never assumed from the
+  query strings), `"model_delta"`/`"harness_delta"` when exactly that one
+  axis differs, `"config_delta"` otherwise — SWE-bench-Lite swung
+  2.7%->28.3% for the same model on harness alone, so a delta spanning two
+  axes at once is unattributable by construction. `--strict` (CLI) /
+  `strict` (MCP) refuses a `config_delta` comparison outright instead of
+  rendering it with a caveat; `FindingRecord.comparison_type` carries the
+  same label downstream. Env-backed (`harbor_task`) comparisons additionally
+  get a `resource_envelope_caveat` when their declared `ResourceEnvelope`s
+  (cpu/mem/headroom, `HarborRunConfig.resource_envelope`) mismatch, or when
+  neither side declared one and the delta is small enough that Anthropic's
+  Feb 2026 infrastructure-noise finding (container CPU/RAM headroom-vs-limit
+  alone produced a 6pp swing on Terminal-Bench 2.0) could plausibly explain
+  it. The agentic-judge runner also
   persists a `Trace` (`crucible-core::trace`, `backlog.d/030-*`) — an ordered
   judge_call/verdict_parsed/calibration_check step sequence pointed to from
   `run_records.trace_path` and surfaced via `runs list/show`/MCP the same way

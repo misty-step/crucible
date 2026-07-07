@@ -21,8 +21,8 @@ use crucible_core::{
     shares_model_family, to_key_findings, AgenticJudgeConfig, AgenticJudgeTask, AggregationMethod,
     CalibrationRecord, CerberusReceiptTask, ConfusionMatrix, CorpusSpec, EvalSpec, ExpectedKey,
     GraderKind, HarborRunConfig, HarborTaskSpec, IntervalMethod, KeyFinding, ModelProvider,
-    PromptBenchmarkTask, PromptExpectation, PromptModelConfig, RunnerKind, RunnerSpec, Trace,
-    TraceStep, CALIBRATION_RECORD_SCHEMA, TRACE_SCHEMA,
+    PromptBenchmarkTask, PromptExpectation, PromptModelConfig, ResourceEnvelope, RunnerKind,
+    RunnerSpec, Trace, TraceStep, CALIBRATION_RECORD_SCHEMA, TRACE_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -602,6 +602,7 @@ fn run_harbor_task(
             runner: runner.kind,
             agent: config.agent.clone(),
             model: config.model.clone(),
+            resource_envelope: config.resource_envelope,
             score: &score,
             totals: PromptTotals {
                 tasks: tasks.len() as u64,
@@ -994,6 +995,10 @@ struct HarborRunEvidence<'a> {
     agent: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    /// The sandbox's declared [`crucible_core::ResourceEnvelope`] (backlog
+    /// 974), when the corpus author configured one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource_envelope: Option<ResourceEnvelope>,
     score: &'a Score,
     totals: PromptTotals,
     tasks: &'a [HarborTaskResult],

@@ -14,8 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use crucible_core::{
     minimum_detectable_effect_paired, required_n_paired, DeltaVerdict, EvalSpec, EvaluationCard,
-    FixtureRef, McnemarOutcome, PairedComparison, Provenance, RunRecord, RunScore,
-    EVALUATION_CARD_SCHEMA, RUN_RECORD_SCHEMA, TRACE_SCHEMA,
+    FixtureRef, McnemarOutcome, PairedComparison, Provenance, ResourceEnvelope, RunRecord,
+    RunScore, EVALUATION_CARD_SCHEMA, RUN_RECORD_SCHEMA, TRACE_SCHEMA,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
@@ -152,6 +152,19 @@ pub struct StoredRun {
     /// with its own "unknown" convention.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub response_model: String,
+    /// This run's grader/scoring identity (backlog 974): the same aggregate
+    /// already folded into `config_id`, carried as its own field so
+    /// `compare_configs` can test axis equality directly. Empty for runner
+    /// kinds this does not apply to (`harbor_task`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scoring_id: String,
+    /// This run's declared resource envelope (backlog 974), when it is an
+    /// env-backed (`harbor_task`) run whose corpus author configured one.
+    /// `None` for every other runner kind, and for a `harbor_task` run with
+    /// no envelope declared at all — the absence itself is meaningful to
+    /// `compare_configs` (an uncontrolled comparison), not just "no data."
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_envelope: Option<ResourceEnvelope>,
 }
 
 #[derive(Debug, Serialize)]
@@ -288,6 +301,27 @@ pub struct ConfigComparison {
     /// not drift) or when their response models agree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_model_drift_warning: Option<String>,
+    /// Backlog 974: which identity axis (or axes) the observed delta is
+    /// attributable to, derived from the actual diff between `left`/`right`
+    /// — never assumed from the query strings. `"model_delta"` when only
+    /// `model` differs, `"harness_delta"` when only `harness` differs,
+    /// `"config_delta"` otherwise (zero, or two-or-more, axes differ —
+    /// unattributable to any single one; see `attribution_note`).
+    pub attribution: &'static str,
+    /// Present alongside `attribution: "config_delta"`, explaining exactly
+    /// which axes differed. `None` for `model_delta`/`harness_delta`, where
+    /// the label alone already says which single axis moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution_note: Option<String>,
+    /// Backlog 974: set for an env-backed (`harbor_task`) comparison whose
+    /// declared resource envelopes mismatch, or that declared none at all
+    /// while its delta is small enough that Anthropic's Feb 2026
+    /// infrastructure-noise finding (a 6pp swing from CPU/RAM headroom-vs-
+    /// limit configuration alone) could plausibly explain it. `None` for
+    /// non-env-backed comparisons, or when both sides declared matching
+    /// envelopes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_envelope_caveat: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -429,6 +463,18 @@ struct EvidenceMetadata {
     /// overridden downward by `merge_prompt_metadata` for a judge run — a run
     /// with no judge evidence at all never has a reason to distrust itself.
     trusted: bool,
+    /// [`StoredRun::scoring_id`] (backlog 974): the grader/scoring-method
+    /// identity already folded into `config_id` — carried as its own field
+    /// too so `compare_configs` can test "did only the scoring axis differ"
+    /// without parsing the `config_id` string. Empty for runner kinds this
+    /// does not apply to (`harbor_task`).
+    scoring_id: String,
+    /// [`StoredRun::resource_envelope`] (backlog 974): the raw
+    /// [`crucible_core::ResourceEnvelope`] JSON declared by an env-backed
+    /// (`harbor_task`) run's sandbox config, when one was declared. `None`
+    /// for every other runner kind, and for a `harbor_task` run whose corpus
+    /// author never configured one.
+    resource_envelope: Option<String>,
 }
 
 impl Default for EvidenceMetadata {
@@ -449,6 +495,8 @@ impl Default for EvidenceMetadata {
             harbor_tasks: Vec::new(),
             judge_licence: None,
             trusted: true,
+            scoring_id: String::new(),
+            resource_envelope: None,
         }
     }
 }
@@ -600,10 +648,12 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric, successes,
                 n, point, lower, upper, confidence, score_method, eval_json,
-                harness, tool_allowlist, trace_path, trusted, response_model
+                harness, tool_allowlist, trace_path, trusted, response_model,
+                scoring_id, resource_envelope
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
+                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
+                ?29, ?30
             )",
             params![
                 run_id,
@@ -633,7 +683,9 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 metadata.tool_allowlist,
                 metadata.trace_path,
                 metadata.trusted,
-                response_model
+                response_model,
+                metadata.scoring_id,
+                metadata.resource_envelope
             ],
         )
         .with_context(|| format!("inserting run record for {}", eval.id))?;
@@ -886,7 +938,8 @@ pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
-                harness, tool_allowlist, trace_path, trusted, response_model
+                harness, tool_allowlist, trace_path, trusted, response_model,
+                scoring_id, resource_envelope
              FROM run_records
              WHERE (?1 IS NULL OR benchmark_id = ?1)
                AND (?2 IS NULL OR config_id = ?2)
@@ -939,7 +992,8 @@ pub fn show_run(db_path: &Path, run_id: &str) -> Result<RunDetail> {
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
-                harness, tool_allowlist, trace_path, trusted, response_model
+                harness, tool_allowlist, trace_path, trusted, response_model,
+                scoring_id, resource_envelope
              FROM run_records
              WHERE run_id = ?1",
             params![run_id],
@@ -1102,12 +1156,19 @@ fn response_model_drift_warning<'a>(
 /// ones carrying information). Otherwise it falls back to the unpaired
 /// descriptive delta between each run's own point estimate — the same
 /// behavior as before this comparison learned to pair.
+///
+/// `strict` (backlog 974): when `true`, a comparison whose two runs differ on
+/// more than one identity axis is refused outright (`paired`/`resolution`
+/// left `None`) rather than rendered with an "unattributable" caveat — for a
+/// caller that would rather see nothing than a delta it cannot credit to
+/// anything.
 pub fn compare_configs(
     db_path: &Path,
     benchmark: &str,
     left: &str,
     right: &str,
     alpha: f64,
+    strict: bool,
 ) -> Result<ConfigComparison> {
     let conn = open_initialized(db_path)?;
     let left_run = latest_for_config(&conn, benchmark, left).with_context(|| {
@@ -1116,6 +1177,12 @@ pub fn compare_configs(
     let right_run = latest_for_config(&conn, benchmark, right).with_context(|| {
         format!("no run found for benchmark {benchmark:?} and config/model {right:?}")
     })?;
+
+    // Backlog 974: which identity axes actually differ between the two
+    // resolved runs — not assumed from the query strings. SWE-bench-Lite
+    // swung 2.7%->28.3% for the SAME model on harness alone; a delta between
+    // runs differing on two axes at once is unattributable by construction.
+    let (attribution, attribution_note) = attribution_for(&left_run, &right_run);
 
     // Backlog 971: a LOCKED judge's score must not back a trusted comparison
     // or feed a findings-journal signal. Refused structurally here — `paired`
@@ -1139,6 +1206,35 @@ pub fn compare_configs(
             comparison_kind: "untrusted_run_refused",
             note: "Refused: at least one run's judge calibration is locked (untrusted) — a locked judge's score cannot back a trusted comparison or findings-journal signal (backlog 971). See left.trusted/right.trusted.",
             response_model_drift_warning: None,
+            attribution,
+            attribution_note,
+            resource_envelope_caveat: None,
+        });
+    }
+
+    // Backlog 974: under `strict`, a multi-axis (unattributable) comparison
+    // is refused the same structural way an untrusted run is — no `paired`
+    // for a findings journal to read as a signal.
+    if strict && attribution == "config_delta" {
+        return Ok(ConfigComparison {
+            schema_version: RUN_STORE_SCHEMA,
+            db: db_path.display().to_string(),
+            benchmark: benchmark.to_string(),
+            left_query: left.to_string(),
+            right_query: right.to_string(),
+            left: left_run,
+            right: right_run,
+            delta_point: None,
+            common_tasks: 0,
+            paired: None,
+            resolution: None,
+            class_breakdowns: Vec::new(),
+            comparison_kind: "attribution_refused",
+            note: "Refused under --strict: this comparison spans more than one identity axis and is unattributable to any single one of them. See attribution_note.",
+            response_model_drift_warning: None,
+            attribution,
+            attribution_note,
+            resource_envelope_caveat: None,
         });
     }
 
@@ -1213,6 +1309,8 @@ pub fn compare_configs(
         _ => None,
     };
 
+    let resource_envelope_caveat = resource_envelope_caveat(&left_run, &right_run, delta_point);
+
     Ok(ConfigComparison {
         schema_version: RUN_STORE_SCHEMA,
         db: db_path.display().to_string(),
@@ -1229,7 +1327,98 @@ pub fn compare_configs(
         comparison_kind,
         note,
         response_model_drift_warning,
+        attribution,
+        attribution_note,
+        resource_envelope_caveat,
     })
+}
+
+/// Backlog 974: which of `left`/`right`'s identity axes actually differ, and
+/// the attribution label that follows from it. `"model_delta"`/
+/// `"harness_delta"` name the two headline confounds the design canon calls
+/// out by name (SWE-bench-Lite's harness-alone swing; the model-vs-model
+/// case compare exists for); every other case — zero axes differing (a
+/// degenerate self-comparison), or two-or-more differing at once, or a
+/// single differing axis that is neither model nor harness — is
+/// `"config_delta"`: unattributable to any one axis, with a note listing
+/// exactly what differed.
+fn attribution_for(left_run: &StoredRun, right_run: &StoredRun) -> (&'static str, Option<String>) {
+    let mut differing = Vec::new();
+    if left_run.model != right_run.model {
+        differing.push("model");
+    }
+    if left_run.harness != right_run.harness {
+        differing.push("harness");
+    }
+    if left_run.tool_allowlist != right_run.tool_allowlist {
+        differing.push("tool_allowlist");
+    }
+    if left_run.scoring_id != right_run.scoring_id {
+        differing.push("scoring (grader/rubric)");
+    }
+
+    match differing.as_slice() {
+        ["model"] => ("model_delta", None),
+        ["harness"] => ("harness_delta", None),
+        [] => (
+            "config_delta",
+            Some(
+                "Unattributable: left and right resolved to runs with identical identity axes \
+                 (model, harness, tool_allowlist, scoring) — any observed delta is noise, not a \
+                 config difference."
+                    .to_string(),
+            ),
+        ),
+        axes => (
+            "config_delta",
+            Some(format!(
+                "Unattributable to any single axis: {} differ between these two runs — a delta \
+                 here cannot be credited to any one of them (SWE-bench-Lite: harness alone swung \
+                 2.7%->28.3% for the same model, arXiv-documented; ARC Prize added a separate \
+                 leaderboard category to isolate scaffold gains from model gains).",
+                axes.join(", ")
+            )),
+        ),
+    }
+}
+
+/// Backlog 974: Anthropic's infrastructure-noise finding (Feb 2026) — a
+/// container's CPU/RAM headroom-vs-limit configuration ALONE produced a 6
+/// percentage-point swing (p<0.01) on Terminal-Bench 2.0, larger than the
+/// gap between top models — applies only to env-backed (`harbor_task`)
+/// comparisons. A declared-and-differing envelope on both sides is a direct
+/// mismatch; an undeclared envelope on either side means the comparison
+/// never controlled for infra at all, which only matters when the delta is
+/// small enough that infra noise alone could plausibly explain it.
+fn resource_envelope_caveat(
+    left_run: &StoredRun,
+    right_run: &StoredRun,
+    delta_point: Option<f64>,
+) -> Option<String> {
+    let env_backed =
+        left_run.runner_kind == "harbor_task" || right_run.runner_kind == "harbor_task";
+    if !env_backed {
+        return None;
+    }
+    match (&left_run.resource_envelope, &right_run.resource_envelope) {
+        (Some(left), Some(right)) if left != right => Some(format!(
+            "Resource-envelope mismatch between these two runs ({left:?} vs {right:?}): \
+             container CPU/RAM headroom-vs-limit configuration ALONE produced a 6 percentage-\
+             point swing (p<0.01) on Terminal-Bench 2.0 — larger than top-model gaps (Anthropic, \
+             Feb 2026). This delta may reflect infra differences, not agent/model differences."
+        )),
+        (Some(_), Some(_)) => None,
+        _ => {
+            let small_delta = delta_point.map(|delta| delta.abs() < 0.03).unwrap_or(false);
+            small_delta.then(|| {
+                "No resource envelope declared for this env-backed comparison, and the observed \
+                 delta is under 3 percentage points — Anthropic (Feb 2026) found infra noise \
+                 (container CPU/RAM headroom-vs-limit) alone can produce a 6pp swing, larger \
+                 than this delta. Treat this result with skepticism absent infra control."
+                    .to_string()
+            })
+        }
+    }
 }
 
 /// One benchmark's cross-axis pivot: the latest stored run per model,
@@ -1272,7 +1461,8 @@ pub fn pivot_by_model(db_path: &Path, benchmark: &str, harness: Option<&str>) ->
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
-                harness, tool_allowlist, trace_path, trusted, response_model
+                harness, tool_allowlist, trace_path, trusted, response_model,
+                scoring_id, resource_envelope
              FROM run_records
              WHERE benchmark_id = ?1 AND (?2 IS NULL OR harness = ?2)
              ORDER BY created_at_unix_ms DESC, run_id DESC",
@@ -1593,6 +1783,21 @@ fn init_schema(conn: &Connection) -> Result<()> {
         "response_model",
         "TEXT NOT NULL DEFAULT ''",
     )?;
+    // Backlog 974: the grader/scoring identity already folded into
+    // `config_id`, carried as its own column so `compare_configs` can test
+    // axis equality directly instead of parsing `config_id`.
+    ensure_column(
+        conn,
+        "run_records",
+        "scoring_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    // Backlog 974: an env-backed (`harbor_task`) run's declared
+    // `ResourceEnvelope`, as raw JSON. `NULL` (not `''`) when undeclared or
+    // not applicable — envelope presence/absence is itself meaningful
+    // (an uncontrolled comparison), unlike `response_model`'s "mixed or
+    // unknown" empty-string sentinel.
+    ensure_column(conn, "run_records", "resource_envelope", "TEXT")?;
     Ok(())
 }
 
@@ -1828,6 +2033,7 @@ fn merge_prompt_metadata(
         .collect();
     rubric_hashes.sort_unstable();
     let scoring_id = stable_hash_bytes(rubric_hashes.iter().map(|hash| hash.as_bytes()));
+    metadata.scoring_id = scoring_id.clone();
 
     let mut config_id = format!(
         "{config_prefix}:{provider}:{model}:temp={temperature}:max={max_output_units}:prompt={system_prompt_hash}:scoring={scoring_id}"
@@ -2047,6 +2253,13 @@ fn merge_harbor_metadata(metadata: &mut EvidenceMetadata, artifact: &str, value:
     metadata.harness = Some(agent.clone());
     let model = metadata.model.as_deref().unwrap_or("default");
     metadata.config_id = Some(format!("harbor:{agent}:{model}"));
+    // Backlog 974: this env-backed run's declared resource envelope, when
+    // its corpus author configured one — persisted verbatim so
+    // `compare_configs` can flag a mismatch, or an uncontrolled comparison.
+    metadata.resource_envelope = value
+        .get("resource_envelope")
+        .filter(|envelope| !envelope.is_null())
+        .map(Value::to_string);
 
     let Some(tasks) = value.get("tasks").and_then(Value::as_array) else {
         return;
@@ -2132,6 +2345,10 @@ fn row_to_stored_run(row: &Row<'_>) -> rusqlite::Result<StoredRun> {
         trace_path: row.get(23)?,
         trusted: row.get::<_, i64>(24)? != 0,
         response_model: row.get(25)?,
+        scoring_id: row.get(26)?,
+        resource_envelope: row
+            .get::<_, Option<String>>(27)?
+            .and_then(|json| serde_json::from_str(&json).ok()),
     })
 }
 
@@ -2274,7 +2491,8 @@ fn latest_for_config(conn: &Connection, benchmark: &str, config: &str) -> Result
             config_id, provider, model, created_at_unix_ms, output_dir,
             run_report_path, evidence_path, spec_path, score_metric,
             successes, n, point, lower, upper, confidence, score_method,
-            harness, tool_allowlist, trace_path, trusted, response_model
+            harness, tool_allowlist, trace_path, trusted, response_model,
+            scoring_id, resource_envelope
          FROM run_records
          WHERE benchmark_id = ?1 AND (config_id = ?2 OR model = ?2)
          ORDER BY created_at_unix_ms DESC, run_id DESC
@@ -2728,6 +2946,37 @@ mod tests {
         }
     }
 
+    /// Rewrite a persisted-and-reloadable harbor evidence fixture's
+    /// `resource_envelope` -- `None` explicitly clears any key rather than
+    /// leaving it absent (harbor_report never writes one), so callers can
+    /// build both "declared" and "declared absent" fixtures from one helper.
+    fn harbor_report_with_envelope(
+        root: &Path,
+        agent: &str,
+        task_id: &str,
+        passed: bool,
+        envelope: Option<serde_json::Value>,
+    ) -> RunReport {
+        let report = harbor_report(root, agent, task_id, passed);
+        let evidence_path = Path::new(&report.evals[0].artifacts[1]).to_path_buf();
+        let mut evidence: Value =
+            serde_json::from_str(&std::fs::read_to_string(&evidence_path).unwrap()).unwrap();
+        match envelope {
+            Some(envelope) => evidence["resource_envelope"] = envelope,
+            None => {
+                if let Some(obj) = evidence.as_object_mut() {
+                    obj.remove("resource_envelope");
+                }
+            }
+        }
+        std::fs::write(
+            &evidence_path,
+            serde_json::to_string_pretty(&evidence).unwrap(),
+        )
+        .expect("rewrite harbor evidence with a resource_envelope override");
+        report
+    }
+
     fn agentic_judge_report(root: &Path, model: &str, verdict: bool) -> RunReport {
         let out = root.join(format!("judge-{}", model.replace('/', "-")));
         std::fs::create_dir_all(&out).expect("create output dir");
@@ -3142,6 +3391,7 @@ mod tests {
             "test/judge-a",
             "test/judge-b",
             0.05,
+            false,
         )
         .expect("compare configs");
 
@@ -3382,7 +3632,7 @@ mod tests {
             .config_id
             .clone();
 
-        let comparison = compare_configs(&db, "prompt-smoke-v0", &config_a, &config_b, 0.05)
+        let comparison = compare_configs(&db, "prompt-smoke-v0", &config_a, &config_b, 0.05, false)
             .expect("compare configs");
         let warning = comparison
             .response_model_drift_warning
@@ -3408,12 +3658,319 @@ mod tests {
         )
         .expect("persist right run");
 
-        let comparison =
-            compare_configs(&db, "prompt-smoke-v0", "test/model-a", "test/model-b", 0.05)
-                .expect("compare configs");
+        let comparison = compare_configs(
+            &db,
+            "prompt-smoke-v0",
+            "test/model-a",
+            "test/model-b",
+            0.05,
+            false,
+        )
+        .expect("compare configs");
         assert!(
             comparison.response_model_drift_warning.is_none(),
             "comparing two genuinely different requested models is not drift"
+        );
+    }
+
+    // ---- backlog 974: attribution refusal ---------------------------------
+
+    #[test]
+    fn compare_configs_labels_model_delta_when_only_model_differs() {
+        let root = temp_dir("attrib-model-delta");
+        let db = root.join("runs.sqlite");
+        persist_report(&db, &prompt_report(&root, "test/model-a", false)).expect("persist left");
+        persist_report(&db, &prompt_report(&root, "test/model-b", true)).expect("persist right");
+
+        let comparison = compare_configs(
+            &db,
+            "prompt-smoke-v0",
+            "test/model-a",
+            "test/model-b",
+            0.05,
+            false,
+        )
+        .expect("compare configs");
+        assert_eq!(comparison.attribution, "model_delta");
+        assert!(comparison.attribution_note.is_none());
+    }
+
+    #[test]
+    fn compare_configs_labels_harness_delta_when_only_harness_differs() {
+        let root = temp_dir("attrib-harness-delta");
+        let db = root.join("runs.sqlite");
+        let left = prompt_report(&root, "test/model-a", false);
+        set_harness_and_tools(&left, "claude-code", &[]);
+        persist_report(&db, &left).expect("persist left");
+
+        let right_root = temp_dir("attrib-harness-delta-right");
+        let mut right = prompt_report(&right_root, "test/model-a", true);
+        right.output_dir = right_root.join("second").display().to_string();
+        set_harness_and_tools(&right, "codex", &[]);
+        persist_report(&db, &right).expect("persist right");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        let config_left = list
+            .runs
+            .iter()
+            .find(|run| run.harness.as_deref() == Some("claude-code"))
+            .expect("left run")
+            .config_id
+            .clone();
+        let config_right = list
+            .runs
+            .iter()
+            .find(|run| run.harness.as_deref() == Some("codex"))
+            .expect("right run")
+            .config_id
+            .clone();
+
+        let comparison = compare_configs(
+            &db,
+            "prompt-smoke-v0",
+            &config_left,
+            &config_right,
+            0.05,
+            false,
+        )
+        .expect("compare configs");
+        assert_eq!(comparison.attribution, "harness_delta");
+        assert!(comparison.attribution_note.is_none());
+    }
+
+    #[test]
+    fn compare_configs_labels_config_delta_when_model_and_harness_both_differ() {
+        let root = temp_dir("attrib-config-delta");
+        let db = root.join("runs.sqlite");
+        let left = prompt_report(&root, "test/model-a", false);
+        set_harness_and_tools(&left, "claude-code", &[]);
+        persist_report(&db, &left).expect("persist left");
+        let right = prompt_report(&root, "test/model-b", true);
+        set_harness_and_tools(&right, "codex", &[]);
+        persist_report(&db, &right).expect("persist right");
+
+        let comparison = compare_configs(
+            &db,
+            "prompt-smoke-v0",
+            "test/model-a",
+            "test/model-b",
+            0.05,
+            false,
+        )
+        .expect("compare configs");
+        assert_eq!(comparison.attribution, "config_delta");
+        let note = comparison
+            .attribution_note
+            .expect("config_delta carries a note explaining which axes differed");
+        assert!(note.contains("model"), "{note}");
+        assert!(note.contains("harness"), "{note}");
+    }
+
+    #[test]
+    fn compare_configs_refuses_a_multi_axis_comparison_under_strict_mode() {
+        let root = temp_dir("attrib-strict-refuse");
+        let db = root.join("runs.sqlite");
+        let left = prompt_report(&root, "test/model-a", false);
+        set_harness_and_tools(&left, "claude-code", &[]);
+        persist_report(&db, &left).expect("persist left");
+        let right = prompt_report(&root, "test/model-b", true);
+        set_harness_and_tools(&right, "codex", &[]);
+        persist_report(&db, &right).expect("persist right");
+
+        let comparison = compare_configs(
+            &db,
+            "prompt-smoke-v0",
+            "test/model-a",
+            "test/model-b",
+            0.05,
+            true,
+        )
+        .expect("compare configs");
+        assert_eq!(comparison.comparison_kind, "attribution_refused");
+        assert_eq!(comparison.attribution, "config_delta");
+        assert!(
+            comparison.paired.is_none(),
+            "a strict-refused comparison must not carry a paired verdict a findings journal \
+             could read as a signal"
+        );
+        assert!(comparison.resolution.is_none());
+        assert_eq!(comparison.common_tasks, 0);
+    }
+
+    #[test]
+    fn compare_configs_does_not_refuse_a_single_axis_comparison_under_strict_mode() {
+        // Strict mode only refuses the unattributable (config_delta) case --
+        // a clean model_delta or harness_delta comparison is exactly the
+        // kind of comparison compare exists to make, strict or not.
+        let root = temp_dir("attrib-strict-allow");
+        let db = root.join("runs.sqlite");
+        persist_report(&db, &prompt_report(&root, "test/model-a", false)).expect("persist left");
+        persist_report(&db, &prompt_report(&root, "test/model-b", true)).expect("persist right");
+
+        let comparison = compare_configs(
+            &db,
+            "prompt-smoke-v0",
+            "test/model-a",
+            "test/model-b",
+            0.05,
+            true,
+        )
+        .expect("compare configs");
+        assert_eq!(comparison.attribution, "model_delta");
+        assert_ne!(comparison.comparison_kind, "attribution_refused");
+        assert!(comparison.paired.is_some());
+    }
+
+    #[test]
+    fn compare_configs_warns_on_resource_envelope_mismatch() {
+        let root = temp_dir("envelope-mismatch");
+        let db = root.join("runs.sqlite");
+        // Distinct agents so the two runs land under distinct config_ids --
+        // otherwise the second `latest_for_config` query would just re-fetch
+        // the first run's own row and trivially "match" its own envelope.
+        persist_report(
+            &db,
+            &harbor_report_with_envelope(
+                &root,
+                "claude-code",
+                "crucible-smoke",
+                false,
+                Some(serde_json::json!({"cpu_millicores": 2000, "memory_mb": 4096, "headroom_percent": 50})),
+            ),
+        )
+        .expect("persist left");
+        let right_root = temp_dir("envelope-mismatch-right");
+        persist_report(
+            &db,
+            &harbor_report_with_envelope(
+                &right_root,
+                "codex",
+                "crucible-smoke",
+                true,
+                Some(serde_json::json!({"cpu_millicores": 500, "memory_mb": 1024, "headroom_percent": 90})),
+            ),
+        )
+        .expect("persist right");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("harbor-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        assert_eq!(list.runs.len(), 2);
+        let config_left = list.runs[0].config_id.clone();
+        let config_right = list.runs[1].config_id.clone();
+
+        let comparison = compare_configs(
+            &db,
+            "harbor-smoke-v0",
+            &config_left,
+            &config_right,
+            0.05,
+            false,
+        )
+        .expect("compare configs");
+        let caveat = comparison
+            .resource_envelope_caveat
+            .expect("mismatched declared envelopes must caveat");
+        assert!(caveat.contains("6"), "{caveat}");
+    }
+
+    #[test]
+    fn compare_configs_caveats_a_small_delta_with_no_declared_envelope() {
+        let root = temp_dir("envelope-undeclared-small-delta");
+        let db = root.join("runs.sqlite");
+        // Both runs pass (point=1.0 each) -- delta_point = 0.0, well under 3pp.
+        persist_report(
+            &db,
+            &harbor_report_with_envelope(&root, "oracle", "crucible-smoke", true, None),
+        )
+        .expect("persist left");
+        let right_root = temp_dir("envelope-undeclared-small-delta-right");
+        persist_report(
+            &db,
+            &harbor_report_with_envelope(&right_root, "claude-code", "crucible-smoke", true, None),
+        )
+        .expect("persist right");
+
+        let comparison = compare_configs(
+            &db,
+            "harbor-smoke-v0",
+            "harbor:oracle:default",
+            "harbor:claude-code:default",
+            0.05,
+            false,
+        )
+        .expect("compare configs");
+        let caveat = comparison
+            .resource_envelope_caveat
+            .expect("an undeclared envelope with a small delta must caveat");
+        assert!(
+            caveat.contains("6pp") || caveat.contains("6 percentage"),
+            "{caveat}"
+        );
+    }
+
+    #[test]
+    fn compare_configs_is_silent_on_envelope_when_delta_is_large_and_undeclared() {
+        let root = temp_dir("envelope-undeclared-large-delta");
+        let db = root.join("runs.sqlite");
+        persist_report(
+            &db,
+            &harbor_report_with_envelope(&root, "oracle", "crucible-smoke", false, None),
+        )
+        .expect("persist left");
+        let right_root = temp_dir("envelope-undeclared-large-delta-right");
+        persist_report(
+            &db,
+            &harbor_report_with_envelope(&right_root, "claude-code", "crucible-smoke", true, None),
+        )
+        .expect("persist right");
+
+        let comparison = compare_configs(
+            &db,
+            "harbor-smoke-v0",
+            "harbor:oracle:default",
+            "harbor:claude-code:default",
+            0.05,
+            false,
+        )
+        .expect("compare configs");
+        assert!(
+            comparison.resource_envelope_caveat.is_none(),
+            "a large delta (1.0) swamps any plausible infra-noise explanation"
+        );
+    }
+
+    #[test]
+    fn compare_configs_is_silent_on_envelope_for_non_env_backed_comparisons() {
+        let root = temp_dir("envelope-not-applicable");
+        let db = root.join("runs.sqlite");
+        persist_report(&db, &prompt_report(&root, "test/model-a", true)).expect("persist left");
+        persist_report(&db, &prompt_report(&root, "test/model-b", true)).expect("persist right");
+
+        let comparison = compare_configs(
+            &db,
+            "prompt-smoke-v0",
+            "test/model-a",
+            "test/model-b",
+            0.05,
+            false,
+        )
+        .expect("compare configs");
+        assert!(
+            comparison.resource_envelope_caveat.is_none(),
+            "the resource-envelope axis only applies to env-backed (harbor_task) comparisons"
         );
     }
 
@@ -3623,6 +4180,7 @@ mod tests {
             "harbor:oracle:default",
             "harbor:claude-code:default",
             0.05,
+            false,
         )
         .expect("compare configs");
         assert_eq!(comparison.comparison_kind, "paired_mcnemar");
@@ -3647,6 +4205,7 @@ mod tests {
             "harbor:oracle:default",
             "harbor:claude-code:default",
             0.05,
+            false,
         )
         .expect("compare configs");
         assert_eq!(
@@ -3892,9 +4451,15 @@ mod tests {
         persist_report(&db, &prompt_report(&root, "test/model-a", false)).expect("persist left");
         persist_report(&db, &prompt_report(&root, "test/model-b", true)).expect("persist right");
 
-        let comparison =
-            compare_configs(&db, "prompt-smoke-v0", "test/model-a", "test/model-b", 0.05)
-                .expect("compare configs");
+        let comparison = compare_configs(
+            &db,
+            "prompt-smoke-v0",
+            "test/model-a",
+            "test/model-b",
+            0.05,
+            false,
+        )
+        .expect("compare configs");
         assert_eq!(comparison.left.model.as_deref(), Some("test/model-a"));
         assert_eq!(comparison.right.model.as_deref(), Some("test/model-b"));
         assert_eq!(comparison.delta_point, Some(1.0));
@@ -3967,9 +4532,15 @@ mod tests {
 
         persist_report(&db, &left).expect("persist left");
         persist_report(&db, &right).expect("persist right");
-        let comparison =
-            compare_configs(&db, "prompt-smoke-v0", "test/model-a", "test/model-b", 0.05)
-                .expect("compare configs");
+        let comparison = compare_configs(
+            &db,
+            "prompt-smoke-v0",
+            "test/model-a",
+            "test/model-b",
+            0.05,
+            false,
+        )
+        .expect("compare configs");
 
         assert_eq!(comparison.class_breakdowns.len(), 2);
         let by_class: HashMap<&str, &ClassComparison> = comparison
@@ -4015,9 +4586,15 @@ mod tests {
         persist_report(&db, &left).expect("persist left");
         persist_report(&db, &prompt_report(&root, "test/model-b", true)).expect("persist right");
 
-        let comparison =
-            compare_configs(&db, "prompt-smoke-v0", "test/model-a", "test/model-b", 0.05)
-                .expect("compare configs");
+        let comparison = compare_configs(
+            &db,
+            "prompt-smoke-v0",
+            "test/model-a",
+            "test/model-b",
+            0.05,
+            false,
+        )
+        .expect("compare configs");
         assert_eq!(
             comparison.comparison_kind,
             "latest_unpaired_descriptive_delta"
