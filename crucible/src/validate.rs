@@ -317,7 +317,8 @@ mod tests {
                 tasks: vec![AgenticJudgeTask {
                     task_id: "t1".to_string(),
                     candidate: "answer".to_string(),
-                    rubric: "must be correct".to_string(),
+                    rubric: crucible_core::Rubric::Single("must be correct".to_string()),
+                    criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                     expected_pass: None,
                     refuse_on_mismatch: false,
                     reference: None,
@@ -360,7 +361,8 @@ mod tests {
                 tasks: vec![AgenticJudgeTask {
                     task_id: "t1".to_string(),
                     candidate: "answer".to_string(),
-                    rubric: "must be correct".to_string(),
+                    rubric: crucible_core::Rubric::Single("must be correct".to_string()),
+                    criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                     expected_pass: None,
                     refuse_on_mismatch: false,
                     reference: None,
@@ -401,7 +403,8 @@ mod tests {
                     .map(|i| AgenticJudgeTask {
                         task_id: format!("t{i}"),
                         candidate: "answer".to_string(),
-                        rubric: "must be correct".to_string(),
+                        rubric: crucible_core::Rubric::Single("must be correct".to_string()),
+                        criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                         expected_pass: None,
                         refuse_on_mismatch: false,
                         reference: None,

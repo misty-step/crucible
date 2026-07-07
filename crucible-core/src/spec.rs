@@ -364,6 +364,69 @@ pub struct AgenticJudgeConfig {
     pub previous_evidence_path: Option<std::path::PathBuf>,
 }
 
+/// A task's rubric: either one holistic string judged in a single call
+/// (`Single`, pre-952 back-compat — a bare JSON string on the wire), or a
+/// named list of criteria each judged by its own isolated call
+/// (`Criteria`). RubricEval (arXiv:2603.25133) found rubric-level judging
+/// (one isolated call per criterion) beats checklist-level (the whole
+/// rubric in one call) by 7-12 points balanced accuracy, consistently
+/// across every instruction category and judge family tested, and roughly
+/// halves inter-judge variance (25-point spread -> 12-point) — packing
+/// several criteria into one `Single` string gets none of that.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Rubric {
+    /// One holistic rubric string, judged by one call. A bare JSON string
+    /// deserializes into this variant, so every pre-952 spec loads unchanged.
+    Single(String),
+    /// Named criteria, each judged by its own isolated call — see
+    /// [`RubricCriterion`].
+    Criteria(Vec<RubricCriterion>),
+}
+
+impl Rubric {
+    /// This rubric's criteria as `(name, text)` pairs — `Single` yields one
+    /// unnamed criterion (`None` name); `Criteria` yields its declared list,
+    /// in the order it was declared, each carrying its own name.
+    pub fn criteria(&self) -> Vec<(Option<&str>, &str)> {
+        match self {
+            Rubric::Single(text) => vec![(None, text.as_str())],
+            Rubric::Criteria(criteria) => criteria
+                .iter()
+                .map(|c| (Some(c.name.as_str()), c.text.as_str()))
+                .collect(),
+        }
+    }
+}
+
+/// One named criterion within a [`Rubric::Criteria`] list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RubricCriterion {
+    /// Short, stable name for this criterion (e.g. `"correctness"`,
+    /// `"style"`) — labels its judge call in the run's trace and evidence,
+    /// so a per-criterion disagreement is inspectable by name, not just index.
+    pub name: String,
+    /// This criterion's rubric text, judged in isolation from every other
+    /// criterion in the same task (no shared context between the calls).
+    pub text: String,
+}
+
+/// How a task's per-criterion verdicts combine into one task verdict
+/// (backlog 952). Only `AllMustPass` exists today; weighted/partial-credit
+/// aggregation is the natural extension this enum leaves room for, not
+/// implemented — Anthropic's *Demystifying Evals* partial-credit guidance
+/// is the design reference when it lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CriteriaAggregation {
+    /// The task passes only if every criterion passes. If any criterion
+    /// fails, the task fails (decisively) regardless of the others. If none
+    /// fail but at least one is `Unknown`, the task is `Unknown` — "all
+    /// passed" cannot be confirmed, but nothing was contradicted either.
+    #[default]
+    AllMustPass,
+}
+
 /// One candidate output for the judge to score against a rubric.
 ///
 /// A task with `expected_pass: None` is a real candidate: the judge's verdict
@@ -381,9 +444,17 @@ pub struct AgenticJudgeTask {
     pub task_id: String,
     /// The candidate output the judge scores.
     pub candidate: String,
-    /// Task-specific rubric text, appended to the config's shared judge
-    /// framing for this call.
-    pub rubric: String,
+    /// Task-specific rubric, appended to the config's shared judge framing
+    /// for this call — either a single holistic string (back-compat) or a
+    /// named list of independently-judged criteria (backlog 952). See
+    /// [`Rubric`].
+    pub rubric: Rubric,
+    /// How this task's per-criterion verdicts combine into one task verdict
+    /// (backlog 952). Meaningless (but harmless) for [`Rubric::Single`],
+    /// which always has exactly one verdict to "aggregate". Defaults to
+    /// [`CriteriaAggregation::AllMustPass`].
+    #[serde(default)]
+    pub criteria_aggregation: CriteriaAggregation,
     /// Known ground truth for this task, when it has one. Present only for
     /// calibration probes/canaries; absent for real candidates being judged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -665,6 +736,75 @@ mod tests {
         let back: FixtureRef = serde_json::from_str("\"sha256:abc123\"").unwrap();
         assert_eq!(f, back);
         assert_eq!(back.hash(), "sha256:abc123");
+    }
+
+    #[test]
+    fn a_bare_json_string_rubric_deserializes_as_single_back_compat() {
+        let rubric: Rubric = serde_json::from_str(r#""Must be correct.""#).unwrap();
+        assert_eq!(rubric, Rubric::Single("Must be correct.".to_string()));
+        assert_eq!(
+            serde_json::to_string(&rubric).unwrap(),
+            r#""Must be correct.""#,
+            "a Single rubric round-trips as a bare string, not a tagged object"
+        );
+    }
+
+    #[test]
+    fn a_named_criteria_list_rubric_round_trips() {
+        let rubric = Rubric::Criteria(vec![
+            RubricCriterion {
+                name: "correctness".to_string(),
+                text: "The answer is factually correct.".to_string(),
+            },
+            RubricCriterion {
+                name: "style".to_string(),
+                text: "The answer follows house style.".to_string(),
+            },
+        ]);
+        let json = serde_json::to_string(&rubric).unwrap();
+        assert!(json.contains(r#""name":"correctness""#), "{json}");
+        let back: Rubric = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, rubric);
+    }
+
+    #[test]
+    fn rubric_criteria_yields_one_unnamed_criterion_for_single() {
+        let rubric = Rubric::Single("Must be correct.".to_string());
+        assert_eq!(rubric.criteria(), vec![(None, "Must be correct.")]);
+    }
+
+    #[test]
+    fn rubric_criteria_yields_the_declared_named_list_in_order() {
+        let rubric = Rubric::Criteria(vec![
+            RubricCriterion {
+                name: "correctness".to_string(),
+                text: "must be correct".to_string(),
+            },
+            RubricCriterion {
+                name: "style".to_string(),
+                text: "must be styled".to_string(),
+            },
+        ]);
+        assert_eq!(
+            rubric.criteria(),
+            vec![
+                (Some("correctness"), "must be correct"),
+                (Some("style"), "must be styled"),
+            ]
+        );
+    }
+
+    #[test]
+    fn criteria_aggregation_defaults_to_all_must_pass() {
+        let json = r#"{"task_id":"t1","candidate":"x","rubric":"y"}"#;
+        let task: AgenticJudgeTask = serde_json::from_str(json).unwrap();
+        assert_eq!(task.criteria_aggregation, CriteriaAggregation::AllMustPass);
+        assert!(
+            serde_json::to_string(&task)
+                .unwrap()
+                .contains(r#""criteria_aggregation":"all_must_pass""#),
+            "criteria_aggregation is always written (not an Option, no skip_serializing_if)"
+        );
     }
 
     #[test]

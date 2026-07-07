@@ -9,6 +9,81 @@
 .msk-bar,
 .msk-footer {
   width: min(var(--ae-measure-wide), 100% - 5rem);
+  box-sizing: border-box;
+}
+
+/* the hero screen (index.html only): one viewport, a faint fresco over
+   the paper ground, no page scroll. Header/footer/stage sit above the
+   image; .msk-hero-bg carries the per-project opacity as an inline style
+   so the fleet-wide lock (misty-step-936) keeps one shared layout with a
+   per-project image and alpha. */
+.msk-hero-screen {
+  position: relative;
+  background: var(--ae-surface);
+}
+
+.msk-hero-bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  z-index: 0;
+}
+
+.msk-hero-screen > .ae-bar,
+.msk-hero-screen > .ae-stage {
+  position: relative;
+  z-index: 1;
+}
+
+.msk-hero-stage {
+  flex: 1;
+  min-height: 0;
+  width: min(var(--ae-measure-wide), 100% - 5rem);
+  margin-inline: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding-block: var(--ae-space-7);
+  box-sizing: border-box;
+}
+
+/* Mural: copy on a frosted paper panel, anchored lower-left. */
+.msk-hero-panel {
+  display: grid;
+  gap: var(--ae-space-5);
+  max-width: 34rem;
+  background: color-mix(in srgb, var(--ae-surface) 85%, transparent);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--ae-line);
+  padding: var(--ae-space-6);
+  box-sizing: border-box;
+}
+
+.msk-hero-panel .ae-h {
+  margin-bottom: 0;
+}
+
+.msk-hero-panel .ae-button {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* the hero footer: mode toggle left, credit + GitHub glyph right —
+   modeled on mistystep.io's site-footer.tsx, not the utility ae-foot. */
+.msk-footer-credit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ae-space-2);
+}
+
+.msk-footer-gh {
+  display: inline-flex;
+  color: inherit;
+}
+
+.msk-footer-gh:hover {
+  color: var(--ae-ink);
 }
 
 .msk-actions {
@@ -31,6 +106,20 @@
   width: min(var(--ae-measure-wide), 100%);
   display: grid;
   gap: var(--ae-space-8);
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.msk-page > *,
+.msk-page pre {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.msk-page pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .msk-hero {
@@ -144,14 +233,61 @@
      "crowding" bug (aesthetic-910), confirmed by measuring the live
      bounding box at 390px. */
   .ae-wide .msk-bar,
-  .ae-wide .msk-footer {
-    width: min(var(--ae-measure), 100% - 2rem);
+  .ae-wide .msk-footer,
+  .ae-wide .msk-hero-stage,
+  .ae-wide .ae-stage {
+    width: calc(100vw - 2rem) !important;
+    max-width: calc(100vw - 2rem) !important;
+  }
+
+  .msk-bar,
+  .msk-footer {
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-items: start;
   }
 
   .msk-actions,
   .msk-nav {
     flex-wrap: wrap;
     gap: var(--ae-space-3);
+  }
+
+  .msk-nav {
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-content: start;
+    justify-items: start;
+    width: auto;
+    max-width: 100%;
+  }
+
+  .msk-page {
+    width: calc(100vw - 2rem) !important;
+    max-width: calc(100vw - 2rem) !important;
+  }
+
+  .msk-hero-panel {
+    width: calc(100vw - 3rem);
+    max-width: calc(100vw - 3rem);
+    padding: var(--ae-space-5);
+  }
+
+  .msk-footer-credit {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    min-width: 0;
+    max-width: calc(100vw - 2rem);
+    text-align: left;
+  }
+
+  .msk-page,
+  .msk-page p,
+  .msk-page li {
+    width: calc(100vw - 3rem) !important;
+    max-width: calc(100vw - 3rem) !important;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   .msk-gallery {

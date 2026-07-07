@@ -19,10 +19,10 @@ use anyhow::Context;
 use crucible_core::{
     agreement, cohen_kappa, findings_from_artifact, judge_licence_key, probe_drift, schema_valid,
     shares_model_family, to_key_findings, AgenticJudgeConfig, AgenticJudgeTask, AggregationMethod,
-    CalibrationRecord, CerberusReceiptTask, ConfusionMatrix, CorpusSpec, EvalSpec, ExpectedKey,
-    GraderKind, HarborRunConfig, HarborTaskSpec, IntervalMethod, KeyFinding, ModelProvider,
-    PromptBenchmarkTask, PromptExpectation, PromptModelConfig, ResourceEnvelope, RunnerKind,
-    RunnerSpec, Trace, TraceStep, CALIBRATION_RECORD_SCHEMA, TRACE_SCHEMA,
+    CalibrationRecord, CerberusReceiptTask, ConfusionMatrix, CorpusSpec, CriteriaAggregation,
+    EvalSpec, ExpectedKey, GraderKind, HarborRunConfig, HarborTaskSpec, IntervalMethod, KeyFinding,
+    ModelProvider, PromptBenchmarkTask, PromptExpectation, PromptModelConfig, ResourceEnvelope,
+    RunnerKind, RunnerSpec, Trace, TraceStep, CALIBRATION_RECORD_SCHEMA, TRACE_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -1284,22 +1284,27 @@ fn prompt_text_for_task(spec_path: &Path, task: &PromptBenchmarkTask) -> anyhow:
 /// final line, so the verdict must come last.
 const JUDGE_VERDICT_PROTOCOL: &str = "\n\nRespond with your reasoning first: a short paragraph explaining how the candidate does or does not meet the rubric. Do not rubber-stamp: a candidate that fails the rubric must get VERDICT: FAIL even if it is close. Use VERDICT: UNKNOWN only when the rubric and candidate genuinely do not give you enough information to decide — never guess a PASS or FAIL you are not confident in. End your response with exactly one line, and nothing after it, in the form `VERDICT: PASS`, `VERDICT: FAIL`, or `VERDICT: UNKNOWN`.";
 
-/// Build the judge's user prompt for one task: the rubric, an optional
-/// reference exemplar, and the candidate output. The reference — when
-/// present — is labeled as a known-perfect exemplar and never presented as
-/// the candidate being judged; *Evaluating Scoring Bias in LLM-as-a-Judge*
-/// (arXiv:2506.22316) found this reliably improves scoring accuracy across
-/// judges and normalizes skewed scoring tendencies.
+/// Build the judge's user prompt for one criterion's rubric text (backlog
+/// 952: one isolated call per criterion, so this takes the criterion's text
+/// directly rather than the whole task's [`crucible_core::Rubric`]), an
+/// optional reference exemplar, and the candidate output. The reference —
+/// when present — is labeled as a known-perfect exemplar and never presented
+/// as the candidate being judged; *Evaluating Scoring Bias in
+/// LLM-as-a-Judge* (arXiv:2506.22316) found this reliably improves scoring
+/// accuracy across judges and normalizes skewed scoring tendencies.
 ///
 /// `cosmetic_reorder` swaps the rubric/candidate section order without
 /// changing their content — used only by the format-sensitivity self-check
 /// (same paper: purely cosmetic prompt perturbations move scores in
 /// judge-specific directions) to probe whether that perturbation alone
 /// flips the judge's verdict.
-fn judge_user_prompt(task: &AgenticJudgeTask, cosmetic_reorder: bool) -> String {
-    let reference_block = task
-        .reference
-        .as_deref()
+fn judge_user_prompt(
+    candidate: &str,
+    rubric_text: &str,
+    reference: Option<&str>,
+    cosmetic_reorder: bool,
+) -> String {
+    let reference_block = reference
         .map(|reference| {
             format!(
                 "\n\nReference answer (a known-perfect exemplar for this rubric — NOT the candidate being judged):\n{reference}"
@@ -1307,15 +1312,9 @@ fn judge_user_prompt(task: &AgenticJudgeTask, cosmetic_reorder: bool) -> String 
         })
         .unwrap_or_default();
     if cosmetic_reorder {
-        format!(
-            "Candidate output:\n{}{reference_block}\n\nRubric:\n{}",
-            task.candidate, task.rubric
-        )
+        format!("Candidate output:\n{candidate}{reference_block}\n\nRubric:\n{rubric_text}")
     } else {
-        format!(
-            "Rubric:\n{}{reference_block}\n\nCandidate output:\n{}",
-            task.rubric, task.candidate
-        )
+        format!("Rubric:\n{rubric_text}{reference_block}\n\nCandidate output:\n{candidate}")
     }
 }
 
@@ -1423,6 +1422,11 @@ fn run_agentic_judge_with_client(
     let mut total_cost_usd = 0.0f64;
     let mut any_cost_recorded = false;
     let mut total_latency_ms: u64 = 0;
+    // Backlog 952: total isolated judge calls made for the main scoring
+    // dispatch (one per criterion per task) — `total_judge_calls -
+    // task_results.len()` is the run-level cost-delta signal, "how many
+    // extra calls did per-criterion dispatch cost versus one call per task."
+    let mut total_judge_calls: u64 = 0;
     // Ordered record of what actually happened, task by task (backlog 030):
     // a judge_call, its parsed verdict, and — for calibration tasks — the
     // agreement/mismatch/unknown check against `expected_pass`. This is what
@@ -1432,61 +1436,23 @@ fn run_agentic_judge_with_client(
     let mut trace_sequence: u64 = 0;
 
     for task in tasks {
-        let user_prompt = judge_user_prompt(task, false);
-        let started = Instant::now();
-        let response = model_client.complete(ModelRequest {
-            model: &config.model,
-            system_prompt: &judge_system_prompt,
-            user_prompt: &user_prompt,
-            max_output_units: None,
-            temperature: config.temperature,
-        })?;
-        let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-        total_latency_ms = total_latency_ms.saturating_add(latency_ms);
-        if let Some(cost) = response.cost_usd {
+        let outcome = dispatch_task_criteria(
+            model_client,
+            config,
+            &judge_system_prompt,
+            task,
+            &mut trace_steps,
+            &mut trace_sequence,
+        )?;
+        total_latency_ms = total_latency_ms.saturating_add(outcome.latency_ms);
+        if let Some(cost) = outcome.cost_usd {
             total_cost_usd += cost;
             any_cost_recorded = true;
         }
-        let verdict = parse_judge_verdict(&response.output).with_context(|| {
-            format!(
-                "agentic judge task {:?} returned an unparseable verdict",
-                task.task_id
-            )
-        })?;
-        let rubric_hash = stable_hash(&[&task.rubric]);
-        let verdict_str = match verdict {
-            JudgeVerdict::Pass => "pass",
-            JudgeVerdict::Fail => "fail",
-            JudgeVerdict::Unknown => "unknown",
-        };
-
-        push_trace_step(
-            &mut trace_steps,
-            &mut trace_sequence,
-            "judge_call",
-            &task.task_id,
-            serde_json::json!({
-                "model": config.model,
-                "rubric": task.rubric,
-                "candidate": task.candidate,
-                "latency_ms": latency_ms,
-                "cost_usd": response.cost_usd,
-                "response_id": response.response_id,
-            }),
-            None,
-        );
-        push_trace_step(
-            &mut trace_steps,
-            &mut trace_sequence,
-            "verdict_parsed",
-            &task.task_id,
-            serde_json::json!({
-                "raw_output": response.output,
-                "verdict": verdict_str,
-                "expected_pass": task.expected_pass,
-            }),
-            Some(verdict_str),
-        );
+        total_judge_calls += outcome.call_count;
+        let verdict = outcome.verdict;
+        let rubric_hash = outcome.rubric_hash;
+        let verdict_str = judge_verdict_str(verdict);
 
         match (task.expected_pass, verdict) {
             (Some(_), JudgeVerdict::Unknown) => {
@@ -1569,7 +1535,7 @@ fn run_agentic_judge_with_client(
 
         task_results.push(AgenticJudgeTaskResult {
             task_id: task.task_id.clone(),
-            prompt_hash: stable_hash(&[&judge_system_prompt, &user_prompt]),
+            prompt_hash: outcome.prompt_hash,
             rubric_hash,
             expected_pass: task.expected_pass,
             verdict: verdict_str,
@@ -1579,15 +1545,15 @@ fn run_agentic_judge_with_client(
             // as `false` here — the authoritative tri-state lives in
             // `verdict`, never re-derived from this field.
             passed: verdict == JudgeVerdict::Pass,
-            output: response.output,
-            latency_ms,
-            response_id: response.response_id,
+            output: outcome.output,
+            latency_ms: outcome.latency_ms,
+            response_id: outcome.response_id,
             requested_model: config.model.clone(),
-            response_model: response.response_model,
-            input_units: response.input_units,
-            output_units: response.output_units,
-            total_units: response.total_units,
-            cost_usd: response.cost_usd,
+            response_model: outcome.response_model,
+            input_units: outcome.input_units,
+            output_units: outcome.output_units,
+            total_units: outcome.total_units,
+            cost_usd: outcome.cost_usd,
         });
     }
 
@@ -1607,44 +1573,60 @@ fn run_agentic_judge_with_client(
     if config.format_sensitivity_check && !calibration_probe_items.is_empty() {
         let mut flips = 0u64;
         for (probe_task, original_verdict_bool) in &calibration_probe_items {
-            let probe_prompt = judge_user_prompt(probe_task, true);
-            let started = Instant::now();
-            let response = model_client.complete(ModelRequest {
-                model: &config.model,
-                system_prompt: &judge_system_prompt,
-                user_prompt: &probe_prompt,
-                max_output_units: None,
-                temperature: config.temperature,
-            })?;
-            let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-            total_latency_ms = total_latency_ms.saturating_add(latency_ms);
-            if let Some(cost) = response.cost_usd {
-                total_cost_usd += cost;
-                any_cost_recorded = true;
-            }
-            let probe_verdict = parse_judge_verdict(&response.output).with_context(|| {
-                format!(
-                    "format-sensitivity probe for task {:?} returned an unparseable verdict",
-                    probe_task.task_id
+            // Backlog 952: re-probe every criterion in isolation (same as the
+            // main dispatch, just cosmetically reordered) and reaggregate —
+            // the flip check has to compare the same kind of aggregated
+            // verdict on both sides, not a single call against an aggregate.
+            let mut probe_verdicts = Vec::new();
+            for (name, text) in probe_task.rubric.criteria() {
+                let (probe_outcome, _user_prompt) = dispatch_one_criterion(
+                    model_client,
+                    config,
+                    &judge_system_prompt,
+                    probe_task,
+                    text,
+                    true,
                 )
-            })?;
-            let flipped = probe_verdict.as_bool() != Some(*original_verdict_bool);
+                .with_context(|| {
+                    format!(
+                        "format-sensitivity probe for task {:?} failed",
+                        probe_task.task_id
+                    )
+                })?;
+                total_latency_ms = total_latency_ms.saturating_add(probe_outcome.latency_ms);
+                if let Some(cost) = probe_outcome.cost_usd {
+                    total_cost_usd += cost;
+                    any_cost_recorded = true;
+                }
+                let verdict_str = judge_verdict_str(probe_outcome.verdict);
+                push_trace_step(
+                    &mut trace_steps,
+                    &mut trace_sequence,
+                    "format_sensitivity_probe",
+                    &criterion_label(&probe_task.task_id, name),
+                    serde_json::json!({
+                        "cosmetic_reorder": true,
+                        "criterion": name,
+                        "raw_output": probe_outcome.output,
+                    }),
+                    Some(verdict_str),
+                );
+                probe_verdicts.push(probe_outcome.verdict);
+            }
+            let probe_aggregated =
+                aggregate_criteria_verdicts(probe_task.criteria_aggregation, &probe_verdicts);
+            let flipped = probe_aggregated.as_bool() != Some(*original_verdict_bool);
             push_trace_step(
                 &mut trace_steps,
                 &mut trace_sequence,
-                "format_sensitivity_probe",
+                "format_sensitivity_probe_result",
                 &probe_task.task_id,
                 serde_json::json!({
-                    "cosmetic_reorder": true,
-                    "raw_output": response.output,
                     "original_verdict": original_verdict_bool,
+                    "reprobed_verdict": judge_verdict_str(probe_aggregated),
                     "flipped": flipped,
                 }),
-                Some(match probe_verdict {
-                    JudgeVerdict::Pass => "pass",
-                    JudgeVerdict::Fail => "fail",
-                    JudgeVerdict::Unknown => "unknown",
-                }),
+                Some(if flipped { "flipped" } else { "stable" }),
             );
             if flipped {
                 flips += 1;
@@ -1694,7 +1676,22 @@ fn run_agentic_judge_with_client(
         drift_checked_at: unix_now_seconds()?,
     });
 
-    let call_count = task_results.len() as u64;
+    // Backlog 952: `call_count` is now the real number of isolated judge
+    // calls made for the main scoring dispatch (one per criterion per task,
+    // not one per task) — `task_count` is what `call_count` used to mean,
+    // kept so `multi_criterion_call_overhead` has something to subtract from.
+    let call_count = total_judge_calls;
+    let task_count = task_results.len() as u64;
+    let multi_criterion_call_overhead = call_count.saturating_sub(task_count);
+    // Assumes uniform per-call cost — the honest proportional estimate, not a
+    // re-measurement (per-criterion calls are shorter, so this is likely a
+    // slight overestimate, never an underestimate that would hide the cost
+    // this backlog's dispatch granularity spends). Computed here, not inline
+    // in `judge_stats`, because `judge_stats` moves into the evidence write
+    // before the run notes (below) need this same number.
+    let multi_criterion_cost_overhead_usd = any_cost_recorded.then(|| {
+        total_cost_usd * (multi_criterion_call_overhead as f64 / call_count.max(1) as f64)
+    });
     let judge_stats = JudgeRunStats {
         call_count,
         total_latency_ms,
@@ -1710,6 +1707,8 @@ fn run_agentic_judge_with_client(
         } else {
             (unknown_scored + unknown_calibration) as f64 / call_count as f64
         },
+        multi_criterion_call_overhead,
+        multi_criterion_cost_overhead_usd,
     };
 
     let score = wilson_score("judge_pass_rate", scored_successes, scored_n);
@@ -1764,6 +1763,16 @@ fn run_agentic_judge_with_client(
         notes.push(format!(
             "{unknown_scored} scored task(s) returned UNKNOWN and were excluded from the score's denominator rather than counted as pass or fail."
         ));
+    }
+    if multi_criterion_call_overhead > 0 {
+        notes.push(match multi_criterion_cost_overhead_usd {
+            Some(overhead_cost) => format!(
+                "Per-criterion dispatch (backlog 952) cost {multi_criterion_call_overhead} extra judge call(s) (~${overhead_cost:.4}) across {task_count} task(s) versus one call each — RubricEval (arXiv:2603.25133) found isolated per-criterion calls beat one call over the whole rubric by 7-12 balanced-accuracy points."
+            ),
+            None => format!(
+                "Per-criterion dispatch (backlog 952) cost {multi_criterion_call_overhead} extra judge call(s) across {task_count} task(s) versus one call each (no per-call cost was reported to price the delta) — RubricEval (arXiv:2603.25133) found isolated per-criterion calls beat one call over the whole rubric by 7-12 balanced-accuracy points."
+            ),
+        });
     }
     if self_evaluation_bias_risk {
         notes.push(format!(
@@ -1848,6 +1857,268 @@ fn parse_judge_verdict(output: &str) -> anyhow::Result<JudgeVerdict> {
             )
         }
     }
+}
+
+fn judge_verdict_str(verdict: JudgeVerdict) -> &'static str {
+    match verdict {
+        JudgeVerdict::Pass => "pass",
+        JudgeVerdict::Fail => "fail",
+        JudgeVerdict::Unknown => "unknown",
+    }
+}
+
+/// One criterion's label for a trace step: `"{task_id}:{criterion_name}"`
+/// when the criterion is named (a [`crucible_core::Rubric::Criteria`] entry),
+/// or bare `task_id` for [`crucible_core::Rubric::Single`] — so a
+/// single-criterion task's trace is byte-for-byte what it was before
+/// backlog 952.
+fn criterion_label(task_id: &str, criterion_name: Option<&str>) -> String {
+    match criterion_name {
+        Some(name) => format!("{task_id}:{name}"),
+        None => task_id.to_string(),
+    }
+}
+
+/// Aggregate a task's per-criterion verdicts into one task verdict, per its
+/// declared [`crucible_core::CriteriaAggregation`] (backlog 952). Only
+/// `AllMustPass` exists today: any `Fail` decisively fails the task; absent
+/// a `Fail`, any `Unknown` makes the task `Unknown` (can't confirm every
+/// criterion passed, but nothing was contradicted either); only when every
+/// criterion is a decisive `Pass` does the task pass.
+fn aggregate_criteria_verdicts(
+    rule: CriteriaAggregation,
+    verdicts: &[JudgeVerdict],
+) -> JudgeVerdict {
+    match rule {
+        CriteriaAggregation::AllMustPass => {
+            if verdicts.contains(&JudgeVerdict::Fail) {
+                JudgeVerdict::Fail
+            } else if verdicts.contains(&JudgeVerdict::Unknown) {
+                JudgeVerdict::Unknown
+            } else {
+                JudgeVerdict::Pass
+            }
+        }
+    }
+}
+
+/// The response model every criterion call agreed on, or `None` when they
+/// disagreed (or none was recorded) — the same "mixed = unknown" sentinel
+/// convention `crucible::run_store::provenance_model_version` uses for a
+/// whole run, applied here at the single-task granularity.
+fn uniform_response_model(response_models: &[Option<String>]) -> Option<String> {
+    let mut iter = response_models.iter();
+    let first = iter.next()?.clone()?;
+    if iter.all(|model| model.as_deref() == Some(first.as_str())) {
+        Some(first)
+    } else {
+        None
+    }
+}
+
+/// The outcome of one isolated judge call over one criterion (backlog 952's
+/// "one call per criterion" primitive). Carries everything a caller needs to
+/// both push its own trace step(s) (the two call sites — the main scoring
+/// dispatch and the format-sensitivity probe — use different trace step
+/// shapes) and roll the call into a task-level aggregate.
+struct CriterionCallOutcome {
+    verdict: JudgeVerdict,
+    output: String,
+    latency_ms: u64,
+    cost_usd: Option<f64>,
+    response_id: Option<String>,
+    response_model: Option<String>,
+    input_units: Option<u64>,
+    output_units: Option<u64>,
+    total_units: Option<u64>,
+}
+
+/// Make one isolated judge call over one criterion's rubric text — no shared
+/// context with any other criterion's call, per RubricEval's finding that
+/// isolated per-criterion calls beat one call over the whole rubric.
+/// Returns the outcome alongside the exact user prompt sent, for the
+/// caller's own prompt-hash bookkeeping.
+fn dispatch_one_criterion(
+    model_client: &dyn ModelClient,
+    config: &AgenticJudgeConfig,
+    judge_system_prompt: &str,
+    task: &AgenticJudgeTask,
+    criterion_text: &str,
+    cosmetic_reorder: bool,
+) -> anyhow::Result<(CriterionCallOutcome, String)> {
+    let user_prompt = judge_user_prompt(
+        &task.candidate,
+        criterion_text,
+        task.reference.as_deref(),
+        cosmetic_reorder,
+    );
+    let started = Instant::now();
+    let response = model_client.complete(ModelRequest {
+        model: &config.model,
+        system_prompt: judge_system_prompt,
+        user_prompt: &user_prompt,
+        max_output_units: None,
+        temperature: config.temperature,
+    })?;
+    let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    let verdict = parse_judge_verdict(&response.output).with_context(|| {
+        format!(
+            "agentic judge task {:?} returned an unparseable verdict",
+            task.task_id
+        )
+    })?;
+    Ok((
+        CriterionCallOutcome {
+            verdict,
+            output: response.output,
+            latency_ms,
+            cost_usd: response.cost_usd,
+            response_id: response.response_id,
+            response_model: response.response_model,
+            input_units: response.input_units,
+            output_units: response.output_units,
+            total_units: response.total_units,
+        },
+        user_prompt,
+    ))
+}
+
+/// The aggregated outcome of dispatching every one of a task's criteria
+/// (backlog 952) — one isolated call each, rolled up into the single
+/// verdict/cost/latency/evidence shape the rest of the runner already
+/// expects from "one task, one judge call". A task declaring
+/// [`crucible_core::Rubric::Single`] takes exactly the pre-952 path: one
+/// criterion, one call, this struct's fields identical to what the single
+/// call itself would have produced.
+struct TaskJudgeOutcome {
+    verdict: JudgeVerdict,
+    rubric_hash: String,
+    prompt_hash: String,
+    output: String,
+    response_id: Option<String>,
+    response_model: Option<String>,
+    input_units: Option<u64>,
+    output_units: Option<u64>,
+    total_units: Option<u64>,
+    cost_usd: Option<f64>,
+    latency_ms: u64,
+    /// Number of isolated judge calls this task actually made — `1` for
+    /// `Rubric::Single`, the criteria count for `Rubric::Criteria`. Feeds
+    /// the run-level `multi_criterion_call_overhead` cost-delta signal.
+    call_count: u64,
+}
+
+/// Dispatch every criterion in `task.rubric` as its own isolated judge call,
+/// pushing per-criterion `judge_call`/`verdict_parsed` trace steps (backlog
+/// 952's "per-criterion trace steps" requirement), then aggregate the
+/// results into one [`TaskJudgeOutcome`] the rest of `run_agentic_judge_with_client`
+/// consumes exactly as it consumed a single call's `ModelResponse` before
+/// this backlog.
+fn dispatch_task_criteria(
+    model_client: &dyn ModelClient,
+    config: &AgenticJudgeConfig,
+    judge_system_prompt: &str,
+    task: &AgenticJudgeTask,
+    trace_steps: &mut Vec<TraceStep>,
+    trace_sequence: &mut u64,
+) -> anyhow::Result<TaskJudgeOutcome> {
+    let criteria = task.rubric.criteria();
+    let mut verdicts = Vec::with_capacity(criteria.len());
+    let mut outputs = Vec::with_capacity(criteria.len());
+    let mut prompt_parts = Vec::with_capacity(criteria.len());
+    let mut rubric_parts = Vec::with_capacity(criteria.len());
+    let mut response_models = Vec::with_capacity(criteria.len());
+    let mut last_response_id = None;
+    let mut total_latency_ms = 0u64;
+    let mut total_cost_usd = 0.0f64;
+    let mut any_cost = false;
+    let (mut total_input, mut any_input) = (0u64, false);
+    let (mut total_output, mut any_output) = (0u64, false);
+    let (mut total_total, mut any_total) = (0u64, false);
+
+    for (name, text) in &criteria {
+        let (outcome, user_prompt) =
+            dispatch_one_criterion(model_client, config, judge_system_prompt, task, text, false)?;
+        total_latency_ms = total_latency_ms.saturating_add(outcome.latency_ms);
+        if let Some(cost) = outcome.cost_usd {
+            total_cost_usd += cost;
+            any_cost = true;
+        }
+        if let Some(units) = outcome.input_units {
+            total_input += units;
+            any_input = true;
+        }
+        if let Some(units) = outcome.output_units {
+            total_output += units;
+            any_output = true;
+        }
+        if let Some(units) = outcome.total_units {
+            total_total += units;
+            any_total = true;
+        }
+
+        let verdict_str = judge_verdict_str(outcome.verdict);
+        let label = criterion_label(&task.task_id, *name);
+        push_trace_step(
+            trace_steps,
+            trace_sequence,
+            "judge_call",
+            &label,
+            serde_json::json!({
+                "model": config.model,
+                "criterion": name,
+                "rubric": text,
+                "candidate": task.candidate,
+                "latency_ms": outcome.latency_ms,
+                "cost_usd": outcome.cost_usd,
+                "response_id": outcome.response_id,
+            }),
+            None,
+        );
+        push_trace_step(
+            trace_steps,
+            trace_sequence,
+            "verdict_parsed",
+            &label,
+            serde_json::json!({
+                "raw_output": outcome.output,
+                "verdict": verdict_str,
+                "expected_pass": task.expected_pass,
+            }),
+            Some(verdict_str),
+        );
+
+        outputs.push(match name {
+            Some(name) => format!("[{name}]\n{}", outcome.output),
+            None => outcome.output.clone(),
+        });
+        prompt_parts.push(user_prompt);
+        rubric_parts.push(format!("{}:{}", name.unwrap_or(""), text));
+        response_models.push(outcome.response_model.clone());
+        last_response_id = outcome.response_id.clone();
+        verdicts.push(outcome.verdict);
+    }
+
+    let verdict = aggregate_criteria_verdicts(task.criteria_aggregation, &verdicts);
+    let rubric_hash = stable_hash(&rubric_parts.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut prompt_hash_parts = vec![judge_system_prompt];
+    prompt_hash_parts.extend(prompt_parts.iter().map(String::as_str));
+    let prompt_hash = stable_hash(&prompt_hash_parts);
+
+    Ok(TaskJudgeOutcome {
+        verdict,
+        rubric_hash,
+        prompt_hash,
+        output: outputs.join("\n\n"),
+        response_id: last_response_id,
+        response_model: uniform_response_model(&response_models),
+        input_units: any_input.then_some(total_input),
+        output_units: any_output.then_some(total_output),
+        total_units: any_total.then_some(total_total),
+        cost_usd: any_cost.then_some(total_cost_usd),
+        latency_ms: total_latency_ms,
+        call_count: criteria.len() as u64,
+    })
 }
 
 /// Inputs to [`build_calibration_record`], bundled so the function reads as
@@ -2802,6 +3073,8 @@ struct AgenticJudgeEvidence<'a> {
 /// elsewhere.
 #[derive(Debug, Serialize)]
 struct JudgeRunStats {
+    /// Isolated judge calls made for the main scoring dispatch (backlog
+    /// 952: one per criterion per task, not one per task).
     call_count: u64,
     total_latency_ms: u64,
     mean_latency_ms: f64,
@@ -2809,6 +3082,17 @@ struct JudgeRunStats {
     total_cost_usd: Option<f64>,
     unknown_verdict_count: u64,
     failure_rate: f64,
+    /// `call_count` minus the task count — the extra judge calls incurred
+    /// purely from per-criterion dispatch (backlog 952's cost-delta
+    /// requirement). `0` when every task declares a single-string
+    /// [`crucible_core::Rubric::Single`] (one call each, unchanged from
+    /// pre-952 behavior).
+    multi_criterion_call_overhead: u64,
+    /// The same overhead in dollars, assuming uniform per-call cost:
+    /// `total_cost_usd * (overhead_calls / call_count)`. `None` when no cost
+    /// was recorded at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    multi_criterion_cost_overhead_usd: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3862,7 +4146,10 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct, well-reasoned answer.".to_string(),
-                rubric: "The answer must be correct and well-reasoned.".to_string(),
+                rubric: crucible_core::Rubric::Single(
+                    "The answer must be correct and well-reasoned.".to_string(),
+                ),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -3870,7 +4157,10 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "canary".to_string(),
                 candidate: "This answer is nonsense and ignores the question.".to_string(),
-                rubric: "The answer must be correct and well-reasoned.".to_string(),
+                rubric: crucible_core::Rubric::Single(
+                    "The answer must be correct and well-reasoned.".to_string(),
+                ),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(false),
                 refuse_on_mismatch: true,
                 reference: None,
@@ -3940,6 +4230,424 @@ mod tests {
         );
     }
 
+    // ---- backlog 952: per-criterion judge dispatch -------------------------
+
+    #[test]
+    fn agentic_judge_dispatches_one_isolated_call_per_named_criterion() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-per-criterion-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-per-criterion.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        let tasks = vec![AgenticJudgeTask {
+            task_id: "real-1".to_string(),
+            candidate: "42".to_string(),
+            rubric: crucible_core::Rubric::Criteria(vec![
+                crucible_core::RubricCriterion {
+                    name: "correctness".to_string(),
+                    text: "The answer's factual content is correct.".to_string(),
+                },
+                crucible_core::RubricCriterion {
+                    name: "style".to_string(),
+                    text: "The answer is formatted as JSON.".to_string(),
+                },
+            ]),
+            criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
+            expected_pass: None,
+            refuse_on_mismatch: false,
+            reference: None,
+        }];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec![
+            "Correct.\nVERDICT: PASS",
+            "Not JSON-formatted.\nVERDICT: FAIL",
+        ]);
+
+        let report = run_agentic_judge_with_client(
+            &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
+        )
+        .expect("agentic judge runs");
+
+        // Two isolated calls, not one holistic call over both criteria.
+        assert_eq!(
+            client.recorded_prompts().len(),
+            2,
+            "one isolated call per criterion, not one call over the whole rubric"
+        );
+        assert!(client.recorded_prompts()[0].contains("factual content is correct"));
+        assert!(!client.recorded_prompts()[0].contains("formatted as JSON"));
+        assert!(client.recorded_prompts()[1].contains("formatted as JSON"));
+        assert!(!client.recorded_prompts()[1].contains("factual content is correct"));
+
+        // AllMustPass: correctness passed, style failed -> task fails.
+        assert_eq!(report.score.successes, 0);
+        assert_eq!(report.score.n, 1);
+
+        let trace = std::fs::read_to_string(temp.join("agentic-judge-trace.json")).unwrap();
+        let trace: serde_json::Value = serde_json::from_str(&trace).unwrap();
+        let steps = trace["steps"].as_array().unwrap();
+        let labels: Vec<&str> = steps.iter().map(|s| s["label"].as_str().unwrap()).collect();
+        assert!(
+            labels.contains(&"real-1:correctness"),
+            "per-criterion trace steps are labeled with the criterion name: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"real-1:style"),
+            "per-criterion trace steps are labeled with the criterion name: {labels:?}"
+        );
+        // Two judge_call + two verdict_parsed steps for the one task.
+        let judge_call_steps = steps.iter().filter(|s| s["kind"] == "judge_call").count();
+        assert_eq!(judge_call_steps, 2);
+    }
+
+    #[test]
+    fn agentic_judge_single_string_rubric_still_makes_exactly_one_call() {
+        // Back-compat: a Rubric::Single task must not regress to more than
+        // one call, and its trace label must be bare (no criterion suffix).
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-single-rubric-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-single.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        let tasks = vec![AgenticJudgeTask {
+            task_id: "real-1".to_string(),
+            candidate: "A correct answer.".to_string(),
+            rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+            criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
+            expected_pass: None,
+            refuse_on_mismatch: false,
+            reference: None,
+        }];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec!["Correct.\nVERDICT: PASS"]);
+
+        run_agentic_judge_with_client(&spec, &runner, &spec_path, &temp, &config, &tasks, &client)
+            .expect("agentic judge runs");
+
+        assert_eq!(client.recorded_prompts().len(), 1);
+        let trace = std::fs::read_to_string(temp.join("agentic-judge-trace.json")).unwrap();
+        let trace: serde_json::Value = serde_json::from_str(&trace).unwrap();
+        let labels: Vec<&str> = trace["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["label"].as_str().unwrap())
+            .collect();
+        assert!(
+            labels.iter().all(|label| *label == "real-1"),
+            "a Single rubric's trace labels are bare task ids, no criterion suffix: {labels:?}"
+        );
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(
+            evidence["judge_stats"]["multi_criterion_call_overhead"], 0,
+            "a single-criterion task incurs zero per-criterion overhead"
+        );
+    }
+
+    #[test]
+    fn agentic_judge_all_must_pass_any_fail_fails_the_task_regardless_of_others() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-aggregate-fail-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-aggregate-fail.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        let tasks = vec![AgenticJudgeTask {
+            task_id: "real-1".to_string(),
+            candidate: "x".to_string(),
+            rubric: crucible_core::Rubric::Criteria(vec![
+                crucible_core::RubricCriterion {
+                    name: "a".to_string(),
+                    text: "criterion a".to_string(),
+                },
+                crucible_core::RubricCriterion {
+                    name: "b".to_string(),
+                    text: "criterion b".to_string(),
+                },
+                crucible_core::RubricCriterion {
+                    name: "c".to_string(),
+                    text: "criterion c".to_string(),
+                },
+            ]),
+            criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
+            expected_pass: None,
+            refuse_on_mismatch: false,
+            reference: None,
+        }];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        // a: pass, b: fail, c: pass -- one failure is enough to fail the task.
+        let client = QueuedModelClient::new(vec![
+            "ok\nVERDICT: PASS",
+            "not ok\nVERDICT: FAIL",
+            "ok\nVERDICT: PASS",
+        ]);
+
+        run_agentic_judge_with_client(&spec, &runner, &spec_path, &temp, &config, &tasks, &client)
+            .expect("agentic judge runs");
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["tasks"][0]["verdict"], "fail");
+    }
+
+    #[test]
+    fn agentic_judge_all_must_pass_unknown_without_a_fail_is_unknown() {
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-aggregate-unknown-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-aggregate-unknown.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        let tasks = vec![
+            // A second, decisive task -- the runner requires at least one
+            // scored task to resolve decisively; this test is about the
+            // aggregation rule on the FIRST task, not about that invariant.
+            AgenticJudgeTask {
+                task_id: "decisive".to_string(),
+                candidate: "y".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
+                expected_pass: None,
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "x".to_string(),
+                rubric: crucible_core::Rubric::Criteria(vec![
+                    crucible_core::RubricCriterion {
+                        name: "a".to_string(),
+                        text: "criterion a".to_string(),
+                    },
+                    crucible_core::RubricCriterion {
+                        name: "b".to_string(),
+                        text: "criterion b".to_string(),
+                    },
+                ]),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
+                expected_pass: None,
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        // decisive: pass. real-1's criteria -- a: pass, b: unknown -- no
+        // fail, but "all passed" cannot be confirmed.
+        let client = QueuedModelClient::new(vec![
+            "ok\nVERDICT: PASS",
+            "ok\nVERDICT: PASS",
+            "cannot tell\nVERDICT: UNKNOWN",
+        ]);
+
+        let report = run_agentic_judge_with_client(
+            &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
+        )
+        .expect("agentic judge runs");
+
+        assert_eq!(
+            report.score.n, 1,
+            "the decisive task scores; real-1's Unknown verdict is excluded"
+        );
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["tasks"][1]["task_id"], "real-1");
+        assert_eq!(evidence["tasks"][1]["verdict"], "unknown");
+    }
+
+    #[test]
+    fn agentic_judge_records_the_multi_criterion_call_overhead_and_cost_delta() {
+        let temp =
+            std::env::temp_dir().join(format!("crucible-judge-cost-delta-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-cost-delta.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let config = agentic_judge_config();
+        let tasks = vec![AgenticJudgeTask {
+            task_id: "real-1".to_string(),
+            candidate: "x".to_string(),
+            rubric: crucible_core::Rubric::Criteria(vec![
+                crucible_core::RubricCriterion {
+                    name: "a".to_string(),
+                    text: "criterion a".to_string(),
+                },
+                crucible_core::RubricCriterion {
+                    name: "b".to_string(),
+                    text: "criterion b".to_string(),
+                },
+                crucible_core::RubricCriterion {
+                    name: "c".to_string(),
+                    text: "criterion c".to_string(),
+                },
+            ]),
+            criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
+            expected_pass: None,
+            refuse_on_mismatch: false,
+            reference: None,
+        }];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        let client = QueuedModelClient::new(vec![
+            "ok\nVERDICT: PASS",
+            "ok\nVERDICT: PASS",
+            "ok\nVERDICT: PASS",
+        ]);
+
+        let report = run_agentic_judge_with_client(
+            &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
+        )
+        .expect("agentic judge runs");
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["judge_stats"]["call_count"], 3);
+        assert_eq!(
+            evidence["judge_stats"]["multi_criterion_call_overhead"], 2,
+            "3 calls for 1 task is 2 extra calls versus one call per task"
+        );
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("Per-criterion dispatch")
+                    && note.contains("extra judge call")),
+            "run output surfaces the judge-call cost delta in its notes: {:?}",
+            report.notes
+        );
+    }
+
+    #[test]
+    fn format_sensitivity_check_reaggregates_across_every_criterion_when_reprobing() {
+        // A multi-criterion calibration task: the format-sensitivity re-probe
+        // must redispatch EVERY criterion (isolated calls, cosmetically
+        // reordered) and reaggregate, not just re-probe one call.
+        let temp = std::env::temp_dir().join(format!(
+            "crucible-judge-format-sensitivity-multi-criterion-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let spec_path = temp.join("agentic-judge-fs-multi.json");
+        std::fs::write(&spec_path, "{}").expect("write placeholder spec path");
+
+        let spec = agentic_judge_spec();
+        let mut config = agentic_judge_config();
+        config.format_sensitivity_check = true;
+        let tasks = vec![
+            AgenticJudgeTask {
+                task_id: "real-1".to_string(),
+                candidate: "A correct answer.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
+                expected_pass: None,
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+            AgenticJudgeTask {
+                task_id: "calib-1".to_string(),
+                candidate: "x".to_string(),
+                rubric: crucible_core::Rubric::Criteria(vec![
+                    crucible_core::RubricCriterion {
+                        name: "a".to_string(),
+                        text: "criterion a".to_string(),
+                    },
+                    crucible_core::RubricCriterion {
+                        name: "b".to_string(),
+                        text: "criterion b".to_string(),
+                    },
+                ]),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
+                expected_pass: Some(true),
+                refuse_on_mismatch: false,
+                reference: None,
+            },
+        ];
+        let runner = RunnerSpec {
+            kind: RunnerKind::AgenticJudge,
+            corpus: CorpusSpec::AgenticJudge {
+                config: config.clone(),
+                tasks: tasks.clone(),
+            },
+        };
+        // Original scoring pass: real-1 passes; calib-1's two criteria both
+        // pass (aggregated PASS, matches expected_pass=true). Format-
+        // sensitivity re-probe (cosmetically reordered): criterion b flips to
+        // FAIL, so the reaggregated verdict flips to FAIL overall.
+        let client = QueuedModelClient::new(vec![
+            "real\nVERDICT: PASS",
+            "a agrees\nVERDICT: PASS",
+            "b agrees\nVERDICT: PASS",
+            "a still agrees\nVERDICT: PASS",
+            "b flips under reordering\nVERDICT: FAIL",
+        ]);
+
+        run_agentic_judge_with_client(&spec, &runner, &spec_path, &temp, &config, &tasks, &client)
+            .expect("agentic judge runs; format-sensitivity flips do not abort the run");
+
+        let evidence = std::fs::read_to_string(temp.join("agentic-judge-run.json")).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(
+            evidence["calibration"]["format_sensitivity_flip_rate"], 1.0,
+            "the reaggregated probe verdict (FAIL) disagrees with the original (PASS): {evidence}"
+        );
+        assert_eq!(evidence["calibration"]["format_sensitivity_n"], 1);
+    }
+
     #[test]
     fn agentic_judge_calibration_locks_below_the_agreement_threshold() {
         let temp = std::env::temp_dir().join(format!(
@@ -3959,7 +4667,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -3967,7 +4676,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "calib-agree".to_string(),
                 candidate: "Agrees with the judge.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
                 reference: None,
@@ -3975,7 +4685,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "calib-disagree-1".to_string(),
                 candidate: "Disagrees with the judge.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
                 reference: None,
@@ -3983,7 +4694,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "calib-disagree-2".to_string(),
                 candidate: "Also disagrees with the judge.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(false),
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4097,7 +4809,10 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct, well-reasoned answer.".to_string(),
-                rubric: "The answer must be correct and well-reasoned.".to_string(),
+                rubric: crucible_core::Rubric::Single(
+                    "The answer must be correct and well-reasoned.".to_string(),
+                ),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4105,7 +4820,10 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "canary".to_string(),
                 candidate: "This answer is nonsense and ignores the question.".to_string(),
-                rubric: "The answer must be correct and well-reasoned.".to_string(),
+                rubric: crucible_core::Rubric::Single(
+                    "The answer must be correct and well-reasoned.".to_string(),
+                ),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(false),
                 refuse_on_mismatch: true,
                 reference: None,
@@ -4157,7 +4875,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4165,7 +4884,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "calib-1".to_string(),
                 candidate: "Agrees.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4222,7 +4942,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4230,7 +4951,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "calib-1".to_string(),
                 candidate: "Agrees.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4280,7 +5002,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4288,7 +5011,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-2-ambiguous".to_string(),
                 candidate: "An underspecified answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4353,7 +5077,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4361,7 +5086,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "canary".to_string(),
                 candidate: "Nonsense.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(false),
                 refuse_on_mismatch: true,
                 reference: None,
@@ -4419,7 +5145,8 @@ mod tests {
         let tasks = vec![AgenticJudgeTask {
             task_id: "real-1".to_string(),
             candidate: "A correct answer.".to_string(),
-            rubric: "Must be correct.".to_string(),
+            rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+            criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
             expected_pass: None,
             refuse_on_mismatch: false,
             reference: None,
@@ -4459,7 +5186,8 @@ mod tests {
         let tasks = vec![AgenticJudgeTask {
             task_id: "real-1".to_string(),
             candidate: "A partially correct answer.".to_string(),
-            rubric: "Must fully answer the question.".to_string(),
+            rubric: crucible_core::Rubric::Single("Must fully answer the question.".to_string()),
+            criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
             expected_pass: None,
             refuse_on_mismatch: false,
             reference: Some("The known-perfect answer text.".to_string()),
@@ -4511,7 +5239,8 @@ mod tests {
         let tasks = vec![AgenticJudgeTask {
             task_id: "real-1".to_string(),
             candidate: "An answer.".to_string(),
-            rubric: "Must be correct.".to_string(),
+            rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+            criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
             expected_pass: None,
             refuse_on_mismatch: false,
             reference: None,
@@ -4554,7 +5283,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4562,7 +5292,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "calib-1".to_string(),
                 candidate: "Agrees.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4623,7 +5354,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4631,7 +5363,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "calib-1".to_string(),
                 candidate: "Agrees.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4679,7 +5412,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4687,7 +5421,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "calib-1".to_string(),
                 candidate: "Agrees.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4738,7 +5473,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4746,7 +5482,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "calib-1".to_string(),
                 candidate: "Agrees.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4841,7 +5578,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4849,7 +5587,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "calib-1".to_string(),
                 candidate: "Agrees.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: Some(true),
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4910,7 +5649,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-1".to_string(),
                 candidate: "A correct answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -4918,7 +5658,8 @@ mod tests {
             AgenticJudgeTask {
                 task_id: "real-2-ambiguous".to_string(),
                 candidate: "An underspecified answer.".to_string(),
-                rubric: "Must be correct.".to_string(),
+                rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+                criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
                 expected_pass: None,
                 refuse_on_mismatch: false,
                 reference: None,
@@ -5024,7 +5765,8 @@ mod tests {
         let tasks = vec![AgenticJudgeTask {
             task_id: "real-1".to_string(),
             candidate: "A correct answer.".to_string(),
-            rubric: "Must be correct.".to_string(),
+            rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+            criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
             expected_pass: None,
             refuse_on_mismatch: false,
             reference: None,
@@ -5080,7 +5822,8 @@ mod tests {
         let tasks = vec![AgenticJudgeTask {
             task_id: "real-1".to_string(),
             candidate: "A correct answer.".to_string(),
-            rubric: "Must be correct.".to_string(),
+            rubric: crucible_core::Rubric::Single("Must be correct.".to_string()),
+            criteria_aggregation: crucible_core::CriteriaAggregation::AllMustPass,
             expected_pass: None,
             refuse_on_mismatch: false,
             reference: None,

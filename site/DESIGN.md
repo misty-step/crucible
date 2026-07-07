@@ -6,18 +6,31 @@ inventing a second design system.
 
 ## Brand Voice
 
-- Rigorous and statistically honest, skeptical of hype: mirror the README's
-  own register, "refuse to report a delta it cannot defend."
-- Lead with the noise-floor refusal itself, then the mechanics (Wilson
-  intervals, calibration, canaries) that make the refusal credible.
+- Rigorous and statistically honest, skeptical of hype.
+- Lead with the locked public tagline, then support it with concrete mechanics
+  on the features page only: Wilson intervals, calibration, canaries, and
+  noise-floor verdicts.
 - No marketing fog. No "AI-powered" filler. State exactly what a rate does
   and does not prove.
 - Show the boring case (`inside_noise_floor`, empty ledger) as proudly as the
   exciting one — an eval tool that only shows wins is not trustworthy.
 
-## Pitch One-Liner
+## Fleet Site Lock
 
-`Crucible is the eval and benchmark workbench that refuses to report a delta it cannot defend — every rate carries a confidence interval, and rank gaps inside the noise floor come back inconclusive, not a winner.`
+- Lock: operator lock-in 2026-07-07, `misty-step-936`.
+- Homepage H1, exact: `Design evals. Discover winners.`
+- Layout: Mural.
+- Homepage structure: one full-viewport hero only, no scroll.
+- Hero image: `site/assets/hero.jpg`, copied from the locked production asset
+  `crucible-hero.jpg`; generated with `gpt-image-1` in the Misty Step fresco
+  language.
+- Hero opacity: `0.35`.
+- Hero copy: frosted paper panel anchored lower-left; panel contains only the
+  H1 and `Get started` CTA.
+- Header nav: `features`, `get started`, `changelog`, `github`.
+- Footer: mode toggle on the left; right side reads `a Misty Step project`
+  with `Misty Step` linked to `https://mistystep.io`, followed by an inline
+  GitHub glyph linked to `https://github.com/misty-step/crucible`.
 
 ## Lucide Mark
 
@@ -55,15 +68,15 @@ five-task benchmark run against two real OpenRouter models
 
 | File                                            | Surface                    | State                                                     | Caption                                                              |
 | ------------------------------------------------ | --------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------- |
-| `site/assets/screenshots/01-noise-floor-verdict.png` | Comparison view             | Live paired McNemar result, `inside_noise_floor`          | The pitch, live: a real score gap that Crucible refuses to call a win. |
+| `site/assets/screenshots/01-noise-floor-verdict.png` | Comparison view             | Live paired McNemar result, `inside_noise_floor`          | The proof surface: a real score gap reported as inconclusive.          |
 | `site/assets/screenshots/02-benchmark-library.png`   | Benchmarks list (home view) | Real specs from `evals/`, one card showing a stored result | The declared benchmark library, not a demo dataset.                   |
 | `site/assets/screenshots/03-run-receipt.png`         | Receipts / run detail       | Stored run with per-task pass/fail and Wilson range         | The audit trail: every task's verdict, latency, and cost.             |
 
 ## Footer Links
 
 - Misty Step: `https://mistystep.io`
-- GitHub: omitted — `misty-step/crucible` is a private repository; add this
-  link back only after the repo goes public.
+- GitHub: `https://github.com/misty-step/crucible` — the repo is public as of
+  2026-07-06, so the old private-repo waiver is removed.
 - Weave: omitted — Crucible is not a Weave-family product surface.
 
 ## Release Notes Rule
