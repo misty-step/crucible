@@ -422,6 +422,37 @@ pub struct HarborRunConfig {
     /// Defaults to Harbor's own task-level 600s timeout when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_timeout_ms: Option<u64>,
+    /// The sandbox's declared [`ResourceEnvelope`] (backlog 974). `None`
+    /// when the corpus author never declared one — `compare_configs`
+    /// (`crucible::run_store`) treats a comparison as infra-uncontrolled in
+    /// that case, not as "no infra effect possible."
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_envelope: Option<ResourceEnvelope>,
+}
+
+/// A declared resource envelope for an env-backed runner (backlog 974).
+/// Anthropic's infrastructure-noise finding (Feb 2026) found container
+/// CPU/RAM headroom-vs-limit configuration ALONE produced a 6
+/// percentage-point swing (p<0.01) on Terminal-Bench 2.0 — larger than the
+/// gap between top models. Integer fields only (millicores, not fractional
+/// cores; a percentage, not a raw ratio) so this type stays `Eq`-comparable
+/// like the rest of the declarative spec surface — `compare_configs` needs
+/// exact equality, not fuzzy numeric comparison, to decide "these two runs'
+/// envelopes matched."
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceEnvelope {
+    /// CPU allocation in millicores (`1000` = one core). `None` when
+    /// undeclared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_millicores: Option<u32>,
+    /// Memory limit in megabytes. `None` when undeclared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u64>,
+    /// Requested-vs-limit headroom, as a percentage of the configured hard
+    /// limit (e.g. `50` means the sandbox requests half of its limit) — the
+    /// specific axis Anthropic's finding isolated. `None` when undeclared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headroom_percent: Option<u32>,
 }
 
 /// One Harbor task directory to execute (backlog/Powder crucible-034).
@@ -871,6 +902,7 @@ mod tests {
                 agent: "oracle".to_string(),
                 model: None,
                 job_timeout_ms: None,
+                resource_envelope: None,
             },
             tasks: vec![HarborTaskSpec {
                 task_id: "crucible-smoke".to_string(),
@@ -896,6 +928,11 @@ mod tests {
             agent: "claude-code".to_string(),
             model: Some("anthropic/claude-opus-4".to_string()),
             job_timeout_ms: Some(120_000),
+            resource_envelope: Some(ResourceEnvelope {
+                cpu_millicores: Some(2000),
+                memory_mb: Some(4096),
+                headroom_percent: Some(50),
+            }),
         };
         let json = serde_json::to_string(&config).unwrap();
         assert!(
@@ -903,6 +940,9 @@ mod tests {
             "{json}"
         );
         assert!(json.contains(r#""job_timeout_ms":120000"#), "{json}");
+        assert!(json.contains(r#""cpu_millicores":2000"#), "{json}");
+        assert!(json.contains(r#""memory_mb":4096"#), "{json}");
+        assert!(json.contains(r#""headroom_percent":50"#), "{json}");
         let back: HarborRunConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back, config);
     }
@@ -913,6 +953,7 @@ mod tests {
         let config: HarborRunConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.model, None);
         assert_eq!(config.job_timeout_ms, None);
+        assert_eq!(config.resource_envelope, None);
     }
 
     #[test]

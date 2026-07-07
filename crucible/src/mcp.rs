@@ -449,7 +449,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "crucible_runs_compare",
-            "description": "Compare the latest stored runs for two configs or model slugs under one benchmark. When both runs share prompt task fixtures the result is a paired McNemar outcome; otherwise it is a descriptive latest-run delta that makes no significance claim. When the paired verdict is a statistical signal, set include_findings and/or findings_out to also mint a crucible.findings_journal.v1 record — the same defensible-finding computation crucible runs compare --findings-out performs. Unpaired and inside-noise-floor comparisons always mint zero finding records.",
+            "description": "Compare the latest stored runs for two configs or model slugs under one benchmark. When both runs share prompt task fixtures the result is a paired McNemar outcome; otherwise it is a descriptive latest-run delta that makes no significance claim. Every response carries an attribution label (model_delta/harness_delta/config_delta) derived from the actual identity diff between the two resolved runs -- config_delta means the delta spans more than one axis and is unattributable to any single one; set strict to refuse such comparisons outright instead of rendering them with a caveat. When the paired verdict is a statistical signal, set include_findings and/or findings_out to also mint a crucible.findings_journal.v1 record — the same defensible-finding computation crucible runs compare --findings-out performs. Unpaired and inside-noise-floor comparisons always mint zero finding records.",
             "inputSchema": {
                 "type": "object",
                 "required": ["benchmark", "left", "right"],
@@ -483,6 +483,11 @@ fn tool_defs() -> Value {
                     "findings_out": {
                         "type": "string",
                         "description": "Also write the findings journal JSON to this path, exactly like crucible runs compare --findings-out. Implies include_findings."
+                    },
+                    "strict": {
+                        "type": "boolean",
+                        "description": "Refuse (rather than caveat) a comparison spanning more than one identity axis (model, harness, tool_allowlist, scoring) at once -- backlog 974's axis-mismatch guard. Defaults to false.",
+                        "default": false
                     }
                 }
             }
@@ -918,6 +923,10 @@ struct RunsCompareArgs {
     #[serde(default)]
     include_findings: bool,
     findings_out: Option<PathBuf>,
+    /// Refuse (rather than caveat) a comparison spanning more than one
+    /// identity axis at once (backlog 974). Defaults to `false`.
+    #[serde(default)]
+    strict: bool,
 }
 
 fn default_alpha() -> f64 {
@@ -935,8 +944,14 @@ fn crucible_runs_compare(arguments: Value) -> Result<Value> {
     let db = args
         .db
         .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
-    let comparison =
-        run_store::compare_configs(&db, &args.benchmark, &args.left, &args.right, args.alpha)?;
+    let comparison = run_store::compare_configs(
+        &db,
+        &args.benchmark,
+        &args.left,
+        &args.right,
+        args.alpha,
+        args.strict,
+    )?;
 
     let mut structured = serde_json::to_value(&comparison).context("serializing comparison")?;
     if args.include_findings || args.findings_out.is_some() {

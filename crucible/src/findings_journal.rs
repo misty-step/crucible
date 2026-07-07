@@ -26,6 +26,15 @@ pub struct FindingRecord {
     pub schema_version: &'static str,
     pub id: String,
     pub kind: &'static str,
+    /// The comparison's attribution label (backlog 974:
+    /// `ConfigComparison::attribution`) — `"model_delta"`/`"harness_delta"`
+    /// when the delta is attributable to one axis, `"config_delta"` when it
+    /// is not. A finding only ever mints from a comparison with a real
+    /// `paired` verdict, but `comparison_type` still matters downstream
+    /// (Threshold, retros): a consumer must not read a `config_delta`
+    /// finding as "config X beat config Y" without the same caveat this
+    /// journal's source comparison carried.
+    pub comparison_type: &'static str,
     pub hypothesis: String,
     pub benchmark: String,
     pub left: FindingRunRef,
@@ -160,6 +169,7 @@ fn finding_from_comparison(
         schema_version: FINDING_RECORD_SCHEMA,
         id: finding_id(comparison, &left.run_id, &right.run_id),
         kind: "eval_delta",
+        comparison_type: comparison.attribution,
         hypothesis: format!(
             "{} outperforms {} on {} by {:.4}",
             display_run(&stronger),
@@ -283,6 +293,10 @@ mod tests {
         let finding = &journal.findings[0];
         assert_eq!(finding.schema_version, FINDING_RECORD_SCHEMA);
         assert_eq!(finding.kind, "eval_delta");
+        assert_eq!(
+            finding.comparison_type, "model_delta",
+            "backlog 974: the finding carries the comparison's attribution label"
+        );
         assert_eq!(finding.benchmark, "prompt-smoke-v0");
         assert_eq!(finding.stronger.query, "test/model-b");
         assert_eq!(finding.delta.method, "paired_shared_task_rate_delta");
@@ -301,6 +315,24 @@ mod tests {
             .hypothesis
             .contains("test/model-b outperforms test/model-a"));
         assert_eq!(finding.repro_command, "crucible runs compare --json");
+    }
+
+    #[test]
+    fn a_finding_from_a_multi_axis_comparison_carries_config_delta() {
+        // A signal can still arise on an unattributable (config_delta)
+        // comparison -- the finding must say so, not silently look like a
+        // clean model_delta.
+        let mut comparison = comparison_with_verdict(DeltaVerdict::Signal);
+        comparison.attribution = "config_delta";
+        comparison.attribution_note =
+            Some("Unattributable to any single axis: model, harness differ".to_string());
+
+        let journal = journal_from_comparison(
+            &comparison,
+            0.05,
+            "crucible runs compare --json".to_string(),
+        );
+        assert_eq!(journal.findings[0].comparison_type, "config_delta");
     }
 
     #[test]
@@ -429,6 +461,9 @@ mod tests {
             comparison_kind: "paired_mcnemar",
             note: "Paired McNemar comparison over prompt tasks common to both runs; see paired.verdict for the noise-floor decision.",
             response_model_drift_warning: None,
+            attribution: "model_delta",
+            attribution_note: None,
+            resource_envelope_caveat: None,
         }
     }
 
@@ -468,6 +503,8 @@ mod tests {
             tool_allowlist: Vec::new(),
             trusted: true,
             response_model: String::new(),
+            scoring_id: String::new(),
+            resource_envelope: None,
         }
     }
 }

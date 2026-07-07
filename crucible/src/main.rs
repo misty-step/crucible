@@ -449,6 +449,12 @@ enum RunsCommand {
         /// only when this comparison's paired verdict is a statistical signal.
         #[arg(long, value_name = "PATH")]
         findings_out: Option<PathBuf>,
+        /// Refuse (rather than caveat) a comparison spanning more than one
+        /// identity axis (model, harness, tool_allowlist, scoring) at once —
+        /// backlog 974's axis-mismatch guard (SWE-bench-Lite: harness alone
+        /// swung 2.7%->28.3% for the same model).
+        #[arg(long)]
+        strict: bool,
         /// Emit stable JSON instead of a readable table.
         #[arg(long)]
         json: bool,
@@ -784,9 +790,11 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             right,
             alpha,
             findings_out,
+            strict,
             json,
         } => {
-            let comparison = run_store::compare_configs(&db, &benchmark, &left, &right, alpha)?;
+            let comparison =
+                run_store::compare_configs(&db, &benchmark, &left, &right, alpha, strict)?;
             let findings_receipt = if let Some(path) = findings_out.as_deref() {
                 let repro_command =
                     runs_compare_repro_command(&db, &benchmark, &left, &right, alpha);
@@ -960,6 +968,13 @@ fn print_config_comparison(comparison: &run_store::ConfigComparison) {
         None => println!("  delta     n/a"),
     }
     println!("  kind      {}", comparison.comparison_kind);
+    println!("  attrib    {}", comparison.attribution);
+    if let Some(note) = &comparison.attribution_note {
+        println!("  {note}");
+    }
+    if let Some(caveat) = &comparison.resource_envelope_caveat {
+        println!("  {caveat}");
+    }
     if let Some(paired) = &comparison.paired {
         println!(
             "  paired    n={}  b={}  c={}  chi2={:.4}  p={:.4}  {}",

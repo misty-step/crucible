@@ -386,7 +386,10 @@ fn compare_query_response(
         None => run_store::DEFAULT_ALPHA,
     };
 
-    let comparison = run_store::compare_configs(db_path, benchmark, left, right, alpha)?;
+    // The dashboard is a read-only view: never refuse a multi-axis
+    // comparison outright (backlog 974's `strict`), always render it with
+    // its `attribution`/`attribution_note` caveat visible instead.
+    let comparison = run_store::compare_configs(db_path, benchmark, left, right, alpha, false)?;
     let findings_journal =
         findings_journal_for(db_path, benchmark, left, right, alpha, &comparison);
     Ok(CompareResponse {
@@ -1303,7 +1306,7 @@ fn run_controlled_comparison(
                     .map(|eval| eval.id.as_str())
             })
             .with_context(|| "first runner produced no benchmark id")?;
-        match run_store::compare_configs(db_path, benchmark, left, right, alpha) {
+        match run_store::compare_configs(db_path, benchmark, left, right, alpha, false) {
             Ok(comparison) => {
                 let findings_journal =
                     findings_journal_for(db_path, benchmark, left, right, alpha, &comparison);
