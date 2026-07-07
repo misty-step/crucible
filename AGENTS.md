@@ -85,7 +85,25 @@
   neither side declared one and the delta is small enough that Anthropic's
   Feb 2026 infrastructure-noise finding (container CPU/RAM headroom-vs-limit
   alone produced a 6pp swing on Terminal-Bench 2.0) could plausibly explain
-  it. The agentic-judge runner also
+  it. `AgenticJudgeTask.rubric` (`crucible_core::Rubric`) is either a single
+  holistic string (back-compat) or a named `Criteria` list, each judged by
+  its own isolated call (`crucible-952`) — RubricEval (arXiv:2603.25133)
+  found isolated per-criterion calls beat one call over the whole rubric by
+  7-12 balanced-accuracy points and roughly halve inter-judge variance. Task
+  verdict aggregates per-criterion verdicts by `criteria_aggregation`
+  (`AllMustPass` today: any `Fail` decisively fails the task, an `Unknown`
+  without a `Fail` is `Unknown`); trace steps and evidence carry per-criterion
+  labels (`"{task_id}:{criterion_name}"`); the format-sensitivity self-check
+  redispatches and reaggregates every criterion when reprobing. `judge_stats`
+  reports `multi_criterion_call_overhead`/`_cost_overhead_usd` — the extra
+  calls (and their dollar cost) versus one call per task — surfaced in the
+  run's notes. Live evidence (`anthropic/claude-haiku-4.5`, 8-task
+  code-review-comment-quality calibration set): per-criterion agreement
+  (1.00) >= checklist-mode agreement (1.00) on this family, with per-criterion
+  dispatch additionally isolating exactly which criterion failed per task
+  (e.g. a vague-fix task's trace shows `identifies_real_issue: pass`,
+  `actionable_fix: fail`) — attribution a single holistic verdict cannot give
+  regardless of judge quality. The agentic-judge runner also
   persists a `Trace` (`crucible-core::trace`, `backlog.d/030-*`) — an ordered
   judge_call/verdict_parsed/calibration_check step sequence pointed to from
   `run_records.trace_path` and surfaced via `runs list/show`/MCP the same way
