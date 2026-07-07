@@ -114,6 +114,7 @@ use serde::Serialize;
 mod adjudication_panel;
 mod adjudication_server;
 mod author;
+mod canary;
 mod dashboard_html;
 mod doctor;
 mod eval_run;
@@ -519,6 +520,9 @@ fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(err) => err.exit(),
     };
+    // Fire as early as possible so every invocation is observed, even one
+    // that fails deep inside a subcommand below.
+    canary::check_in();
     let result = match cli.command {
         Command::Adapt { artifact, json } => run_adapt(&artifact, json),
         Command::Grade {
@@ -591,13 +595,18 @@ fn main() -> ExitCode {
         },
         Command::Doctor { json } => run_doctor(json),
     };
-    match result {
+    let exit = match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err:#}");
+            canary::report_error("crucible.run.failed", &format!("{err:#}"));
             ExitCode::from(EXIT_LOAD_ERROR)
         }
-    }
+    };
+    // Give the check-in and/or error report a bounded window to reach the
+    // network before this short-lived process exits.
+    canary::flush();
+    exit
 }
 
 /// `crucible run`: execute a declared spec when supplied, otherwise run built-in
