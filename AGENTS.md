@@ -38,7 +38,24 @@
   optional known-perfect exemplar labeled as such (never as the candidate);
   `AgenticJudgeConfig.format_sensitivity_check` (opt-in) re-probes every
   decisive calibration item with a cosmetically reordered prompt and records
-  the flip rate as `CalibrationRecord.format_sensitivity_flip_rate`/`_n`. The agentic-judge runner also
+  the flip rate as `CalibrationRecord.format_sensitivity_flip_rate`/`_n`.
+  `CalibrationRecord` v2 (`crucible-970`) adds fail-class precision/recall
+  (`fail_class_precision`/`_recall`, the minority-class metric a bare Cohen's
+  κ hides), a `task_family` axis folded into `judge_licence_key` (bumped
+  `v1`→`v2`) so a licence earned on one task family cannot silently cover
+  another, an opt-in cross-run drift check (`probe_drift`,
+  `AgenticJudgeConfig.previous_evidence_path`) distinct from the within-run
+  format-sensitivity self-check, and `expected_verdicts_from_labels` — a
+  documented Keep/Nit→pass, Wrong/Noise→fail mapping so blind
+  `crucible.label.v1` judgments can source calibration ground truth alongside
+  a spec's declared `expected_pass`. The calibration gate this record measures
+  is structural, not a note string (`crucible-971`): every persisted run
+  carries `run_records.trusted` (`true` unless it is a locked/unmeasured
+  `agentic_judge` run), and `runs compare` refuses — `comparison_kind:
+  "untrusted_run_refused"`, `paired`/`resolution` left `None` — any
+  comparison naming an untrusted run, which makes a Signal
+  `crucible.finding.v1` from a locked judge structurally impossible (the
+  findings journal derives every finding from `paired`). The agentic-judge runner also
   persists a `Trace` (`crucible-core::trace`, `backlog.d/030-*`) — an ordered
   judge_call/verdict_parsed/calibration_check step sequence pointed to from
   `run_records.trace_path` and surfaced via `runs list/show`/MCP the same way

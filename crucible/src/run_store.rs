@@ -131,6 +131,17 @@ pub struct StoredRun {
     /// Empty for runs whose evidence predates the field or declared none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_allowlist: Vec<String>,
+    /// Whether this run's score may back a trusted comparison or
+    /// findings-journal signal (backlog 971). `true` for every runner kind
+    /// the calibration gate does not apply to (`key_recall`,
+    /// `prompt_benchmark`, `harbor_task`). For `agentic_judge`, `true` only
+    /// when the run's `CalibrationRecord.unlocked` was `true`; a run with no
+    /// calibration tasks at all is untrusted (diagnostic, not licensed) —
+    /// the same "locked/unlicensed until measured" default
+    /// [`crucible_core::judge_licence_key`] uses. `true` by default for runs
+    /// persisted before this field existed (`DEFAULT 1` on migration): an
+    /// older ledger predates the gate and is not retroactively distrusted.
+    pub trusted: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -365,7 +376,7 @@ fn resolve_power(paired: &McnemarOutcome, n: usize, alpha: f64) -> PowerResoluti
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct EvidenceMetadata {
     runner_kind: Option<String>,
     config_id: Option<String>,
@@ -394,6 +405,34 @@ struct EvidenceMetadata {
     /// [`crucible_core::judge_licence_key`], not recomputed from scratch and
     /// discarded each run.
     judge_licence: Option<JudgeLicenceInsert>,
+    /// [`StoredRun::trusted`] (backlog 971): `true` unless this evidence is an
+    /// `agentic_judge` run whose `calibration` was missing or
+    /// `unlocked: false`. Set in [`EvidenceMetadata::default`] and only ever
+    /// overridden downward by `merge_prompt_metadata` for a judge run — a run
+    /// with no judge evidence at all never has a reason to distrust itself.
+    trusted: bool,
+}
+
+impl Default for EvidenceMetadata {
+    fn default() -> Self {
+        EvidenceMetadata {
+            runner_kind: None,
+            config_id: None,
+            provider: None,
+            model: None,
+            evidence_path: None,
+            spec_path: None,
+            trace_path: None,
+            temperature: None,
+            max_output_units: None,
+            harness: None,
+            tool_allowlist: None,
+            prompt_tasks: Vec::new(),
+            harbor_tasks: Vec::new(),
+            judge_licence: None,
+            trusted: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -539,10 +578,10 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric, successes,
                 n, point, lower, upper, confidence, score_method, eval_json,
-                harness, tool_allowlist, trace_path
+                harness, tool_allowlist, trace_path, trusted
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
             )",
             params![
                 run_id,
@@ -570,7 +609,8 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 eval_json,
                 metadata.harness,
                 metadata.tool_allowlist,
-                metadata.trace_path
+                metadata.trace_path,
+                metadata.trusted
             ],
         )
         .with_context(|| format!("inserting run record for {}", eval.id))?;
@@ -823,7 +863,7 @@ pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
-                harness, tool_allowlist, trace_path
+                harness, tool_allowlist, trace_path, trusted
              FROM run_records
              WHERE (?1 IS NULL OR benchmark_id = ?1)
                AND (?2 IS NULL OR config_id = ?2)
@@ -876,7 +916,7 @@ pub fn show_run(db_path: &Path, run_id: &str) -> Result<RunDetail> {
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
-                harness, tool_allowlist, trace_path
+                harness, tool_allowlist, trace_path, trusted
              FROM run_records
              WHERE run_id = ?1",
             params![run_id],
@@ -1009,6 +1049,31 @@ pub fn compare_configs(
     let right_run = latest_for_config(&conn, benchmark, right).with_context(|| {
         format!("no run found for benchmark {benchmark:?} and config/model {right:?}")
     })?;
+
+    // Backlog 971: a LOCKED judge's score must not back a trusted comparison
+    // or feed a findings-journal signal. Refused structurally here — `paired`
+    // stays `None`, so `finding_from_comparison`'s `comparison.paired.as_ref()?`
+    // makes emitting a Signal finding from this comparison impossible, not
+    // merely discouraged by a note string.
+    if !left_run.trusted || !right_run.trusted {
+        return Ok(ConfigComparison {
+            schema_version: RUN_STORE_SCHEMA,
+            db: db_path.display().to_string(),
+            benchmark: benchmark.to_string(),
+            left_query: left.to_string(),
+            right_query: right.to_string(),
+            left: left_run,
+            right: right_run,
+            delta_point: None,
+            common_tasks: 0,
+            paired: None,
+            resolution: None,
+            class_breakdowns: Vec::new(),
+            comparison_kind: "untrusted_run_refused",
+            note: "Refused: at least one run's judge calibration is locked (untrusted) — a locked judge's score cannot back a trusted comparison or findings-journal signal (backlog 971). See left.trusted/right.trusted.",
+        });
+    }
+
     let delta_point = match (left_run.point, right_run.point) {
         (Some(left), Some(right)) => Some(right - left),
         _ => None,
@@ -1114,7 +1179,7 @@ pub fn pivot_by_model(db_path: &Path, benchmark: &str, harness: Option<&str>) ->
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
-                harness, tool_allowlist, trace_path
+                harness, tool_allowlist, trace_path, trusted
              FROM run_records
              WHERE benchmark_id = ?1 AND (?2 IS NULL OR harness = ?2)
              ORDER BY created_at_unix_ms DESC, run_id DESC",
@@ -1417,6 +1482,12 @@ fn init_schema(conn: &Connection) -> Result<()> {
     ensure_column(conn, "run_records", "harness", "TEXT")?;
     ensure_column(conn, "run_records", "tool_allowlist", "TEXT")?;
     ensure_column(conn, "run_records", "trace_path", "TEXT")?;
+    // Backlog 971: `DEFAULT 1` so every run in a ledger that predates the
+    // calibration gate reads as trusted (not retroactively distrusted); new
+    // rows always supply an explicit value computed from the run's own
+    // evidence (see `EvidenceMetadata::trusted`), so the default only ever
+    // back-fills historical rows.
+    ensure_column(conn, "run_records", "trusted", "INTEGER NOT NULL DEFAULT 1")?;
     Ok(())
 }
 
@@ -1602,6 +1673,16 @@ fn merge_prompt_metadata(
 
     if config_prefix == "judge" {
         metadata.judge_licence = judge_licence_from_evidence(value);
+        // Backlog 971: the calibration gate is structural, not a note string.
+        // `None` (no calibration measured at all) is untrusted, the same
+        // "locked/unlicensed until measured" default `judge_licence_key`
+        // uses — an unmeasured judge is diagnostic, not licensed.
+        metadata.trusted = value
+            .get("calibration")
+            .filter(|calibration| !calibration.is_null())
+            .and_then(|calibration| calibration.get("unlocked"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
     }
 
     let provider = metadata.provider.as_deref().unwrap_or("provider");
@@ -1924,6 +2005,7 @@ fn row_to_stored_run(row: &Row<'_>) -> rusqlite::Result<StoredRun> {
         harness: row.get(21)?,
         tool_allowlist: parse_tool_allowlist(tool_allowlist_json.as_deref()),
         trace_path: row.get(23)?,
+        trusted: row.get::<_, i64>(24)? != 0,
     })
 }
 
@@ -2066,7 +2148,7 @@ fn latest_for_config(conn: &Connection, benchmark: &str, config: &str) -> Result
             config_id, provider, model, created_at_unix_ms, output_dir,
             run_report_path, evidence_path, spec_path, score_metric,
             successes, n, point, lower, upper, confidence, score_method,
-            harness, tool_allowlist, trace_path
+            harness, tool_allowlist, trace_path, trusted
          FROM run_records
          WHERE benchmark_id = ?1 AND (config_id = ?2 OR model = ?2)
          ORDER BY created_at_unix_ms DESC, run_id DESC
@@ -2795,6 +2877,158 @@ mod tests {
         );
         assert_eq!(card["provenance"]["prompt_hash"], "fnv1a64:judge-prompt");
         assert_eq!(card["provenance"]["rubric_hash"], "fnv1a64:judge-rubric");
+    }
+
+    // ---- backlog 971: the calibration gate is structural -----------------
+
+    #[test]
+    fn a_locked_judge_run_persists_as_untrusted() {
+        let root = temp_dir("judge-untrusted");
+        let db = root.join("runs.sqlite");
+        let report = agentic_judge_report_with_calibration(
+            &root,
+            "test/judge-model",
+            "judge-licence:v2:test/judge-model:hash-a:hash-b:agentic-judge-smoke",
+            false,
+        );
+        persist_report(&db, &report).expect("persist locked judge report");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("agentic-judge-smoke"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        assert_eq!(list.runs.len(), 1);
+        assert!(
+            !list.runs[0].trusted,
+            "a run whose calibration did not unlock must persist as untrusted"
+        );
+    }
+
+    #[test]
+    fn an_unlocked_judge_run_persists_as_trusted() {
+        let root = temp_dir("judge-trusted");
+        let db = root.join("runs.sqlite");
+        let report = agentic_judge_report_with_calibration(
+            &root,
+            "test/judge-model",
+            "judge-licence:v2:test/judge-model:hash-a:hash-b:agentic-judge-smoke",
+            true,
+        );
+        persist_report(&db, &report).expect("persist unlocked judge report");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("agentic-judge-smoke"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        assert_eq!(list.runs.len(), 1);
+        assert!(
+            list.runs[0].trusted,
+            "a run whose calibration unlocked must persist as trusted"
+        );
+    }
+
+    #[test]
+    fn a_judge_run_with_no_calibration_measured_persists_as_untrusted() {
+        // `agentic_judge_report` (unlike `agentic_judge_report_with_calibration`)
+        // writes no "calibration" key at all — an unmeasured judge, which must
+        // read as untrusted (diagnostic, not licensed), not silently trusted.
+        let root = temp_dir("judge-unmeasured");
+        let db = root.join("runs.sqlite");
+        let report = agentic_judge_report(&root, "test/judge-model", true);
+        persist_report(&db, &report).expect("persist unmeasured judge report");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("agentic-judge-smoke"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        assert_eq!(list.runs.len(), 1);
+        assert!(
+            !list.runs[0].trusted,
+            "a judge run that never declared calibration tasks has no measured licence \
+             and must persist as untrusted, not silently trusted"
+        );
+    }
+
+    #[test]
+    fn a_non_judge_run_always_persists_as_trusted() {
+        // The calibration gate does not apply to prompt_benchmark/key_recall/
+        // harbor_task — they carry no CalibrationRecord concept at all.
+        let root = temp_dir("non-judge-trusted");
+        let db = root.join("runs.sqlite");
+        persist_report(&db, &prompt_report(&root, "test/model-a", true))
+            .expect("persist prompt report");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        assert_eq!(list.runs.len(), 1);
+        assert!(
+            list.runs[0].trusted,
+            "a non-judge runner kind is always trusted; the gate is judge-specific"
+        );
+    }
+
+    #[test]
+    fn compare_configs_refuses_a_comparison_involving_an_untrusted_run() {
+        let root = temp_dir("compare-untrusted");
+        let db = root.join("runs.sqlite");
+        persist_report(
+            &db,
+            &agentic_judge_report_with_calibration(
+                &root,
+                "test/judge-a",
+                "judge-licence:v2:test/judge-a:hash-a:hash-b:agentic-judge-smoke",
+                false, // locked
+            ),
+        )
+        .expect("persist locked judge run");
+        persist_report(
+            &db,
+            &agentic_judge_report_with_calibration(
+                &root,
+                "test/judge-b",
+                "judge-licence:v2:test/judge-b:hash-a:hash-b:agentic-judge-smoke",
+                true, // unlocked
+            ),
+        )
+        .expect("persist unlocked judge run");
+
+        let comparison = compare_configs(
+            &db,
+            "agentic-judge-smoke",
+            "test/judge-a",
+            "test/judge-b",
+            0.05,
+        )
+        .expect("compare configs");
+
+        assert_eq!(comparison.comparison_kind, "untrusted_run_refused");
+        assert!(
+            comparison.paired.is_none(),
+            "a refused comparison must not carry a paired verdict a findings \
+             journal could read as a signal"
+        );
+        assert!(comparison.resolution.is_none());
+        assert_eq!(comparison.common_tasks, 0);
+        assert!(!comparison.left.trusted);
+        assert!(comparison.right.trusted);
     }
 
     #[test]
