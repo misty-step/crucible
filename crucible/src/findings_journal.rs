@@ -351,6 +351,32 @@ mod tests {
     }
 
     #[test]
+    fn refuses_to_emit_a_finding_from_an_untrusted_run_comparison() {
+        // Backlog 971: `run_store::compare_configs` refuses a locked-judge
+        // comparison structurally by leaving `paired` (and `resolution`)
+        // `None` — this proves that shape alone, with no other signal
+        // present, is enough to keep the findings journal empty even though
+        // every other field looks like a normal comparison.
+        let mut comparison = comparison_with_verdict(DeltaVerdict::Signal);
+        comparison.left.trusted = false;
+        comparison.paired = None;
+        comparison.resolution = None;
+        comparison.comparison_kind = "untrusted_run_refused";
+
+        let journal = journal_from_comparison(
+            &comparison,
+            0.05,
+            "crucible runs compare --json".to_string(),
+        );
+
+        assert!(
+            journal.findings.is_empty(),
+            "an untrusted comparison (paired: None) must mint zero findings, \
+             regardless of the verdict a stale/forged paired field might carry"
+        );
+    }
+
+    #[test]
     fn writes_a_pretty_json_journal_file() {
         let dir =
             std::env::temp_dir().join(format!("crucible-findings-journal-{}", std::process::id()));
@@ -439,6 +465,7 @@ mod tests {
             method: "Wilson".to_string(),
             harness: None,
             tool_allowlist: Vec::new(),
+            trusted: true,
         }
     }
 }

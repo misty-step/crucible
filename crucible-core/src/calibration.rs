@@ -26,6 +26,16 @@
 //! one task family never silently covers another, and an opt-in cross-run
 //! drift check ([`probe_drift`]) distinct from the within-run
 //! format-sensitivity self-check.
+//!
+//! The gate this record measures is structural, not a note string (backlog
+//! 971): `unlocked` (or its absence) is projected onto every persisted run as
+//! `run_records.trusted` in the SQLite ledger, and
+//! `crucible::run_store::compare_configs` refuses — `comparison_kind:
+//! "untrusted_run_refused"`, `paired`/`resolution` left `None` — any
+//! comparison naming an untrusted run. Since the findings journal derives
+//! every finding from a comparison's `paired` field, a locked judge's score
+//! cannot produce a `crucible.finding.v1` Signal record, not merely one that
+//! carries a "diagnostic" note a reader could ignore.
 
 use std::collections::BTreeMap;
 
