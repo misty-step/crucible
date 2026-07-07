@@ -352,6 +352,16 @@ pub struct AgenticJudgeConfig {
     /// automatic.
     #[serde(default)]
     pub format_sensitivity_check: bool,
+    /// Path to a prior run's `agentic-judge-run.json` evidence file over the
+    /// *same* calibration probe set. When present, the runner compares this
+    /// run's calibration verdicts against that prior run's by task id and
+    /// records the flip rate + this run's timestamp as
+    /// [`crate::CalibrationRecord::drift_flip_rate`]/`drift_checked_at`
+    /// (backlog 970's drift check — "the same judge+prompt re-run on a
+    /// different day swings 8-15%", Scale AI — a fragility a single run cannot
+    /// see on its own). `None` (the default): no drift check is performed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_evidence_path: Option<std::path::PathBuf>,
 }
 
 /// One candidate output for the judge to score against a rubric.
@@ -927,6 +937,7 @@ mod tests {
             harness: Some("codex".to_string()),
             tool_allowlist: vec!["apply_patch".to_string()],
             format_sensitivity_check: true,
+            previous_evidence_path: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains(r#""harness":"codex""#), "{json}");
