@@ -128,9 +128,25 @@ pub fn start_health_loop() {
 /// No-ops when Canary creds are absent.
 pub struct CanaryLayer;
 
+/// Transport crates whose own `error!` events must never re-enter
+/// [`CanaryLayer`]: a failed send in [`send_with_retry`] can itself log an
+/// ERROR via `hyper`/`reqwest`/`rustls`/`h2`/`hyper_util`, and since the
+/// layer is deliberately unfiltered (see the module doc's per-layer-filter
+/// gotcha), that event would otherwise loop back into [`report_error`] and
+/// amplify a single outage into an unbounded stream of self-inflicted
+/// reports.
+const TRANSPORT_TARGETS: &[&str] = &["hyper", "reqwest", "rustls", "h2", "hyper_util"];
+
 impl<S: Subscriber> Layer<S> for CanaryLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         if *event.metadata().level() != Level::ERROR || config().is_none() {
+            return;
+        }
+        let target = event.metadata().target();
+        if TRANSPORT_TARGETS
+            .iter()
+            .any(|prefix| target.starts_with(prefix))
+        {
             return;
         }
         let mut message = String::new();
@@ -501,6 +517,57 @@ mod tests {
                 .starts_with("crucible."),
             "error_class must be service-scoped: {}",
             captured.body["error_class"]
+        );
+    }
+
+    #[test]
+    fn canary_layer_denies_transport_crate_targets_to_prevent_recursion() {
+        use tracing_subscriber::prelude::*;
+
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_canary_env();
+        let (endpoint, rx) = spawn_mock_server();
+        // SAFETY: serialized by `ENV_LOCK` above.
+        unsafe {
+            std::env::set_var("CANARY_ENDPOINT", &endpoint);
+            std::env::set_var("CANARY_API_KEY", "test-key");
+        }
+
+        let subscriber = tracing_subscriber::registry().with(CanaryLayer);
+        tracing::subscriber::with_default(subscriber, || {
+            // Simulates the exact recursion hazard: a transport crate's own
+            // ERROR event (e.g. hyper/reqwest/rustls/h2/hyper_util logging a
+            // failed send) must never loop back into report_error, or one
+            // dead endpoint amplifies into an unbounded stream of
+            // self-inflicted reports.
+            tracing::error!(target: "hyper::client::pool", "connection closed");
+            tracing::error!(target: "reqwest::connect", "dns failure");
+            tracing::error!(target: "rustls::client", "handshake failed");
+            tracing::error!(target: "h2::proto", "stream reset");
+            tracing::error!(target: "hyper_util::client::legacy", "pool error");
+            // A genuine application error on the same subscriber still gets
+            // through, proving the denylist is a targeted prefix match, not
+            // an accidental blanket no-op.
+            tracing::error!(target: "crucible::probe", "boom from the app");
+        });
+        flush();
+
+        let captured = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("mock server received exactly the application error, not a transport one");
+        clear_canary_env();
+
+        assert!(
+            captured.body["message"]
+                .as_str()
+                .expect("message is a string")
+                .contains("boom from the app"),
+            "the only forwarded report must be the application-level error: {}",
+            captured.body["message"]
+        );
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "transport-target events must not produce additional reports"
         );
     }
 

@@ -34,7 +34,16 @@ fn repo_fixture(path: &str) -> PathBuf {
 }
 
 fn crucible() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_crucible"));
+    // Never let a subprocess test reach the real Canary hub: strip whatever
+    // CANARY_* creds happen to be set in the ambient shell (a developer's or
+    // CI's env) before spawning the real binary, so no test can fire a REAL
+    // check-in/error/panic report at production.
+    command
+        .env_remove("CANARY_ENDPOINT")
+        .env_remove("CANARY_API_KEY")
+        .env_remove("CANARY_INGEST_KEY");
+    command
 }
 
 fn write_jsonrpc(stdin: &mut ChildStdin, message: serde_json::Value) {
