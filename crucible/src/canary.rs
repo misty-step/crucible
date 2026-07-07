@@ -156,29 +156,42 @@ impl tracing::field::Visit for FieldVisitor<'_> {
 /// (backtrace, process exit behavior) is unchanged. Call once at process
 /// start. No-ops — never touches `std::panic::set_hook` — without Canary
 /// credentials.
+///
+/// This hook fires for *every* panic, including ones a `catch_unwind`
+/// boundary later recovers from (the hook runs at the panic point, before
+/// unwinding is caught). So the hook is the single owner of panic reporting:
+/// a `catch_unwind` recovery site (e.g. `serve`'s per-connection handler)
+/// recovers and returns a 500 but must NOT re-report, or the same panic
+/// lands at the hub twice.
 pub fn install_panic_hook() {
     if config().is_none() {
         return;
     }
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let loc = info
+        let location = info
             .location()
             .map(|l| format!("{}:{}", l.file(), l.line()))
             .unwrap_or_default();
-        let message = format!("{} @ {loc}", panic_message(info.payload()));
-        report_error(&panic_class(), &message);
+        report_panic(info.payload(), &location);
         flush(); // best-effort before the process dies
         default_hook(info);
     }));
 }
 
-/// Report an already-caught panic payload (e.g. from a `catch_unwind`
-/// boundary around a request/connection handler) as `<service>.panic`. Safe
-/// to call anywhere; no-ops silently when Canary creds are absent, via
-/// [`report_error`].
-pub fn report_panic(payload: &(dyn std::any::Any + Send)) {
-    report_error(&panic_class(), &panic_message(payload));
+/// Format a panic payload (+ optional source location) as a `<service>.panic`
+/// error report. The global hook installed by [`install_panic_hook`] is the
+/// sole production caller; factored out as a plain function so the
+/// panic → `report_error` wiring is unit-testable without installing a
+/// process-global hook. No-ops silently without creds, via [`report_error`].
+fn report_panic(payload: &(dyn std::any::Any + Send), location: &str) {
+    let base = panic_message(payload);
+    let message = if location.is_empty() {
+        base
+    } else {
+        format!("{base} @ {location}")
+    };
+    report_error(&panic_class(), &message);
 }
 
 fn panic_class() -> String {
@@ -540,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn report_panic_posts_a_service_scoped_panic_class_to_the_mock_server() {
+    fn report_panic_posts_a_service_scoped_panic_class_with_location_to_the_mock_server() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_canary_env();
         let (endpoint, rx) = spawn_mock_server();
@@ -551,7 +564,7 @@ mod tests {
         }
 
         let payload: Box<dyn std::any::Any + Send> = Box::new("connection handler panicked");
-        report_panic(payload.as_ref());
+        report_panic(payload.as_ref(), "crucible/src/serve.rs:73");
         flush();
 
         let captured = rx
@@ -560,6 +573,36 @@ mod tests {
         clear_canary_env();
 
         assert_eq!(captured.body["error_class"], "crucible.panic");
-        assert_eq!(captured.body["message"], "connection handler panicked");
+        assert_eq!(
+            captured.body["message"],
+            "connection handler panicked @ crucible/src/serve.rs:73"
+        );
+    }
+
+    #[test]
+    fn report_panic_omits_the_location_suffix_when_it_is_empty() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_canary_env();
+        let (endpoint, rx) = spawn_mock_server();
+        // SAFETY: serialized by `ENV_LOCK` above.
+        unsafe {
+            std::env::set_var("CANARY_ENDPOINT", &endpoint);
+            std::env::set_var("CANARY_API_KEY", "test-key");
+        }
+
+        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("no location known"));
+        report_panic(payload.as_ref(), "");
+        flush();
+
+        let captured = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("mock server received the panic report");
+        clear_canary_env();
+
+        assert_eq!(captured.body["error_class"], "crucible.panic");
+        assert_eq!(
+            captured.body["message"], "no location known",
+            "an empty location must not leave a dangling ' @ ' suffix"
+        );
     }
 }

@@ -20,5 +20,5 @@ rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"
 time = { version = "0.3.53", default-features = false, features = ["formatting", "parsing", "std"] }
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["registry", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["registry", "fmt", "env-filter"] }
 crucible-core = { path = "crucible-core" }

@@ -527,9 +527,20 @@ fn main() -> ExitCode {
     // layer writes to stderr, never stdout: `mcp` uses stdout as its
     // JSON-RPC protocol channel, and log lines on that stream would corrupt
     // it.
+    //
+    // The `EnvFilter` is a *per-layer* filter on the fmt layer only: it
+    // keeps a deployed `crucible serve` from drowning stderr in
+    // reqwest/hyper TRACE spam (default `info`, overridable via `RUST_LOG`).
+    // `CanaryLayer` is deliberately left unfiltered so it still observes
+    // every `ERROR` event regardless of what the console shows.
     canary::install_panic_hook();
+    let fmt_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(fmt_filter);
     let _ = tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(fmt_layer)
         .with(canary::CanaryLayer)
         .try_init();
     // Fire as early as possible so every invocation is observed, even one
