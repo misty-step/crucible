@@ -20,6 +20,8 @@ use serde_json::{json, Value};
 use crate::{adjudication_panel, adjudication_server, load_queue, run_store, spec_run, validate};
 
 const SPECS_SCHEMA: &str = "crucible.ui.specs.v1";
+const SPEC_DETAIL_SCHEMA: &str = "crucible.ui.spec_detail.v1";
+const MATRIX_SCHEMA: &str = "crucible.ui.eval_matrix.v1";
 const RUNS_SCHEMA: &str = "crucible.ui.runs.v1";
 const ADJUDICATION_SCHEMA: &str = "crucible.ui.adjudication.v1";
 const RUN_ACTION_SCHEMA: &str = "crucible.ui.run_action.v1";
@@ -89,8 +91,26 @@ fn route(request: &HttpRequest, opts: &ServeOptions) -> Result<HttpResponse> {
             AESTHETIC_CSS.as_bytes().to_vec(),
         )),
         ("GET", "/api/specs") => HttpResponse::json_ok(&specs_response(&opts.specs_dir)?),
+        ("GET", "/api/spec") => match spec_detail_response(&opts.specs_dir, &request.query) {
+            Ok(response) => HttpResponse::json_ok(&response),
+            Err(err) if is_spec_detail_request_error(&err) => Ok(HttpResponse::json(
+                400,
+                &json!({ "error": err.to_string() }),
+            )),
+            Err(err) => Err(err),
+        },
         ("GET", "/api/runs") => protected(request, || {
             HttpResponse::json_ok(&runs_response(&opts.db_path, &request.query)?)
+        }),
+        ("GET", "/api/matrix") => protected(request, || {
+            match matrix_query_response(&opts.db_path, &request.query) {
+                Ok(response) => HttpResponse::json_ok(&response),
+                Err(err) if is_matrix_request_error(&err) => Ok(HttpResponse::json(
+                    400,
+                    &json!({ "error": err.to_string() }),
+                )),
+                Err(err) => Err(err),
+            }
         }),
         ("GET", "/api/adjudication") => protected(request, || {
             HttpResponse::json_ok(&adjudication_response(&opts.db_path)?)
@@ -698,6 +718,132 @@ fn spec_summary(
     }
 }
 
+fn is_spec_detail_request_error(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.contains("query param") || message.contains("no eval spec found")
+}
+
+/// `GET /api/spec?id=<eval id>` — the eval-detail hub's task drill-down
+/// source: the full `EvalSpec` (via the existing `SpecSummary` projection) plus,
+/// for a `prompt_benchmark` corpus, every task's prompt text, resolved context
+/// file content, and expectation — the declared definition half of the
+/// drill-down (the other half, every run's actual response, comes from
+/// `/api/matrix`'s cells so the client never has to reconcile two different
+/// task orderings). Unprotected like `/api/specs`: this is eval *definition*
+/// data (declared prompts/rubrics already committed to the repo), not run
+/// output.
+fn spec_detail_response(
+    specs_dir: &Path,
+    query: &HashMap<String, String>,
+) -> Result<SpecDetailResponse> {
+    let id = query
+        .get("id")
+        .filter(|value| !value.is_empty())
+        .context("missing id query param")?;
+    let mut paths = json_files(specs_dir)?;
+    paths.sort();
+    for path in paths {
+        let (Ok(validation), Ok(spec)) = (validate::validate(&path), spec_run::load_spec(&path))
+        else {
+            continue;
+        };
+        if spec.id != *id {
+            continue;
+        }
+        let prompt_tasks = spec_task_details(&path, &spec);
+        let summary = spec_summary(path, spec, validation);
+        return Ok(SpecDetailResponse {
+            schema_version: SPEC_DETAIL_SCHEMA,
+            spec: summary,
+            prompt_tasks,
+        });
+    }
+    anyhow::bail!(
+        "no eval spec found with id {id:?} under {}",
+        specs_dir.display()
+    );
+}
+
+#[derive(Debug, Serialize)]
+struct SpecDetailResponse {
+    schema_version: &'static str,
+    spec: SpecSummary,
+    prompt_tasks: Vec<SpecTaskDetail>,
+}
+
+#[derive(Debug, Serialize)]
+struct SpecTaskDetail {
+    task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    class: Option<String>,
+    prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context_content: Option<String>,
+    expectation_kind: String,
+    expectation_value: Value,
+}
+
+/// Every `prompt_benchmark` task's declared definition, empty for any other
+/// runner kind (or a definition-only spec) — the task table's other kinds
+/// (`daedalus_trials`/`cerberus_receipt_bundles`/`harbor_task`) have no
+/// per-task prompt/expectation to show, just the task ids `/api/specs`
+/// already exposes via `task_ids`.
+fn spec_task_details(spec_path: &Path, spec: &EvalSpec) -> Vec<SpecTaskDetail> {
+    let Some(runner) = spec.runner.as_ref() else {
+        return Vec::new();
+    };
+    let CorpusSpec::PromptBenchmark { tasks, .. } = &runner.corpus else {
+        return Vec::new();
+    };
+    tasks
+        .iter()
+        .map(|task| {
+            let context_content = task.context_file.as_deref().map(|context_file| {
+                let resolved = spec_run::resolve_spec_path_with_alias(spec_path, context_file).path;
+                std::fs::read_to_string(&resolved).unwrap_or_else(|err| {
+                    format!(
+                        "<failed to read context file {}: {err}>",
+                        resolved.display()
+                    )
+                })
+            });
+            let (expectation_kind, expectation_value) =
+                expectation_kind_and_value(&task.expectation);
+            SpecTaskDetail {
+                task_id: task.task_id.clone(),
+                class: task.class.clone(),
+                prompt: task.prompt.clone(),
+                context_file: task.context_file.clone(),
+                context_content,
+                expectation_kind,
+                expectation_value,
+            }
+        })
+        .collect()
+}
+
+fn expectation_kind_and_value(expectation: &crucible_core::PromptExpectation) -> (String, Value) {
+    use crucible_core::PromptExpectation::*;
+    match expectation {
+        Exact { value } => ("exact".to_string(), json!(value)),
+        Contains { value } => ("contains".to_string(), json!(value)),
+        CaseInsensitiveContains { value } => {
+            ("case_insensitive_contains".to_string(), json!(value))
+        }
+        Regex { pattern } => ("regex".to_string(), json!(pattern)),
+        StrictJson { value } => ("strict_json".to_string(), value.clone()),
+        PythonUnitTest {
+            test_source,
+            timeout_ms,
+        } => (
+            "python_unit_test".to_string(),
+            json!({ "test_source": test_source, "timeout_ms": timeout_ms }),
+        ),
+    }
+}
+
 fn supports_controlled_comparison(spec: &EvalSpec) -> bool {
     spec.runner
         .as_ref()
@@ -1054,6 +1200,219 @@ fn trendlines(runs: &[run_store::StoredRun]) -> Vec<Trendline> {
             points,
         })
         .collect()
+}
+
+fn is_matrix_request_error(err: &anyhow::Error) -> bool {
+    err.to_string().contains("query param")
+}
+
+/// `?benchmark=&limit=` — the eval-detail hub's results-matrix centerpiece:
+/// every stored run of one eval as a column, every task either run indexed as
+/// a row, and each cell carrying enough of that task's own outcome (pass/fail,
+/// response text, latency, response model) that a task drill-down never has
+/// to make a second round trip for "every run's actual response side by
+/// side". `limit` mirrors `/api/runs`' pagination knob (`None` is
+/// unconstrained, matching this benchmark's full run history).
+fn matrix_query_response(
+    db_path: &Path,
+    query: &HashMap<String, String>,
+) -> Result<EvalMatrixResponse> {
+    let benchmark = query
+        .get("benchmark")
+        .filter(|value| !value.is_empty())
+        .context("missing benchmark query param")?;
+    let limit = parse_i64_query(query, "limit")?;
+    matrix_response(db_path, benchmark, limit)
+}
+
+#[derive(Debug, Serialize)]
+struct EvalMatrixResponse {
+    schema_version: &'static str,
+    benchmark: String,
+    columns: Vec<MatrixColumn>,
+    rows: Vec<MatrixRow>,
+    class_breakdowns: Vec<MatrixClassBreakdown>,
+}
+
+#[derive(Debug, Serialize)]
+struct MatrixColumn {
+    run_id: String,
+    config_id: String,
+    label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    harness: Option<String>,
+    created_at_unix_ms: i64,
+    trusted: bool,
+    point: Option<f64>,
+    lower: f64,
+    upper: f64,
+    confidence: f64,
+    successes: u64,
+    n: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct MatrixRow {
+    task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    class: Option<String>,
+    cells: Vec<MatrixCell>,
+}
+
+#[derive(Debug, Serialize)]
+struct MatrixCell {
+    run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    passed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    latency_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    response_model: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MatrixClassBreakdown {
+    class: String,
+    columns: Vec<MatrixClassColumn>,
+}
+
+#[derive(Debug, Serialize)]
+struct MatrixClassColumn {
+    run_id: String,
+    successes: u64,
+    n: u64,
+    point: Option<f64>,
+}
+
+/// A run's short column label: its model when it declared one (a
+/// `prompt_benchmark`/`agentic_judge`/`harbor_task` run), else its config id
+/// — the "model or config short-form" the eval-detail card calls for.
+fn column_label(run: &run_store::StoredRun) -> String {
+    run.model.clone().unwrap_or_else(|| run.config_id.clone())
+}
+
+fn matrix_response(
+    db_path: &Path,
+    benchmark: &str,
+    limit: Option<i64>,
+) -> Result<EvalMatrixResponse> {
+    let list = run_store::list_runs(
+        db_path,
+        run_store::RunListFilter {
+            benchmark: Some(benchmark),
+            limit,
+            ..Default::default()
+        },
+    )?;
+
+    let mut columns = Vec::with_capacity(list.runs.len());
+    let mut task_class: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut cells_by_task: BTreeMap<String, Vec<MatrixCell>> = BTreeMap::new();
+    // class -> run_id -> (successes, n), ordered for a stable response.
+    let mut class_totals: BTreeMap<String, BTreeMap<String, (u64, u64)>> = BTreeMap::new();
+
+    for run in &list.runs {
+        columns.push(MatrixColumn {
+            run_id: run.run_id.clone(),
+            config_id: run.config_id.clone(),
+            label: column_label(run),
+            model: run.model.clone(),
+            harness: run.harness.clone(),
+            created_at_unix_ms: run.created_at_unix_ms,
+            trusted: run.trusted,
+            point: run.point,
+            lower: run.lower,
+            upper: run.upper,
+            confidence: run.confidence,
+            successes: run.successes,
+            n: run.n,
+        });
+
+        let detail = run_store::show_run(db_path, &run.run_id)?;
+        for task in &detail.prompt_tasks {
+            task_class
+                .entry(task.task_id.clone())
+                .or_insert_with(|| task.class.clone());
+            cells_by_task
+                .entry(task.task_id.clone())
+                .or_default()
+                .push(MatrixCell {
+                    run_id: run.run_id.clone(),
+                    passed: Some(task.passed),
+                    output_text: task.output_text.clone(),
+                    latency_ms: task.latency_ms,
+                    response_model: task.response_model.clone(),
+                });
+            if let Some(class) = &task.class {
+                let entry = class_totals
+                    .entry(class.clone())
+                    .or_default()
+                    .entry(run.run_id.clone())
+                    .or_insert((0, 0));
+                entry.1 += 1;
+                if task.passed {
+                    entry.0 += 1;
+                }
+            }
+        }
+        for task in &detail.harbor_tasks {
+            task_class.entry(task.task_id.clone()).or_insert(None);
+            cells_by_task
+                .entry(task.task_id.clone())
+                .or_default()
+                .push(MatrixCell {
+                    run_id: run.run_id.clone(),
+                    passed: Some(task.passed),
+                    output_text: None,
+                    latency_ms: task.latency_ms,
+                    response_model: None,
+                });
+        }
+    }
+
+    let rows = task_class
+        .into_iter()
+        .map(|(task_id, class)| {
+            let cells = cells_by_task.remove(&task_id).unwrap_or_default();
+            MatrixRow {
+                task_id,
+                class,
+                cells,
+            }
+        })
+        .collect();
+
+    let class_breakdowns = class_totals
+        .into_iter()
+        .map(|(class, per_run)| MatrixClassBreakdown {
+            class,
+            columns: per_run
+                .into_iter()
+                .map(|(run_id, (successes, n))| MatrixClassColumn {
+                    run_id,
+                    successes,
+                    n,
+                    point: if n > 0 {
+                        Some(successes as f64 / n as f64)
+                    } else {
+                        None
+                    },
+                })
+                .collect(),
+        })
+        .collect();
+
+    Ok(EvalMatrixResponse {
+        schema_version: MATRIX_SCHEMA,
+        benchmark: benchmark.to_string(),
+        columns,
+        rows,
+        class_breakdowns,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -2262,6 +2621,158 @@ mod tests {
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect()
+    }
+
+    /// A fresh scratch specs dir under the system temp dir, mirroring
+    /// `test_fixtures::temp_db`'s shape for the spec-detail/matrix tests below.
+    fn temp_specs_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("crucible-serve-specs-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp specs dir");
+        dir
+    }
+
+    /// `GET /api/spec?id=` is the eval-detail hub's task drill-down source:
+    /// it must resolve a `context_file` declared relative to the spec (the
+    /// same resolution `spec_run`'s runner performs before a live model
+    /// call) and report each task's expectation kind/value alongside the
+    /// prompt text.
+    #[test]
+    fn spec_detail_response_resolves_context_file_and_expectation() {
+        let dir = temp_specs_dir("context-file");
+        std::fs::write(dir.join("context.txt"), "the long context body").unwrap();
+        std::fs::write(
+            dir.join("with-context-v0.json"),
+            serde_json::to_string_pretty(&json!({
+                "schema_version": "crucible.eval_spec.v1",
+                "id": "with-context-v0",
+                "task": "with-context",
+                "inputs": "one task with a context file",
+                "outputs": "text",
+                "graders": { "graders": [{ "id": "contains", "kind": "deterministic" }] },
+                "aggregation": "proportion",
+                "uncertainty": { "method": "wilson", "confidence": 0.95 },
+                "decision": "test",
+                "runner": {
+                    "kind": "prompt_benchmark",
+                    "corpus": {
+                        "source": "prompt_benchmark",
+                        "config": {
+                            "provider": "open_router",
+                            "model": "openrouter/auto",
+                            "system_prompt": "sys",
+                            "credential_env": "OPENROUTER_API_KEY"
+                        },
+                        "tasks": [{
+                            "task_id": "t1",
+                            "class": "extraction",
+                            "context_file": "context.txt",
+                            "prompt": "read the context",
+                            "expectation": { "kind": "contains", "value": "needle" }
+                        }]
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let response =
+            spec_detail_response(&dir, &query(&[("id", "with-context-v0")])).expect("spec found");
+        assert_eq!(response.schema_version, SPEC_DETAIL_SCHEMA);
+        assert_eq!(response.spec.id, "with-context-v0");
+        assert_eq!(response.prompt_tasks.len(), 1);
+        let task = &response.prompt_tasks[0];
+        assert_eq!(task.task_id, "t1");
+        assert_eq!(task.class.as_deref(), Some("extraction"));
+        assert_eq!(task.context_file.as_deref(), Some("context.txt"));
+        assert_eq!(
+            task.context_content.as_deref(),
+            Some("the long context body"),
+            "context_content must hold the resolved file's content, not just its declared path"
+        );
+        assert_eq!(task.expectation_kind, "contains");
+        assert_eq!(task.expectation_value, json!("needle"));
+    }
+
+    #[test]
+    fn spec_detail_response_reports_a_classifiable_error_for_an_unknown_id() {
+        let dir = temp_specs_dir("unknown-id");
+        let err = spec_detail_response(&dir, &query(&[("id", "does-not-exist")]))
+            .expect_err("no spec has this id");
+        assert!(is_spec_detail_request_error(&err));
+    }
+
+    #[test]
+    fn spec_detail_response_reports_a_classifiable_error_for_a_missing_id_param() {
+        let dir = temp_specs_dir("missing-id");
+        let err = spec_detail_response(&dir, &query(&[])).expect_err("id param is required");
+        assert!(is_spec_detail_request_error(&err));
+    }
+
+    /// `GET /api/matrix` is the results-matrix centerpiece: every stored run
+    /// of one eval as a column, every task either run indexed as a row. Seeds
+    /// the same 10-shared-task fixture `api_compare_*` uses (two runs,
+    /// `t0`..`t9`, a 1-vs-9 discordant split) and checks the matrix reflects
+    /// exactly that shape rather than re-deriving pass/fail from the
+    /// comparison layer.
+    #[test]
+    fn matrix_response_aggregates_tasks_as_rows_and_runs_as_columns() {
+        let db = crate::test_fixtures::temp_db("serve-matrix-signal");
+        crate::test_fixtures::seed_paired_signal(&db);
+
+        let response = matrix_response(&db, crate::test_fixtures::BENCHMARK, None)
+            .expect("matrix query succeeds");
+        assert_eq!(response.schema_version, MATRIX_SCHEMA);
+        assert_eq!(response.columns.len(), 2, "one column per stored run");
+        assert_eq!(response.rows.len(), 10, "one row per shared task t0..t9");
+
+        let labels: std::collections::BTreeSet<_> =
+            response.columns.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(crate::test_fixtures::LEFT_MODEL));
+        assert!(labels.contains(crate::test_fixtures::RIGHT_MODEL));
+
+        let left_column = response
+            .columns
+            .iter()
+            .find(|c| c.label == crate::test_fixtures::LEFT_MODEL)
+            .expect("left column present");
+        let row_t0 = response
+            .rows
+            .iter()
+            .find(|row| row.task_id == "t0")
+            .expect("row t0 present");
+        let left_cell_t0 = row_t0
+            .cells
+            .iter()
+            .find(|cell| cell.run_id == left_column.run_id)
+            .expect("left cell for t0 present");
+        assert_eq!(
+            left_cell_t0.passed,
+            Some(true),
+            "seed_paired_signal makes only i == 0 (t0) pass on the left run"
+        );
+        assert_eq!(row_t0.class.as_deref(), Some("format_adherence"));
+
+        assert_eq!(
+            response.class_breakdowns.len(),
+            1,
+            "every seeded task shares the single format_adherence class"
+        );
+        let breakdown = &response.class_breakdowns[0];
+        assert_eq!(breakdown.class, "format_adherence");
+        assert_eq!(breakdown.columns.len(), 2);
+        for column in &breakdown.columns {
+            assert_eq!(column.n, 10);
+        }
+    }
+
+    #[test]
+    fn matrix_response_reports_a_classifiable_error_on_a_missing_benchmark_param() {
+        let db = crate::test_fixtures::temp_db("serve-matrix-missing-param");
+        let err = matrix_query_response(&db, &query(&[])).expect_err("benchmark param is required");
+        assert!(is_matrix_request_error(&err));
     }
 
     // These unit tests call `compare_query_response` — the same handler
