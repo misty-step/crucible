@@ -142,6 +142,16 @@ pub struct StoredRun {
     /// persisted before this field existed (`DEFAULT 1` on migration): an
     /// older ledger predates the gate and is not retroactively distrusted.
     pub trusted: bool,
+    /// This run's uniform `response_model` across its own tasks (backlog
+    /// 973's API-drift tripwire: a provider can silently update a model
+    /// behind a slug — `requested_model != response_model` is the signal,
+    /// already collected per-task but never aggregated until now). Empty
+    /// when this run's own tasks disagreed on `response_model`, or when none
+    /// was recorded at all — the same sentinel
+    /// `EvaluationCard.provenance.model_version` uses, not a distinct field
+    /// with its own "unknown" convention.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub response_model: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -270,6 +280,14 @@ pub struct ConfigComparison {
     pub class_breakdowns: Vec<ClassComparison>,
     pub comparison_kind: &'static str,
     pub note: &'static str,
+    /// Backlog 973: set when `left`/`right` were both requested under the
+    /// **same** model slug but recorded different non-empty
+    /// `response_model` values — a provider may have silently changed the
+    /// model behind that slug between the two runs. `None` when the two
+    /// sides name different requested models (an intentional comparison,
+    /// not drift) or when their response models agree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_model_drift_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -571,6 +589,10 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
             serde_json::to_string(&run_record).context("serializing run record")?;
         let evaluation_card_json =
             serde_json::to_string(&evaluation_card).context("serializing evaluation card")?;
+        // Backlog 973: the same uniform-or-empty response model
+        // `EvaluationCard.provenance.model_version` already computes, also
+        // stored as a plain queryable column.
+        let response_model = provenance_model_version(&metadata);
 
         tx.execute(
             "INSERT INTO run_records (
@@ -578,10 +600,10 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric, successes,
                 n, point, lower, upper, confidence, score_method, eval_json,
-                harness, tool_allowlist, trace_path, trusted
+                harness, tool_allowlist, trace_path, trusted, response_model
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
+                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
             )",
             params![
                 run_id,
@@ -610,7 +632,8 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 metadata.harness,
                 metadata.tool_allowlist,
                 metadata.trace_path,
-                metadata.trusted
+                metadata.trusted,
+                response_model
             ],
         )
         .with_context(|| format!("inserting run record for {}", eval.id))?;
@@ -863,7 +886,7 @@ pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
-                harness, tool_allowlist, trace_path, trusted
+                harness, tool_allowlist, trace_path, trusted, response_model
              FROM run_records
              WHERE (?1 IS NULL OR benchmark_id = ?1)
                AND (?2 IS NULL OR config_id = ?2)
@@ -916,7 +939,7 @@ pub fn show_run(db_path: &Path, run_id: &str) -> Result<RunDetail> {
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
-                harness, tool_allowlist, trace_path, trusted
+                harness, tool_allowlist, trace_path, trusted, response_model
              FROM run_records
              WHERE run_id = ?1",
             params![run_id],
@@ -964,6 +987,14 @@ pub struct ScoreHistory {
     /// The config id or model slug queried — same either-match semantics as
     /// [`compare_configs`]'s `left`/`right`.
     pub config_query: String,
+    /// Backlog 973's API-drift tripwire: set when two or more of `points`
+    /// recorded a distinct non-empty `response_model` for this same
+    /// requested slug — a provider may have silently changed the model
+    /// behind it, so this history's trend line may not be comparing like
+    /// with like. `None` when every point that recorded a response model
+    /// agrees (or none did).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_model_drift_warning: Option<String>,
     /// Score points ordered oldest to newest (`created_at_unix_ms` ascending),
     /// the longitudinal trend line for this benchmark/config pair.
     pub points: Vec<ScoreHistoryPoint>,
@@ -981,6 +1012,10 @@ pub struct ScoreHistoryPoint {
     pub upper: f64,
     pub confidence: f64,
     pub method: String,
+    /// This point's own [`StoredRun::response_model`] — empty when this run's
+    /// tasks disagreed among themselves or recorded none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub response_model: String,
 }
 
 /// Every stored run's score for one benchmark/config or model slug, ordered
@@ -994,7 +1029,7 @@ pub fn score_history(db_path: &Path, benchmark: &str, config: &str) -> Result<Sc
     let mut stmt = conn
         .prepare(
             "SELECT run_id, created_at_unix_ms, successes, n, point, lower, upper,
-                confidence, score_method
+                confidence, score_method, response_model
              FROM run_records
              WHERE benchmark_id = ?1 AND (config_id = ?2 OR model = ?2)
              ORDER BY created_at_unix_ms ASC, run_id ASC",
@@ -1012,19 +1047,51 @@ pub fn score_history(db_path: &Path, benchmark: &str, config: &str) -> Result<Sc
                 upper: row.get(6)?,
                 confidence: row.get(7)?,
                 method: row.get(8)?,
+                response_model: row.get(9)?,
             })
         })
         .context("querying score history")?
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("reading score history rows")?;
 
+    let response_model_drift_warning = response_model_drift_warning(
+        points.iter().map(|point| point.response_model.as_str()),
+        config,
+    );
+
     Ok(ScoreHistory {
         schema_version: RUN_STORE_SCHEMA,
         db: db_path.display().to_string(),
         benchmark: benchmark.to_string(),
         config_query: config.to_string(),
+        response_model_drift_warning,
         points,
     })
+}
+
+/// Backlog 973: warn when the response models recorded across a set of runs
+/// for **the same requested slug** disagree — the API-drift tripwire (a
+/// provider silently updates the model behind a slug, making historical
+/// results unreproducible). Empty entries (a run whose own tasks already
+/// disagreed, or that recorded none) are excluded from the comparison itself
+/// — they carry no informative model identity to disagree *with* — but do
+/// not suppress a real drift signal among the entries that do.
+fn response_model_drift_warning<'a>(
+    response_models: impl Iterator<Item = &'a str>,
+    query: &str,
+) -> Option<String> {
+    let mut distinct: Vec<&str> = response_models.filter(|model| !model.is_empty()).collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    if distinct.len() > 1 {
+        Some(format!(
+            "Response model drift detected for {query:?}: observed {distinct:?} across these runs \
+             — the provider may have silently changed the model behind this slug; historical \
+             results may not be directly comparable."
+        ))
+    } else {
+        None
+    }
 }
 
 /// Compare the latest stored run per config/model under one benchmark.
@@ -1071,6 +1138,7 @@ pub fn compare_configs(
             class_breakdowns: Vec::new(),
             comparison_kind: "untrusted_run_refused",
             note: "Refused: at least one run's judge calibration is locked (untrusted) — a locked judge's score cannot back a trusted comparison or findings-journal signal (backlog 971). See left.trusted/right.trusted.",
+            response_model_drift_warning: None,
         });
     }
 
@@ -1121,6 +1189,30 @@ pub fn compare_configs(
         .as_ref()
         .map(|outcome| resolve_power(outcome, common_tasks, alpha));
 
+    // Backlog 973: "the same requested slug" only applies when both sides
+    // actually named the same model — comparing two genuinely different
+    // models is not drift, it's the comparison's whole point.
+    let response_model_drift_warning = match (&left_run.model, &right_run.model) {
+        (Some(left_model), Some(right_model)) if left_model == right_model => {
+            match (
+                left_run.response_model.as_str(),
+                right_run.response_model.as_str(),
+            ) {
+                (left_rm, right_rm)
+                    if !left_rm.is_empty() && !right_rm.is_empty() && left_rm != right_rm =>
+                {
+                    Some(format!(
+                        "Response model drift detected for {left_model:?}: left run saw \
+                         {left_rm:?}, right run saw {right_rm:?} — the provider may have \
+                         silently changed the model behind this slug between the two runs."
+                    ))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+
     Ok(ConfigComparison {
         schema_version: RUN_STORE_SCHEMA,
         db: db_path.display().to_string(),
@@ -1136,6 +1228,7 @@ pub fn compare_configs(
         class_breakdowns,
         comparison_kind,
         note,
+        response_model_drift_warning,
     })
 }
 
@@ -1179,7 +1272,7 @@ pub fn pivot_by_model(db_path: &Path, benchmark: &str, harness: Option<&str>) ->
                 config_id, provider, model, created_at_unix_ms, output_dir,
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
-                harness, tool_allowlist, trace_path, trusted
+                harness, tool_allowlist, trace_path, trusted, response_model
              FROM run_records
              WHERE benchmark_id = ?1 AND (?2 IS NULL OR harness = ?2)
              ORDER BY created_at_unix_ms DESC, run_id DESC",
@@ -1488,6 +1581,18 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // evidence (see `EvidenceMetadata::trusted`), so the default only ever
     // back-fills historical rows.
     ensure_column(conn, "run_records", "trusted", "INTEGER NOT NULL DEFAULT 1")?;
+    // Backlog 973: this run's uniform response model, or `''` when its own
+    // tasks disagree (API drift within the run itself) or none is recorded —
+    // the same sentinel `provenance_model_version` already uses for
+    // `EvaluationCard.provenance.model_version`, now also queryable as a
+    // plain column so `score_history`/`compare_configs` can read it across
+    // runs without parsing the materialized JSON.
+    ensure_column(
+        conn,
+        "run_records",
+        "response_model",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
     Ok(())
 }
 
@@ -1699,8 +1804,33 @@ fn merge_prompt_metadata(
         .get("system_prompt_hash")
         .and_then(Value::as_str)
         .unwrap_or("prompt");
+
+    let tasks = value
+        .get("tasks")
+        .and_then(Value::as_array)
+        .with_context(|| format!("{artifact} is prompt evidence without a tasks array"))?;
+
+    // Backlog 973: fold grader/scoring-method identity into config identity.
+    // `rubric_hash` (`expectation_kind` + value for prompt_benchmark, rubric
+    // text for agentic_judge) already captures a per-task grading change —
+    // it was computed and stored per trial but never read back into config
+    // identity, so two runs whose corpora declared different grading could
+    // silently share a config_id. Aggregate it (sorted, so task ORDER never
+    // moves the identity) into one scoring_id per run: unlike `harness`/
+    // `tool_allowlist`, this is not optional metadata a run may lack, so it
+    // is folded in unconditionally rather than as an additive-when-present
+    // suffix — a corpus that changes its grading definitions earns a
+    // genuinely distinct config_id from this point on, the same way a
+    // different model or system prompt already does.
+    let mut rubric_hashes: Vec<&str> = tasks
+        .iter()
+        .filter_map(|task| task.get("rubric_hash").and_then(Value::as_str))
+        .collect();
+    rubric_hashes.sort_unstable();
+    let scoring_id = stable_hash_bytes(rubric_hashes.iter().map(|hash| hash.as_bytes()));
+
     let mut config_id = format!(
-        "{config_prefix}:{provider}:{model}:temp={temperature}:max={max_output_units}:prompt={system_prompt_hash}"
+        "{config_prefix}:{provider}:{model}:temp={temperature}:max={max_output_units}:prompt={system_prompt_hash}:scoring={scoring_id}"
     );
     // Additive suffixes only — a run with neither field recorded gets the
     // exact same config_id it would have before backlog 027, so pre-existing
@@ -1712,11 +1842,6 @@ fn merge_prompt_metadata(
         config_id.push_str(&format!(":tools={tool_allowlist}"));
     }
     metadata.config_id = Some(config_id);
-
-    let tasks = value
-        .get("tasks")
-        .and_then(Value::as_array)
-        .with_context(|| format!("{artifact} is prompt evidence without a tasks array"))?;
     for task in tasks {
         let task_id = task
             .get("task_id")
@@ -2006,6 +2131,7 @@ fn row_to_stored_run(row: &Row<'_>) -> rusqlite::Result<StoredRun> {
         tool_allowlist: parse_tool_allowlist(tool_allowlist_json.as_deref()),
         trace_path: row.get(23)?,
         trusted: row.get::<_, i64>(24)? != 0,
+        response_model: row.get(25)?,
     })
 }
 
@@ -2148,7 +2274,7 @@ fn latest_for_config(conn: &Connection, benchmark: &str, config: &str) -> Result
             config_id, provider, model, created_at_unix_ms, output_dir,
             run_report_path, evidence_path, spec_path, score_metric,
             successes, n, point, lower, upper, confidence, score_method,
-            harness, tool_allowlist, trace_path, trusted
+            harness, tool_allowlist, trace_path, trusted, response_model
          FROM run_records
          WHERE benchmark_id = ?1 AND (config_id = ?2 OR model = ?2)
          ORDER BY created_at_unix_ms DESC, run_id DESC
@@ -3029,6 +3155,266 @@ mod tests {
         assert_eq!(comparison.common_tasks, 0);
         assert!(!comparison.left.trusted);
         assert!(comparison.right.trusted);
+    }
+
+    // ---- backlog 973: config-identity completeness -----------------------
+
+    /// Rewrite every task's `response_model` in a persisted-and-reloadable
+    /// evidence fixture to `response_model` — the same "load, mutate, rewrite"
+    /// shape `agentic_judge_report_with_calibration` already uses.
+    fn prompt_report_with_response_model(
+        root: &Path,
+        model: &str,
+        temperature: u32,
+        response_model: &str,
+    ) -> RunReport {
+        let report = prompt_report_with_temperature(root, model, true, Some(temperature));
+        let evidence_path = Path::new(&report.evals[0].artifacts[1]).to_path_buf();
+        let mut evidence: Value =
+            serde_json::from_str(&std::fs::read_to_string(&evidence_path).unwrap()).unwrap();
+        for task in evidence["tasks"].as_array_mut().unwrap() {
+            task["response_model"] = serde_json::json!(response_model);
+        }
+        std::fs::write(
+            &evidence_path,
+            serde_json::to_string_pretty(&evidence).unwrap(),
+        )
+        .expect("rewrite prompt evidence with a response_model override");
+        report
+    }
+
+    /// Rewrite a persisted-and-reloadable prompt evidence fixture's one
+    /// task's `rubric_hash` — proving two runs whose corpora declared
+    /// different grading get a different `config_id`.
+    fn prompt_report_with_rubric_hash(
+        root: &Path,
+        model: &str,
+        temperature: u32,
+        rubric_hash: &str,
+    ) -> RunReport {
+        let report = prompt_report_with_temperature(root, model, true, Some(temperature));
+        let evidence_path = Path::new(&report.evals[0].artifacts[1]).to_path_buf();
+        let mut evidence: Value =
+            serde_json::from_str(&std::fs::read_to_string(&evidence_path).unwrap()).unwrap();
+        for task in evidence["tasks"].as_array_mut().unwrap() {
+            task["rubric_hash"] = serde_json::json!(rubric_hash);
+        }
+        std::fs::write(
+            &evidence_path,
+            serde_json::to_string_pretty(&evidence).unwrap(),
+        )
+        .expect("rewrite prompt evidence with a rubric_hash override");
+        report
+    }
+
+    #[test]
+    fn two_runs_with_different_grader_configs_get_distinct_config_ids() {
+        // Same model/temp/max/prompt in every other respect -- only the
+        // corpus's declared grading (rubric_hash) differs. A grader change
+        // must never masquerade as "the same config" in history/compare.
+        let root = temp_dir("scoring-identity");
+        let db = root.join("runs.sqlite");
+        persist_report(
+            &db,
+            &prompt_report_with_rubric_hash(&root, "test/model-a", 0, "fnv1a64:contains-check"),
+        )
+        .expect("persist run with the original grader");
+
+        let list_a = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs after first persist");
+        let config_id_a = list_a.runs[0].config_id.clone();
+
+        let root_b = temp_dir("scoring-identity-b");
+        let mut report_b =
+            prompt_report_with_rubric_hash(&root_b, "test/model-a", 0, "fnv1a64:regex-check");
+        // Persist into the SAME db as a second run of "the same benchmark".
+        report_b.output_dir = root_b.join("test-model-a-v2").display().to_string();
+        persist_report(&db, &report_b).expect("persist run with a changed grader");
+
+        let list_after = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs after second persist");
+        assert_eq!(list_after.runs.len(), 2);
+        let config_ids: std::collections::HashSet<&str> = list_after
+            .runs
+            .iter()
+            .map(|run| run.config_id.as_str())
+            .collect();
+        assert_eq!(
+            config_ids.len(),
+            2,
+            "a grader/rubric change must force a distinct config_id: {config_ids:?}"
+        );
+        assert!(config_ids.contains(config_id_a.as_str()));
+    }
+
+    #[test]
+    fn identical_grader_configs_share_the_same_config_id() {
+        // Sanity check for the previous test: with NOTHING else different,
+        // two runs of the same fixture must land in the same config
+        // namespace -- the scoring_id is deterministic, not incidental noise.
+        let root = temp_dir("scoring-identity-stable");
+        let db = root.join("runs.sqlite");
+        persist_report(
+            &db,
+            &prompt_report_with_rubric_hash(&root, "test/model-a", 0, "fnv1a64:contains-check"),
+        )
+        .expect("persist first run");
+
+        let root_b = temp_dir("scoring-identity-stable-b");
+        let mut report_b =
+            prompt_report_with_rubric_hash(&root_b, "test/model-a", 0, "fnv1a64:contains-check");
+        report_b.output_dir = root_b.join("second").display().to_string();
+        persist_report(&db, &report_b).expect("persist second run");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        assert_eq!(list.runs.len(), 2);
+        assert_eq!(
+            list.runs[0].config_id, list.runs[1].config_id,
+            "identical grader configs must share one config_id"
+        );
+    }
+
+    #[test]
+    fn score_history_warns_on_response_model_drift_for_the_same_requested_slug() {
+        let root = temp_dir("history-drift");
+        let db = root.join("runs.sqlite");
+        persist_report(
+            &db,
+            &prompt_report_with_response_model(&root, "test/model-a", 0, "provider/model-a-2024"),
+        )
+        .expect("persist first run");
+        persist_report(
+            &db,
+            &prompt_report_with_response_model(&root, "test/model-a", 0, "provider/model-a-2025"),
+        )
+        .expect("persist second run");
+
+        let history =
+            score_history(&db, "prompt-smoke-v0", "test/model-a").expect("query score history");
+        assert_eq!(history.points.len(), 2);
+        let warning = history
+            .response_model_drift_warning
+            .expect("drift across two distinct response models must warn");
+        assert!(warning.contains("test/model-a"), "{warning}");
+        assert!(warning.contains("provider/model-a-2024"), "{warning}");
+        assert!(warning.contains("provider/model-a-2025"), "{warning}");
+    }
+
+    #[test]
+    fn score_history_is_silent_when_response_models_agree() {
+        let root = temp_dir("history-no-drift");
+        let db = root.join("runs.sqlite");
+        persist_report(
+            &db,
+            &prompt_report_with_response_model(&root, "test/model-a", 0, "provider/model-a-2024"),
+        )
+        .expect("persist first run");
+        persist_report(
+            &db,
+            &prompt_report_with_response_model(&root, "test/model-a", 0, "provider/model-a-2024"),
+        )
+        .expect("persist second run");
+
+        let history =
+            score_history(&db, "prompt-smoke-v0", "test/model-a").expect("query score history");
+        assert_eq!(history.points.len(), 2);
+        assert!(
+            history.response_model_drift_warning.is_none(),
+            "identical response models across the history must not warn"
+        );
+    }
+
+    #[test]
+    fn compare_configs_warns_on_response_model_drift_for_the_same_requested_slug() {
+        let root = temp_dir("compare-drift");
+        let db = root.join("runs.sqlite");
+        persist_report(
+            &db,
+            &prompt_report_with_response_model(&root, "test/model-a", 0, "provider/model-a-2024"),
+        )
+        .expect("persist temp=0 run");
+        persist_report(
+            &db,
+            &prompt_report_with_response_model(&root, "test/model-a", 1, "provider/model-a-2025"),
+        )
+        .expect("persist temp=1 run");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        assert_eq!(list.runs.len(), 2);
+        let config_a = list
+            .runs
+            .iter()
+            .find(|run| run.response_model == "provider/model-a-2024")
+            .expect("2024 run")
+            .config_id
+            .clone();
+        let config_b = list
+            .runs
+            .iter()
+            .find(|run| run.response_model == "provider/model-a-2025")
+            .expect("2025 run")
+            .config_id
+            .clone();
+
+        let comparison = compare_configs(&db, "prompt-smoke-v0", &config_a, &config_b, 0.05)
+            .expect("compare configs");
+        let warning = comparison
+            .response_model_drift_warning
+            .expect("both sides requested test/model-a but saw different response models");
+        assert!(warning.contains("test/model-a"), "{warning}");
+    }
+
+    #[test]
+    fn compare_configs_does_not_warn_when_the_requested_models_genuinely_differ() {
+        // "test/model-a" vs "test/model-b" is an intentional comparison of
+        // two different models -- not drift, even if their response models
+        // also differ (they always will, being different models).
+        let root = temp_dir("compare-no-drift-different-models");
+        let db = root.join("runs.sqlite");
+        persist_report(
+            &db,
+            &prompt_report_with_response_model(&root, "test/model-a", 0, "provider/model-a-2024"),
+        )
+        .expect("persist left run");
+        persist_report(
+            &db,
+            &prompt_report_with_response_model(&root, "test/model-b", 0, "provider/model-b-2024"),
+        )
+        .expect("persist right run");
+
+        let comparison =
+            compare_configs(&db, "prompt-smoke-v0", "test/model-a", "test/model-b", 0.05)
+                .expect("compare configs");
+        assert!(
+            comparison.response_model_drift_warning.is_none(),
+            "comparing two genuinely different requested models is not drift"
+        );
     }
 
     #[test]

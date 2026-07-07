@@ -11,7 +11,22 @@
   list/show/compare/history/pivot` (CLI + MCP) — config identity now carries
   explicit `harness`/`tool_allowlist` fields (`backlog.d/027-*`), `history`
   is one config's score trend over time, `pivot` is one benchmark's latest
-  run per model narrowable to one harness. Every paired comparison
+  run per model narrowable to one harness. **Config-identity axes**
+  (`crucible-973`, the complete set, documented once here rather than only
+  derivable from `run_store.rs` internals): `provider`, `model`, `temp`,
+  `max` output units, the system/judge prompt hash, a `scoring` identity
+  (below-harness-name grading: `rubric_hash` per task — `expectation_kind`
+  + value for `prompt_benchmark`, rubric text for `agentic_judge` —
+  aggregated so a corpus that changes its grading definitions gets a
+  genuinely distinct `config_id`, never silently sharing history with the
+  old grader), and optionally `harness`/`tool_allowlist`. Response-model
+  drift — a provider silently changing the model behind a requested slug
+  (arXiv:2407.12220's QRPs catalog documents harness hacking *below* the
+  harness-name level) — is a related but separate axis: every run's uniform-
+  or-empty `response_model` is aggregated and persisted (`run_records
+  .response_model`), and `runs history`/`compare` warn (never silently drop)
+  when runs sharing one requested model slug recorded differing response
+  models. Every paired comparison
   (`compare`'s `paired`/`class_breakdowns[].paired`) also carries a
   `resolution` (`crucible-950`): Kotawala's resolution ratio `q = n/N*` and
   minimum detectable effect, from the correct paired-Bernoulli variance
