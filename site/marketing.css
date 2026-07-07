@@ -61,6 +61,10 @@
 }
 
 .msk-hero-panel .ae-h {
+  font-size: clamp(1.7rem, 2.8vw, 2.6rem);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  max-width: 24ch;
   margin-bottom: 0;
 }
 
