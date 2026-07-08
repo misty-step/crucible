@@ -259,6 +259,57 @@ For prompt benchmarks that declare per-task `class`, `runs compare` emits
 `class_breakdowns` rows with per-class pass counts, deltas, paired task counts,
 and McNemar noise-floor verdicts in addition to the overall comparison.
 
+## Run An Eval In Named Operating Environments (`--env`)
+
+An **operating environment** is the model-invocation config an eval runs *in* —
+model, provider, temperature, output cap, harness, tool allowlist — factored out
+of the spec into a named, on-disk `crucible.environment.v1` declaration and
+reused across specs. `crucible run <spec> --env A.json --env B.json` runs the
+same eval once per environment and compares them, so "run eval X in env A vs env
+B" is one command. This is the operator-driven workbench loop: design an eval
+once, then ask what different models/configs score on it.
+
+```sh
+cargo run -p crucible -- run evals/model-routing-v0.json \
+  --env evals/environments/deepseek-v4-flash.json \
+  --env evals/environments/glm-5.2.json \
+  --db runs/local/crucible-runs.sqlite
+```
+
+An environment declares only the axes it overrides; every unset axis is held
+from the spec. The narrow, routing-bench form is one field:
+
+```json
+{ "schema_version": "crucible.environment.v1", "id": "glm-5.2",
+  "description": "Z.ai GLM 5.2, temp 0 — routing challenger.",
+  "provider": "open_router", "model": "z-ai/glm-5.2", "temperature": 0 }
+```
+
+Each environment writes under an `env-<id>` child directory, persists as its own
+run row with its own config identity, and the **first environment is the
+baseline** — every later environment is compared against it (env A vs env B is
+exactly one comparison). Because the two runs' config identities differ *only*
+on the axes the environment changed, `runs compare` labels the delta
+`model_delta` / `harness_delta` / `config_delta` by construction, and the same
+paired-McNemar noise-floor and Kotawala resolution diagnostics apply — the
+workbench refuses to call a delta real that its sample size cannot resolve. The
+run prints the exact `runs compare` repro command for each pair; `--json` emits
+`{ environments, comparisons }` (the full `ConfigComparison` per pair).
+
+What an environment deliberately does **not** touch: the eval's content — system
+/judge prompt, tasks, rubric, fixtures. Those are what a paired comparison holds
+constant; letting an environment change them would confound the model delta with
+a prompt delta. And `harness`/`tool_allowlist` are recorded *identity* (folded
+into `config_id` so a cross-harness delta is attributable), not enforced
+provisioning — only the `harbor_task` runner shells out to a real sandbox.
+
+An environment refuses (does not silently drop) rather than mis-apply: a
+`key_recall` spec has no model config to override, a definition-only spec has no
+runner, and an axis the target runner cannot accept (an output cap for an
+`agentic_judge` spec, a harness for a `harbor_task` spec) is named in the error.
+`--env` requires two or more environments and is mutually exclusive with
+`--model`/`--models`.
+
 Every paired comparison (`comparison.paired` and each `class_breakdowns[].paired`)
 carries a `resolution` alongside its `DeltaVerdict` — Kotawala's resolution
 diagnostic (*Resolution Diagnostics for Paired LLM Evaluation*, arXiv:2605.30315),

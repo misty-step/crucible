@@ -59,9 +59,25 @@ pub fn run_with_options(
     options: &RunOptions,
 ) -> anyhow::Result<RunReport> {
     let spec = load_spec(spec_path)?;
+    run_loaded_spec(&spec, spec_path, out, options)
+}
+
+/// Execute an already-loaded [`EvalSpec`] value, rather than reading it from
+/// disk. `spec_path` is still required — it anchors relative fixture/corpus
+/// paths and supplies the spec-id fallback — but the spec that actually runs is
+/// the `spec` argument, not the file's contents. This is the entry point the
+/// environment matrix (`crucible run --env`) uses to run a spec transformed by
+/// an [`crucible_core::Environment`] without writing the transformed spec back
+/// to disk.
+pub(crate) fn run_loaded_spec(
+    spec: &EvalSpec,
+    spec_path: &Path,
+    out: Option<&Path>,
+    options: &RunOptions,
+) -> anyhow::Result<RunReport> {
     let out = out
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| default_output_dir_for_spec(&spec, spec_path));
+        .unwrap_or_else(|| default_output_dir_for_spec(spec, spec_path));
     std::fs::create_dir_all(&out)
         .with_context(|| format!("creating run output directory {}", out.display()))?;
 
@@ -71,7 +87,7 @@ pub fn run_with_options(
             spec_path.display()
         )
     })?;
-    let eval = run_runner(&spec, runner, spec_path, &out, options)?;
+    let eval = run_runner(spec, runner, spec_path, &out, options)?;
     let report = RunReport {
         schema_version: RUN_REPORT_SCHEMA,
         output_dir: out.display().to_string(),
