@@ -1,0 +1,92 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "commit-message-quality-v0",
+  "task": "commit-message-quality",
+  "inputs": "Six synthetic code diffs of varying complexity, each handed to the model under test as the sole input.",
+  "outputs": "A generated Conventional Commits message per diff, graded on the structural contract (valid type prefix, a real subject, and a body). The faithfulness/why layer is a shaped follow-up that needs a generate-then-judge runner.",
+  "graders": {
+    "graders": [
+      {
+        "id": "conventional_commit_shape",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "decision": "Which model/harness/config produces well-structured commit messages when acting as our agents -- and does a cheap or deprecated model regress on basic output discipline? Feeds routing and the broader agent-output-quality question.",
+  "min_effect_of_interest": 0.25,
+  "runner": {
+    "kind": "prompt_benchmark",
+    "corpus": {
+      "source": "prompt_benchmark",
+      "config": {
+        "provider": "open_router",
+        "model": "deepseek/deepseek-v4-flash",
+        "system_prompt": "You write git commit messages in the Conventional Commits style. Given a unified diff, produce exactly one commit message: a subject line of the form `type(scope): summary` (type is one of feat, fix, docs, refactor, perf, test, build, ci, chore; scope optional), then a blank line, then a body of one or more sentences explaining what changed and WHY. Respond with ONLY the commit message text -- no code fences, no preamble, no quotes, no trailing commentary.",
+        "credential_env": "OPENROUTER_API_KEY",
+        "max_tokens": 400,
+        "temperature": 0
+      },
+      "tasks": [
+        {
+          "task_id": "null-guard",
+          "class": "bugfix",
+          "prompt": "Write a Conventional Commits message for this diff:\n\n```diff\n--- a/src/user.rs\n+++ b/src/user.rs\n@@ fn display_name(user: &User) -> String {\n-    user.profile.nickname.clone()\n+    match &user.profile {\n+        Some(p) => p.nickname.clone(),\n+        None => user.login.clone(),\n+    }\n }\n```",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(\\([a-z0-9._-]+\\))?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "add-cli-flag",
+          "class": "feature",
+          "prompt": "Write a Conventional Commits message for this diff:\n\n```diff\n--- a/src/cli.rs\n+++ b/src/cli.rs\n@@ struct RunArgs {\n     pub spec: PathBuf,\n+    /// Fail instead of warn when the sample cannot resolve the declared effect.\n+    #[arg(long)]\n+    pub strict_power: bool,\n }\n```",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(\\([a-z0-9._-]+\\))?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "rename-symbol",
+          "class": "refactor",
+          "prompt": "Write a Conventional Commits message for this diff:\n\n```diff\n--- a/src/store.rs\n+++ b/src/store.rs\n@@\n-pub fn lookup_config_id(db: &Db, run: &str) -> Result<String> {\n-    let all = list_runs(db)?;\n-    all.into_iter().find(|r| r.run_id == run).map(|r| r.config_id)\n+pub fn config_id_for_run(db: &Db, run: &str) -> Result<String> {\n+    Ok(show_run(db, run)?.run.config_id)\n }\n```",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(\\([a-z0-9._-]+\\))?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "timezone-fix",
+          "class": "bugfix",
+          "prompt": "Write a Conventional Commits message for this diff:\n\n```diff\n--- a/src/report.rs\n+++ b/src/report.rs\n@@ fn stamp(ts: i64) -> String {\n-    let dt = NaiveDateTime::from_timestamp_opt(ts, 0).unwrap();\n-    dt.format(\"%Y-%m-%d %H:%M\").to_string()\n+    let dt = Utc.timestamp_opt(ts, 0).unwrap();\n+    dt.with_timezone(&Local).format(\"%Y-%m-%d %H:%M %Z\").to_string()\n }\n```",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(\\([a-z0-9._-]+\\))?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "config-option",
+          "class": "feature",
+          "prompt": "Write a Conventional Commits message for this diff:\n\n```diff\n--- a/src/config.rs\n+++ b/src/config.rs\n@@ pub struct Config {\n     pub port: u16,\n+    /// Serve without the bearer gate when behind a trusted network layer.\n+    #[serde(default)]\n+    pub trust_network: bool,\n }\n--- a/README.md\n+++ b/README.md\n@@\n+- `trust_network`: skip the auth gate behind a private tailnet or proxy.\n```",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(\\([a-z0-9._-]+\\))?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "remove-dead-code",
+          "class": "refactor",
+          "prompt": "Write a Conventional Commits message for this diff:\n\n```diff\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@\n-// Legacy path kept during the v1->v2 migration; no caller since #114.\n-pub fn legacy_score(trials: &[Trial]) -> f64 {\n-    trials.iter().filter(|t| t.passed).count() as f64 / trials.len() as f64\n-}\n-\n pub fn score(trials: &[Trial]) -> Estimate {\n```",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat|fix|docs|refactor|perf|test|build|ci|chore)(\\([a-z0-9._-]+\\))?: .{3,}\\n\\n.+"
+          }
+        }
+      ]
+    }
+  }
+}
