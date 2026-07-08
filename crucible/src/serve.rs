@@ -2183,7 +2183,10 @@ fn render_index() -> String {
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231a1a1a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2'/%3E%3Cpath d='M6.453 15h11.094'/%3E%3Cpath d='M8.5 2h7'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/assets/aesthetic.css">
   <style>
-    :root { --ae-accent: #8a3b30; --ae-accent-dark: #ff9f90; }
+    /* Crucible identity within the house kit: brass — the crucible's metal.
+       Verdict washes derive from the kit's own ok/err tokens so both themes
+       inherit correct contrast for free. */
+    :root { --ae-accent: #8f6b33; --ae-accent-dark: #c7a366; --cru-ok-wash: color-mix(in srgb, var(--ae-ok) 12%, transparent); --cru-err-wash: color-mix(in srgb, var(--ae-err) 12%, transparent); }
     .cru-desk { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ae-space-5); align-content: start; }
     .cru-toolbar { display: flex; gap: var(--ae-space-3); align-items: start; justify-content: space-between; flex-wrap: wrap; }
     .cru-title { font-weight: var(--ae-w-black); }
@@ -2196,7 +2199,7 @@ fn render_index() -> String {
     .cru-card.selected { border-color: var(--ae-ink); box-shadow: inset 0 0 0 1px var(--ae-ink); }
     .cru-card.warning { background: var(--ae-wash); }
     .cru-actions { display: flex; gap: var(--ae-space-2); align-items: center; flex-wrap: wrap; }
-    .cru-button { appearance: none; border: 1px solid var(--ae-ink); background: var(--ae-ink); color: var(--ae-surface); padding: .55em .8em; border-radius: 0; cursor: pointer; transition: transform var(--ae-quick) var(--ae-ease), background var(--ae-quick) var(--ae-ease); }
+    .cru-button { appearance: none; border: 1px solid var(--ae-ink); background: var(--ae-ink); color: var(--ae-surface); padding: .65em 1em; min-height: 44px; border-radius: 0; cursor: pointer; transition: transform var(--ae-quick) var(--ae-ease), background var(--ae-quick) var(--ae-ease); }
     .cru-button:hover { transform: translateY(-1px); }
     .cru-button:active { transform: translateY(0); }
     .cru-button.secondary { background: transparent; color: var(--ae-ink); border-color: var(--ae-line); }
@@ -2252,16 +2255,24 @@ fn render_index() -> String {
     .cru-matrix thead th:first-child { position: sticky; left: 0; z-index: 2; }
     .cru-matrix tfoot th { background: var(--ae-wash); }
     .cru-matrix tbody tr:hover td, .cru-matrix tbody tr:hover th { background: var(--ae-wash); }
-    .cru-matrix .mark { font-family: var(--ae-font-mono); cursor: pointer; }
-    .cru-matrix .mark.ok { color: var(--ae-ok); }
-    .cru-matrix .mark.err { color: var(--ae-err); }
-    .cru-matrix .mark.na { color: var(--ae-ink-muted); }
+    .cru-matrix .mark { font-family: var(--ae-font-mono); cursor: pointer; display: inline-block; min-width: 2.1em; text-align: center; padding: .12em .3em; font-weight: var(--ae-w-medium); }
+    .cru-matrix .mark.ok { color: var(--ae-ok); background: var(--cru-ok-wash); }
+    .cru-matrix .mark.err { color: var(--ae-err); background: var(--cru-err-wash); }
+    .cru-matrix .mark.na { color: var(--ae-ink-faint); }
+    .cru-matrix tfoot td { font-variant-numeric: tabular-nums; font-weight: var(--ae-w-medium); }
+    .cru-matrix tfoot .col-sub { font-weight: var(--ae-w-regular); }
     .cru-matrix .col-label { display: block; font-weight: var(--ae-w-medium); }
     .cru-matrix .col-sub { display: block; color: var(--ae-ink-muted); font-weight: var(--ae-w-regular); font-size: 12px; }
     .cru-drilldown { border: 1px solid var(--ae-ink); background: var(--ae-surface); padding: var(--ae-space-5); display: grid; gap: var(--ae-space-3); }
     .cru-drilldown-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(18em, 1fr)); gap: var(--ae-space-3); }
     .cru-response-card { border: 1px solid var(--ae-line); padding: var(--ae-space-3); display: grid; gap: var(--ae-space-2); align-content: start; }
-    .cru-pre { white-space: pre-wrap; word-break: break-word; font-family: var(--ae-font-mono); font-size: 13px; max-height: 16em; overflow: auto; background: var(--ae-wash); padding: var(--ae-space-2); }
+    .cru-response-card .cru-chip.ok { background: var(--cru-ok-wash); border-color: transparent; }
+    .cru-response-card .cru-chip.err { background: var(--cru-err-wash); border-color: transparent; }
+    .cru-pre { white-space: pre-wrap; word-break: break-word; font-family: var(--ae-font-mono); font-size: 13px; max-height: 16em; overflow: auto; background: var(--ae-wash); padding: var(--ae-space-2); border-left: 2px solid var(--ae-line); }
+    .cru-response-card.ok .cru-pre { border-left-color: var(--ae-ok); }
+    .cru-response-card.err .cru-pre { border-left-color: var(--ae-err); }
+    .cru-table-wrap .ae-table td, .cru-table-wrap .ae-table th { padding-top: .7em; padding-bottom: .7em; }
+    .cru-table-wrap .ae-table td.num { font-variant-numeric: tabular-nums; }
     @media (max-width: 820px) {
       .cru-mobile-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--ae-space-3); padding-bottom: var(--ae-space-4); border-bottom: 1px solid var(--ae-line); }
       .cru-mobile-bar .ae-name { margin: 0; }
@@ -2278,6 +2289,21 @@ fn render_index() -> String {
          apart. */
       .cru-progress-head { display: none; }
       .cru-progress-runner-label { display: inline; font-weight: var(--ae-w-medium); margin-right: .35em; }
+    }
+    @media (max-width: 480px) {
+      /* Phone: the operator's primary surface. Tighten the chrome, keep every
+         interactive target >= 44px, and let data tables carry smaller type --
+         the sticky task column + per-container horizontal scroll do the rest. */
+      .ae-desk { padding: .75em; }
+      .cru-desk { gap: var(--ae-space-4); }
+      .cru-card, .cru-drilldown { padding: var(--ae-space-4); }
+      .cru-matrix th, .cru-matrix td { padding: .45em .5em; font-size: 13px; }
+      .cru-table-wrap .ae-table th, .cru-table-wrap .ae-table td { font-size: 13px; }
+      .cru-select, .cru-input { min-height: 44px; }
+      .cru-toast { left: 1em; right: 1em; max-width: none; }
+      .cru-drilldown-grid { grid-template-columns: 1fr; }
+      .cru-toolbar { gap: var(--ae-space-2); }
+      .cru-hub-meta { font-size: 13px; }
     }
   </style>
 </head>
@@ -2658,7 +2684,7 @@ fn render_index() -> String {
         <div class="cru-drilldown-grid">
           ${(row?.cells || []).map(cell => {
             const column = columnsById.get(cell.run_id);
-            return `<div class="cru-response-card">
+            return `<div class="cru-response-card ${cell.passed == null ? '' : cell.passed ? 'ok' : 'err'}">
               <p class="cru-title">${esc(column?.label || cell.run_id)}</p>
               <p>${statusGlyph(cell.passed == null ? 'progress' : cell.passed ? 'ok' : 'err')}${cell.passed == null ? 'no data' : cell.passed ? 'pass' : 'fail'}</span></p>
               ${cell.output_text != null ? `<pre class="cru-pre">${esc(cell.output_text)}</pre>` : '<p class="cru-subtle">No response text indexed.</p>'}
