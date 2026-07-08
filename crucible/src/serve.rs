@@ -2268,6 +2268,7 @@ fn render_index() -> String {
     .cru-button:active { transform: translateY(0); }
     .cru-button.secondary { background: transparent; color: var(--ae-ink); border-color: var(--ae-line); }
     .cru-button:disabled { opacity: .45; cursor: default; transform: none; }
+    .cru-icon-button { min-width: 44px; display: inline-flex; align-items: center; justify-content: center; padding: .55em; }
     .cru-input, .cru-textarea, .cru-select { appearance: none; border: 1px solid var(--ae-line); background: var(--ae-surface); color: var(--ae-ink); padding: .55em .65em; border-radius: 0; min-width: 0; width: 100%; box-sizing: border-box; }
     .cru-textarea { min-height: 9em; resize: vertical; line-height: 1.45; }
     .cru-field { display: grid; gap: var(--ae-space-1); }
@@ -2560,7 +2561,7 @@ fn render_index() -> String {
       const rows = specs();
       view.innerHTML = `<div class="cru-toolbar">
         <div><p class="cru-title">Evals</p><p class="cru-lede">An eval is a declared task set with a grader. Pick one to see its results matrix, comparisons, and receipts.</p></div>
-        <button class="cru-button secondary" id="reload" type="button">Refresh</button>
+        <button class="cru-button secondary cru-icon-button" id="reload" type="button" aria-label="Refresh" title="Refresh"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
       </div>
       <div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>eval</th><th>runner kind</th><th>tasks</th><th>runs</th><th>last score</th></tr></thead><tbody>
         ${rows.map(spec => {
