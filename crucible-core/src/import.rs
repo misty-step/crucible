@@ -398,6 +398,7 @@ fn project_test(
         context_file: None,
         prompt,
         expectation,
+        tracked: Vec::new(),
     })
 }
 

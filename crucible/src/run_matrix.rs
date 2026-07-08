@@ -48,6 +48,7 @@ pub(crate) fn run(
     spec: Option<&Path>,
     out: Option<&Path>,
     json: bool,
+    strict_tracked: bool,
     env_paths: &[PathBuf],
     alpha: f64,
     db: &Path,
@@ -74,6 +75,7 @@ pub(crate) fn run(
     let prepared = prepare(&base_spec, &base_out, env_paths)?;
 
     let mut receipts = Vec::with_capacity(prepared.len());
+    let mut tracked_failures = Vec::new();
     for env in &prepared {
         let report = spec_run::run_loaded_spec(
             &env.transformed,
@@ -83,6 +85,9 @@ pub(crate) fn run(
         )
         .with_context(|| format!("running eval in environment {:?}", env.env_id))?;
         let stored = run_store::persist_report(db, &report)?;
+        if strict_tracked {
+            tracked_failures.extend(spec_run::tracked_failures(&report)?);
+        }
 
         let benchmark_id = report
             .evals
@@ -113,6 +118,12 @@ pub(crate) fn run(
         print_json(db, &receipts, alpha)?;
     } else {
         print_human(db, &receipts, alpha)?;
+    }
+    if !tracked_failures.is_empty() {
+        anyhow::bail!(
+            "tracked checks failed: {}",
+            spec_run::format_tracked_failures(&tracked_failures)
+        );
     }
     Ok(())
 }
@@ -352,6 +363,7 @@ mod tests {
                         expectation: PromptExpectation::Contains {
                             value: "x".to_string(),
                         },
+                        tracked: Vec::new(),
                     }],
                 },
             }),

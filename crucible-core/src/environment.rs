@@ -462,6 +462,7 @@ mod tests {
                 expectation: PromptExpectation::Contains {
                     value: "x".to_string(),
                 },
+                tracked: Vec::new(),
             }],
         }
     }

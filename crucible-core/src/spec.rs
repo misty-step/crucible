@@ -266,6 +266,20 @@ pub struct PromptBenchmarkTask {
     pub prompt: String,
     /// Deterministic rubric applied to the model response.
     pub expectation: PromptExpectation,
+    /// Non-gating checks evaluated against the same model response. These are
+    /// persisted for observability but do not affect the task pass/fail bit or
+    /// headline score.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracked: Vec<TrackedCheck>,
+}
+
+/// A named, non-gating prompt check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedCheck {
+    /// Stable check id within its task.
+    pub id: String,
+    /// Deterministic rubric applied to the model response.
+    pub expectation: PromptExpectation,
 }
 
 /// Deterministic rubric for prompt benchmarks (backlog 017: the closed-enum
@@ -842,6 +856,7 @@ mod tests {
                 expectation: PromptExpectation::Exact {
                     value: "crucible-smoke".to_string(),
                 },
+                tracked: Vec::new(),
             }],
         };
         let json = serde_json::to_string(&corpus).unwrap();
@@ -850,11 +865,41 @@ mod tests {
             "corpus source is stable: {json}"
         );
         assert!(
-            !json.contains("harness") && !json.contains("tool_allowlist"),
-            "absent harness/tool_allowlist are omitted, not written as null/empty: {json}"
+            !json.contains("harness")
+                && !json.contains("tool_allowlist")
+                && !json.contains("tracked"),
+            "absent harness/tool_allowlist/tracked are omitted, not written as null/empty: {json}"
         );
         let back: CorpusSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(back, corpus);
+    }
+
+    #[test]
+    fn prompt_benchmark_tracked_checks_are_additive() {
+        let json = r#"{
+            "source": "prompt_benchmark",
+            "config": {
+                "provider": "open_router",
+                "model": "openai/gpt-4o-mini",
+                "system_prompt": "Answer exactly.",
+                "credential_env": "OPENROUTER_API_KEY"
+            },
+            "tasks": [{
+                "task_id": "exact-word",
+                "prompt": "Reply with exactly: crucible-smoke",
+                "expectation": { "kind": "exact", "value": "crucible-smoke" },
+                "tracked": [{
+                    "id": "mentions-smoke",
+                    "expectation": { "kind": "contains", "value": "smoke" }
+                }]
+            }]
+        }"#;
+        let corpus: CorpusSpec = serde_json::from_str(json).unwrap();
+        let CorpusSpec::PromptBenchmark { tasks, .. } = corpus else {
+            panic!("expected prompt_benchmark corpus");
+        };
+        assert_eq!(tasks[0].tracked.len(), 1);
+        assert_eq!(tasks[0].tracked[0].id, "mentions-smoke");
     }
 
     #[test]

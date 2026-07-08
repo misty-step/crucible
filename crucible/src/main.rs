@@ -268,6 +268,10 @@ enum Command {
         /// Emit the stable run report JSON to stdout in addition to writing it.
         #[arg(long)]
         json: bool,
+        /// Exit non-zero after the run if any tracked prompt check failed.
+        /// Scores and persisted records still use gate expectations only.
+        #[arg(long)]
+        strict_tracked: bool,
         /// Override a prompt_benchmark spec's configured model slug for this
         /// run. This keeps one authored benchmark comparable across selected
         /// OpenRouter models without committing model-specific spec copies.
@@ -576,6 +580,7 @@ fn main() -> ExitCode {
             eval,
             out,
             json,
+            strict_tracked,
             model,
             models,
             envs,
@@ -586,6 +591,7 @@ fn main() -> ExitCode {
             eval,
             out.as_deref(),
             json,
+            strict_tracked,
             model.as_deref(),
             models.as_deref(),
             &envs,
@@ -636,6 +642,7 @@ fn run_eval(
     eval: eval_run::RunEval,
     out: Option<&Path>,
     json: bool,
+    strict_tracked: bool,
     model: Option<&str>,
     models: Option<&str>,
     envs: &[PathBuf],
@@ -650,10 +657,10 @@ fn run_eval(
         if eval != eval_run::RunEval::All {
             anyhow::bail!("--env selects a declared spec and cannot be combined with --eval");
         }
-        return run_matrix::run(spec, out, json, envs, alpha, db);
+        return run_matrix::run(spec, out, json, strict_tracked, envs, alpha, db);
     }
     if let Some(models) = models {
-        return run_fanout::run(spec, eval, out, json, models, db);
+        return run_fanout::run(spec, eval, out, json, strict_tracked, models, db);
     }
     let report = if let Some(spec_path) = spec {
         if eval != eval_run::RunEval::All {
@@ -702,6 +709,15 @@ fn run_eval(
             stored.harbor_task_results,
             plural(stored.harbor_task_results)
         );
+    }
+    if strict_tracked {
+        let failures = spec_run::tracked_failures(&report)?;
+        if !failures.is_empty() {
+            anyhow::bail!(
+                "tracked checks failed: {}",
+                spec_run::format_tracked_failures(&failures)
+            );
+        }
     }
     Ok(())
 }
@@ -981,6 +997,24 @@ fn print_run_detail(detail: &run_store::RunDetail) {
     }
     if !detail.prompt_tasks.is_empty() {
         println!("  prompt task rows {}", detail.prompt_tasks.len());
+        for task in &detail.prompt_tasks {
+            if task.tracked_results.is_empty() {
+                continue;
+            }
+            let outcomes = task
+                .tracked_results
+                .iter()
+                .map(|check| {
+                    format!(
+                        "{}={}",
+                        check.id,
+                        if check.passed { "pass" } else { "fail" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("  tracked  {}  {}", task.task_id, outcomes);
+        }
     }
     if !detail.harbor_tasks.is_empty() {
         println!("  harbor task rows {}", detail.harbor_tasks.len());

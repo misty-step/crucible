@@ -1054,6 +1054,7 @@ fn run_prompt_benchmark(
     // A malformed Regex expectation fails here, before any model call is
     // made — not mid-grading after tasks have already spent real API calls.
     check_prompt_regexes(tasks)?;
+    check_prompt_tracked_ids(tasks)?;
     let effective_config = prompt_config_with_overrides(config, options);
     let client = OpenRouterClient::from_config(&effective_config)?;
     run_prompt_benchmark_with_client(
@@ -1107,6 +1108,31 @@ pub(crate) fn check_prompt_regexes(tasks: &[PromptBenchmarkTask]) -> anyhow::Res
         if let PromptExpectation::Regex { pattern } = &task.expectation {
             compile_expectation_regex(pattern)
                 .with_context(|| format!("task {:?}", task.task_id))?;
+        }
+        for check in &task.tracked {
+            if let PromptExpectation::Regex { pattern } = &check.expectation {
+                compile_expectation_regex(pattern).with_context(|| {
+                    format!("task {:?} tracked check {:?}", task.task_id, check.id)
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refuse duplicate tracked-check ids within one prompt task. The id scope is
+/// per task, so the same tracked id may appear on different tasks.
+pub(crate) fn check_prompt_tracked_ids(tasks: &[PromptBenchmarkTask]) -> anyhow::Result<()> {
+    for task in tasks {
+        let mut seen = HashSet::new();
+        for check in &task.tracked {
+            if !seen.insert(check.id.as_str()) {
+                anyhow::bail!(
+                    "task {:?} declares duplicate tracked id {:?}",
+                    task.task_id,
+                    check.id
+                );
+            }
         }
     }
     Ok(())
@@ -1253,6 +1279,23 @@ fn run_one_prompt_task(
     let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
     let task_passed = prompt_expectation_passes(&response.output, &task.expectation)
         .with_context(|| format!("grading prompt task {:?}", task.task_id))?;
+    let tracked_results = task
+        .tracked
+        .iter()
+        .map(|check| {
+            let passed = prompt_expectation_passes(&response.output, &check.expectation)
+                .with_context(|| {
+                    format!(
+                        "grading tracked prompt check {:?} on task {:?}",
+                        check.id, task.task_id
+                    )
+                })?;
+            Ok(TrackedCheckResult {
+                id: check.id.clone(),
+                passed,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     let expectation_value = expectation_value(&task.expectation);
     Ok(PromptTaskResult {
@@ -1263,6 +1306,7 @@ fn run_one_prompt_task(
         rubric_hash: stable_hash(&[expectation_kind(&task.expectation), &expectation_value]),
         expectation: task.expectation.clone(),
         passed: task_passed,
+        tracked_results,
         output: response.output,
         latency_ms,
         response_id: response.response_id,
@@ -2169,6 +2213,19 @@ impl OpenRouterClient {
 
 impl ModelClient for OpenRouterClient {
     fn complete(&self, request: ModelRequest<'_>) -> anyhow::Result<ModelResponse> {
+        #[cfg(debug_assertions)]
+        if let Ok(output) = std::env::var("CRUCIBLE_OPENROUTER_FIXTURE_OUTPUT") {
+            return Ok(ModelResponse {
+                output,
+                response_id: Some(format!("fixture:{}", request.model)),
+                response_model: Some(request.model.to_string()),
+                input_units: Some(1),
+                output_units: Some(1),
+                total_units: Some(2),
+                cost_usd: Some(0.0),
+            });
+        }
+
         let body = ChatCompletionRequest {
             model: request.model,
             messages: vec![
@@ -2764,6 +2821,8 @@ struct PromptTaskResult {
     rubric_hash: String,
     expectation: PromptExpectation,
     passed: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tracked_results: Vec<TrackedCheckResult>,
     output: String,
     latency_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2781,6 +2840,86 @@ struct PromptTaskResult {
     total_units: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct TrackedCheckResult {
+    id: String,
+    passed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TrackedFailure {
+    pub evidence_path: String,
+    pub task_id: String,
+    pub check_id: String,
+}
+
+/// Read tracked-check failures from a completed run's prompt evidence. This is
+/// intentionally post-run: strict tracked mode promotes diagnostic checks into
+/// a process exit code without changing the score or persisted record.
+pub(crate) fn tracked_failures(report: &RunReport) -> anyhow::Result<Vec<TrackedFailure>> {
+    let mut failures = Vec::new();
+    for eval in &report.evals {
+        for artifact in &eval.artifacts {
+            if !artifact.ends_with("prompt-run.json") {
+                continue;
+            }
+            let bytes = std::fs::read(artifact)
+                .with_context(|| format!("reading prompt evidence {artifact}"))?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
+                .with_context(|| format!("parsing prompt evidence {artifact}"))?;
+            let tasks = value
+                .get("tasks")
+                .and_then(serde_json::Value::as_array)
+                .with_context(|| format!("{artifact} is prompt evidence without a tasks array"))?;
+            for task in tasks {
+                let task_id = task
+                    .get("task_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("<unknown>")
+                    .to_string();
+                let Some(tracked_results) = task
+                    .get("tracked_results")
+                    .and_then(serde_json::Value::as_array)
+                else {
+                    continue;
+                };
+                for check in tracked_results {
+                    if check
+                        .get("passed")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(true)
+                    {
+                        continue;
+                    }
+                    failures.push(TrackedFailure {
+                        evidence_path: artifact.clone(),
+                        task_id: task_id.clone(),
+                        check_id: check
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("<unknown>")
+                            .to_string(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(failures)
+}
+
+pub(crate) fn format_tracked_failures(failures: &[TrackedFailure]) -> String {
+    failures
+        .iter()
+        .map(|failure| {
+            format!(
+                "{}:{} ({})",
+                failure.task_id, failure.check_id, failure.evidence_path
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Debug, Serialize)]
@@ -3445,6 +3584,12 @@ mod tests {
                     expectation: PromptExpectation::Exact {
                         value: "crucible-smoke".to_string(),
                     },
+                    tracked: vec![crucible_core::TrackedCheck {
+                        id: "mentions-tracked-marker".to_string(),
+                        expectation: PromptExpectation::Contains {
+                            value: "tracked-marker".to_string(),
+                        },
+                    }],
                 }],
             },
         };
@@ -3471,6 +3616,11 @@ mod tests {
         assert_eq!(report.score.metric, "prompt_rubric_pass_rate");
         assert_eq!(report.score.successes, 1);
         assert_eq!(report.score.n, 1);
+        let expected_score = wilson_score("prompt_rubric_pass_rate", 1, 1);
+        assert_eq!(report.score.point, expected_score.point);
+        assert_eq!(report.score.lower, expected_score.lower);
+        assert_eq!(report.score.upper, expected_score.upper);
+        assert_eq!(report.score.confidence, expected_score.confidence);
         let evidence = std::fs::read_to_string(temp.join("prompt-run.json"))
             .expect("prompt evidence is written");
         let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
@@ -3480,6 +3630,11 @@ mod tests {
         );
         assert_eq!(evidence["tasks"][0]["output"], "crucible-smoke");
         assert_eq!(evidence["tasks"][0]["passed"], true);
+        assert_eq!(
+            evidence["tasks"][0]["tracked_results"],
+            serde_json::json!([{ "id": "mentions-tracked-marker", "passed": false }]),
+            "tracked outcomes are recorded separately from the gate verdict"
+        );
         assert_eq!(evidence["tasks"][0]["class"], "format_adherence");
         assert_eq!(evidence["tasks"][0]["total_tokens"], 10);
         assert_eq!(evidence["max_output_units"], 8);
@@ -3550,6 +3705,7 @@ mod tests {
             expectation: PromptExpectation::Exact {
                 value: "probe-ok".to_string(),
             },
+            tracked: Vec::new(),
         }
     }
 
@@ -3659,6 +3815,7 @@ mod tests {
             expectation: PromptExpectation::Exact {
                 value: "XQ-17".to_string(),
             },
+            tracked: Vec::new(),
         };
 
         let prompt = prompt_text_for_task(&spec_path, &task).expect("context prompt builds");
@@ -3782,6 +3939,7 @@ mod tests {
                 expectation: PromptExpectation::Regex {
                     pattern: "ok".to_string(),
                 },
+                tracked: Vec::new(),
             },
             PromptBenchmarkTask {
                 task_id: "broken".to_string(),
@@ -3791,6 +3949,7 @@ mod tests {
                 expectation: PromptExpectation::Regex {
                     pattern: "[".to_string(),
                 },
+                tracked: Vec::new(),
             },
         ];
         let err = check_prompt_regexes(&tasks).expect_err("the second task's pattern is invalid");
@@ -3846,6 +4005,7 @@ mod tests {
                     expectation: PromptExpectation::Regex {
                         pattern: "(unclosed".to_string(),
                     },
+                    tracked: Vec::new(),
                 }],
             },
         };

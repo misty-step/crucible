@@ -13,6 +13,7 @@ pub(crate) fn run(
     eval: RunEval,
     out: Option<&Path>,
     json: bool,
+    strict_tracked: bool,
     models: &str,
     db: &Path,
 ) -> anyhow::Result<()> {
@@ -37,6 +38,18 @@ pub(crate) fn run(
         print_json(db, &receipts)?;
     } else {
         print_human(db, &receipts);
+    }
+    if strict_tracked {
+        let mut failures = Vec::new();
+        for receipt in &receipts {
+            failures.extend(spec_run::tracked_failures(&receipt.report)?);
+        }
+        if !failures.is_empty() {
+            anyhow::bail!(
+                "tracked checks failed: {}",
+                spec_run::format_tracked_failures(&failures)
+            );
+        }
     }
     Ok(())
 }
