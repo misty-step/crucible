@@ -30,11 +30,11 @@ jobs:
           fetch-depth: 0
 
       - name: Run Landmark
-        uses: misty-step/landmark@v1
+        uses: misty-step/landmark@v0
         with:
           mode: synthesis-only
           healthcheck: 'true'
           release-tag: ${{ github.event.release.tag_name || inputs.release-tag }}
-          github-token: ${{ secrets.GH_RELEASE_TOKEN }}
+          github-token: ${{ github.token }}
           llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           changelog-source: auto

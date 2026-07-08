@@ -34,7 +34,16 @@ fn repo_fixture(path: &str) -> PathBuf {
 }
 
 fn crucible() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_crucible"));
+    // Never let a subprocess test reach the real Canary hub: strip whatever
+    // CANARY_* creds happen to be set in the ambient shell (a developer's or
+    // CI's env) before spawning the real binary, so no test can fire a REAL
+    // check-in/error/panic report at production.
+    command
+        .env_remove("CANARY_ENDPOINT")
+        .env_remove("CANARY_API_KEY")
+        .env_remove("CANARY_INGEST_KEY");
+    command
 }
 
 fn write_jsonrpc(stdin: &mut ChildStdin, message: serde_json::Value) {
@@ -2080,6 +2089,37 @@ fn serve_confines_run_output_to_gitignored_runs_tree() {
         "allowed out path receives the run report"
     );
     let _ = std::fs::remove_dir_all(&allowed);
+
+    stop_child(child);
+}
+
+/// A panicking route handler must return a 500 and leave the server able to
+/// serve the next request (the `handle_connection` `catch_unwind` recovers
+/// per-connection). The debug-only `/debug/panic` route exists precisely to
+/// exercise that path — the HTTP parser handles malformed input gracefully,
+/// so a real handler panic is the only way to reach the recovery arm. The
+/// panic is *reported* to Canary by the process-global hook, out of band from
+/// this HTTP-behavior assertion.
+#[test]
+fn serve_recovers_from_a_panicking_handler_with_a_500_and_stays_alive() {
+    let root = temp_root("serve-panic-recovery");
+    let db = root.join("runs.sqlite");
+    let (child, port) = spawn_serve(&db, &fixture("specs"), Some("serve-pass"));
+
+    let panicked = http_request(port, "GET", "/debug/panic", &[], "");
+    assert!(
+        panicked.starts_with("HTTP/1.1 500 Internal Server Error"),
+        "a panicking handler must return 500, not reset the connection: {panicked}"
+    );
+
+    // The server survived the panic: a fresh request on a new connection is
+    // still answered. `/api/specs` is unauthenticated, so this isolates
+    // liveness from auth.
+    let after = http_get_json(port, "/api/specs");
+    assert_eq!(
+        after["schema_version"], "crucible.ui.specs.v1",
+        "server must keep serving after a per-connection panic: {after}"
+    );
 
     stop_child(child);
 }

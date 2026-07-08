@@ -378,7 +378,7 @@ It runs the credential leak scan, `cargo fmt`, clippy with `-D warnings`, tests,
 build, and rustdoc with warnings denied. `make check` delegates to the same
 script.
 
-Published GitHub releases separately trigger `misty-step/landmark@v1`
+Published GitHub releases separately trigger `misty-step/landmark@v0`
 (`.github/workflows/landmark-release.yml`, `landmark-manual-tag.yml`) in
 `synthesis-only` mode, configured by `.landmark.yml` at the repo root, to
 synthesize release notes from the commit/PR history since the prior tag. That

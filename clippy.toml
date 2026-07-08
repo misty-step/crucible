@@ -1,0 +1,18 @@
+# Workspace-wide clippy configuration. Picked up automatically by
+# `cargo clippy` when run from the repo root (scripts/check.sh's gate).
+
+disallowed-types = [
+    # crucible's panic reporting is already owned end-to-end by
+    # canary::install_panic_hook (the process-global hook, which fires for
+    # every panic including ones a catch_unwind boundary later recovers) plus
+    # each catch_unwind recovery site (e.g. serve.rs's per-connection
+    # handler), which intentionally does NOT re-report. Adding
+    # tower_http::catch_panic::CatchPanicLayer on top would report the same
+    # panic to Canary twice — once from the hook, once from the layer. See
+    # crucible/src/canary.rs's `install_panic_hook` doc comment.
+    # allow-invalid: tower_http is not (and must not become, for this reason)
+    # a dependency of this workspace, so the type is currently unreachable —
+    # that unreachability is exactly the point. The entry activates the
+    # moment someone adds tower_http and imports CatchPanicLayer.
+    { path = "tower_http::catch_panic::CatchPanicLayer", reason = "would double-report panics alongside canary::install_panic_hook; see crucible/src/canary.rs", allow-invalid = true },
+]
