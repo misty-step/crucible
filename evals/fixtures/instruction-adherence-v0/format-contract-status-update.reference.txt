@@ -1,0 +1,8 @@
+## Status
+The migration is 60% complete and on schedule.
+
+## Risk
+A long-running lock could delay the final cutover window.
+
+## Next
+Finish backfilling the remaining shards and schedule the cutover.

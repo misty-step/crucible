@@ -1,0 +1,4 @@
+The rollback completed successfully and the incident is contained.
+
+## Next Steps
+Investigate the root cause, add a regression test, and re-attempt the deploy once fixed.
