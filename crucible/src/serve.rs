@@ -56,6 +56,15 @@ pub fn serve(opts: ServeOptions) -> Result<()> {
              expose this ONLY behind a trusted network (Tailscale-private box or \
              authenticated reverse proxy), never a public endpoint"
         );
+    } else if std::env::var(SERVE_TOKEN_ENV)
+        .map(|token| token.trim().is_empty())
+        .unwrap_or(true)
+    {
+        println!(
+            "crucible serve: same-origin mode — no {SERVE_TOKEN_ENV} set; this UI and \
+             local CLI/agent calls work without auth, foreign browser origins are \
+             refused (403). Set {SERVE_TOKEN_ENV} to require a bearer token."
+        );
     }
     std::io::stdout().flush().ok();
 
@@ -341,36 +350,87 @@ fn require_bearer_auth(request: &HttpRequest) -> std::result::Result<(), HttpRes
         env_flag(SERVE_TRUST_NETWORK_ENV),
         token,
         request.header("authorization"),
+        request.header("origin"),
+        request.header("host"),
     )
-    .map_err(auth_error)
+    .map_err(|deny| match deny {
+        Deny::Unauthorized(message) => auth_error(message),
+        Deny::Forbidden(message) => forbidden_error(message),
+    })
 }
 
-/// The bearer-auth decision as a pure function, so it is unit-testable without
-/// mutating the process-global auth env vars (which these in-process parallel
-/// tests otherwise avoid). `trust_network` short-circuits the gate for a
-/// deployment behind a trusted front; otherwise a configured token must match.
+/// Why a protected request was refused: `Unauthorized` (401 + bearer hint) when
+/// a configured token was missing/wrong; `Forbidden` (403) when a browser's
+/// cross-origin request was refused in same-origin mode.
+#[derive(Debug, PartialEq)]
+enum Deny {
+    Unauthorized(&'static str),
+    Forbidden(&'static str),
+}
+
+/// The auth decision as a pure function, so it is unit-testable without
+/// mutating the process-global auth env vars. Three modes:
+///
+/// - `trust_network`: the operator asserted the network layer (tailnet,
+///   authenticated proxy) is the access control — everything passes.
+/// - token configured: bearer required, exactly as before. The token remains
+///   the only defense that also covers *non-browser* local processes.
+/// - neither (the default, "same-origin mode"): requests with no `Origin`
+///   header (curl, CLIs, agents, same-origin GETs) and requests whose `Origin`
+///   matches the request `Host` (this UI in a browser) pass; a foreign
+///   `Origin` is refused. Browsers always stamp the real page origin on
+///   cross-site requests and scripts cannot forge it, so this kills the
+///   drive-by-webpage CSRF vector against localhost — the attack that makes a
+///   spend-capable `POST /api/run` dangerous to leave open — without any
+///   token prompt for the operator.
 fn authorize(
     trust_network: bool,
     expected_token: Option<&str>,
     auth_header: Option<&str>,
-) -> std::result::Result<(), &'static str> {
+    origin: Option<&str>,
+    host: Option<&str>,
+) -> std::result::Result<(), Deny> {
     if trust_network {
         return Ok(());
     }
-    let Some(expected) = expected_token else {
-        return Err("serve token is not configured");
-    };
-    let Some(header) = auth_header else {
-        return Err("authorization bearer token required");
-    };
-    let Some(actual) = header.strip_prefix("Bearer ") else {
-        return Err("authorization bearer token required");
-    };
-    if constant_time_eq(actual.as_bytes(), expected.as_bytes()) {
-        Ok(())
-    } else {
-        Err("authorization bearer token required")
+    if let Some(expected) = expected_token {
+        let Some(header) = auth_header else {
+            return Err(Deny::Unauthorized("authorization bearer token required"));
+        };
+        let Some(actual) = header.strip_prefix("Bearer ") else {
+            return Err(Deny::Unauthorized("authorization bearer token required"));
+        };
+        return if constant_time_eq(actual.as_bytes(), expected.as_bytes()) {
+            Ok(())
+        } else {
+            Err(Deny::Unauthorized("authorization bearer token required"))
+        };
     }
+    match origin {
+        None => Ok(()),
+        Some(origin) if origin_matches_host(origin, host) => Ok(()),
+        Some(_) => Err(Deny::Forbidden(
+            "cross-origin request refused; set CRUCIBLE_SERVE_TOKEN for cross-origin API access",
+        )),
+    }
+}
+
+/// Does a browser `Origin` header name this server? Compares the origin's
+/// authority (scheme stripped) against the request's `Host` header. An absent
+/// or opaque (`null`) origin never matches — sandboxed/redirect contexts are
+/// treated as foreign.
+fn origin_matches_host(origin: &str, host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    let authority = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+        .unwrap_or(origin);
+    !authority.is_empty()
+        && authority
+            .trim_end_matches('/')
+            .eq_ignore_ascii_case(host.trim())
 }
 
 /// A permissive truthy-env check (`1`/`true`/`yes`/`on`, case-insensitive) for
@@ -396,6 +456,10 @@ fn auth_error(message: &str) -> HttpResponse {
             "env": SERVE_TOKEN_ENV
         }),
     )
+}
+
+fn forbidden_error(message: &str) -> HttpResponse {
+    HttpResponse::json(403, &json!({ "error": message }))
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -3138,41 +3202,89 @@ mod tests {
     // decision inside that gate is extracted into the pure `authorize`, which
     // these tests exercise directly with no env at all.
 
+    const SELF: Option<&str> = Some("127.0.0.1:4174");
+
     #[test]
-    fn authorize_requires_a_configured_token_by_default() {
-        // Fail-closed: no token, no trust-network => refused (the exact 401 the
-        // deployed Sanctum box hit).
+    fn default_mode_allows_non_browser_and_same_origin_callers() {
+        // No token, no trust-network = same-origin mode: curl/CLI/agent calls
+        // (no Origin header) and this UI's own browser requests pass with zero
+        // configuration.
+        assert_eq!(authorize(false, None, None, None, SELF), Ok(()));
         assert_eq!(
-            authorize(false, None, Some("Bearer whatever")),
-            Err("serve token is not configured")
+            authorize(false, None, None, Some("http://127.0.0.1:4174"), SELF),
+            Ok(())
+        );
+        // Scheme and letter case are not identity; authority is.
+        assert_eq!(
+            authorize(false, None, None, Some("https://127.0.0.1:4174/"), SELF),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn default_mode_refuses_a_foreign_browser_origin() {
+        // The drive-by CSRF vector: a web page the operator happens to have
+        // open fires fetch() at localhost. Browsers stamp the page's real
+        // origin and scripts cannot forge it — refuse anything foreign,
+        // including the opaque "null" origin of sandboxed/redirect contexts.
+        let deny = Err(Deny::Forbidden(
+            "cross-origin request refused; set CRUCIBLE_SERVE_TOKEN for cross-origin API access",
+        ));
+        assert_eq!(
+            authorize(false, None, None, Some("https://evil.example"), SELF),
+            deny
+        );
+        assert_eq!(authorize(false, None, None, Some("null"), SELF), deny);
+        // No Host to compare against => nothing can match.
+        assert_eq!(
+            authorize(false, None, None, Some("http://127.0.0.1:4174"), None),
+            deny
         );
     }
 
     #[test]
     fn authorize_matches_a_configured_bearer_token() {
+        let unauthorized = Err(Deny::Unauthorized("authorization bearer token required"));
         assert_eq!(
-            authorize(false, Some("s3cret"), Some("Bearer s3cret")),
+            authorize(false, Some("s3cret"), Some("Bearer s3cret"), None, SELF),
             Ok(())
         );
         assert_eq!(
-            authorize(false, Some("s3cret"), Some("Bearer wrong")),
-            Err("authorization bearer token required")
+            authorize(false, Some("s3cret"), Some("Bearer wrong"), None, SELF),
+            unauthorized
         );
         assert_eq!(
-            authorize(false, Some("s3cret"), None),
-            Err("authorization bearer token required")
+            authorize(false, Some("s3cret"), None, None, SELF),
+            unauthorized
+        );
+        // Token mode is the only defense that also covers non-browser local
+        // processes; a valid bearer passes regardless of Origin so legitimate
+        // cross-origin API consumers keep working.
+        assert_eq!(
+            authorize(
+                false,
+                Some("s3cret"),
+                Some("Bearer s3cret"),
+                Some("https://elsewhere.example"),
+                SELF
+            ),
+            Ok(())
         );
     }
 
     #[test]
     fn trust_network_opts_out_of_the_gate_entirely() {
-        // Behind a trusted front the gate is off regardless of token/header —
-        // including when no token is configured, which is the whole point for a
-        // tailnet-private deployment.
-        assert_eq!(authorize(true, None, None), Ok(()));
-        assert_eq!(authorize(true, None, Some("Bearer irrelevant")), Ok(()));
+        // Behind a trusted front the gate is off regardless of token, header,
+        // or origin — a reverse proxy may rewrite Host, so no origin check.
+        assert_eq!(authorize(true, None, None, None, None), Ok(()));
         assert_eq!(
-            authorize(true, Some("s3cret"), Some("Bearer wrong")),
+            authorize(
+                true,
+                Some("s3cret"),
+                Some("Bearer wrong"),
+                Some("https://elsewhere.example"),
+                None
+            ),
             Ok(())
         );
     }
