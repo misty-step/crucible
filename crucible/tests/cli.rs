@@ -1699,9 +1699,17 @@ fn serve_exposes_specs_runs_trends_and_run_detail_over_http() {
 
     let shell = http_get(port, "/");
     assert!(shell.contains("Crucible"));
+    // Post eval-centric-redesign (crucible-ui-eval-centric-redesign): the
+    // nav is Evals/Receipts, not Benchmarks/Run setup/Live run/Comparison,
+    // and the run-launch flow lives inside the eval-detail hub rather than
+    // a standalone "Run setup" view.
     assert!(
-        shell.contains("Benchmark library") && shell.contains("Run setup"),
-        "UI shell leads with benchmark/setup language: {shell}"
+        shell.contains("Evals") && shell.contains("Run this eval"),
+        "UI shell leads with eval-centric language: {shell}"
+    );
+    assert!(
+        !shell.contains("Benchmark library") && !shell.contains(">Run setup<"),
+        "the old benchmark/setup-as-top-level-nav language must be gone: {shell}"
     );
     assert!(
         shell.contains("uncertainty range") && shell.contains("noise floor"),
