@@ -1,0 +1,8 @@
+## Repro
+Open the app on mobile Safari and tap the submit button.
+
+## Expected
+The form submits and navigates to the confirmation screen.
+
+## Actual
+Nothing happens; no network request is sent.

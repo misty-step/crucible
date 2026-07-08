@@ -1,0 +1,8 @@
+## Goal
+Review the login bug fix PR for correctness and regressions.
+
+## Oracle
+The fix resolves the reported login failure and all existing tests still pass.
+
+## Boundaries
+Review only; do not modify code.

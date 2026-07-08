@@ -1,0 +1,1 @@
+A reverse proxy sits in front of backend servers and forwards client requests to them while hiding the servers' details.

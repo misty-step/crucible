@@ -1,0 +1,4 @@
+Load balancers are a core piece of scalable infrastructure.
+
+## Summary
+A load balancer distributes incoming traffic across multiple servers to improve reliability and performance.

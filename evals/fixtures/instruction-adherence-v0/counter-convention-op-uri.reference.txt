@@ -1,0 +1,1 @@
+export STRIPE_KEY=$(op read "op://Vault/StripeKey/credential")

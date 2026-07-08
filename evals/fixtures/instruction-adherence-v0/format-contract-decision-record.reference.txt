@@ -1,0 +1,8 @@
+## Decision
+Use Postgres for the multi-writer service.
+
+## Rationale
+Postgres handles concurrent writers safely; SQLite serializes writes and would bottleneck this workload.
+
+## Alternatives
+SQLite was considered but rejected due to its single-writer limitation.
