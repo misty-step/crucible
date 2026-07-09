@@ -319,9 +319,10 @@ enum Command {
         /// the `--env` matrix comparison.
         #[arg(long, value_name = "ALPHA", default_value_t = run_store::DEFAULT_ALPHA)]
         alpha: f64,
-        /// SQLite run ledger path. Defaults to the local gitignored run store.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
-        db: PathBuf,
+        /// SQLite run ledger path. Defaults to CRUCIBLE_DB when set and
+        /// non-empty, else the local gitignored run store.
+        #[arg(long, value_name = "PATH")]
+        db: Option<PathBuf>,
     },
     /// Query Crucible's SQLite run ledger.
     Runs {
@@ -343,9 +344,10 @@ enum Command {
     },
     /// Serve Crucible's local benchmark workbench over HTTP on 127.0.0.1.
     Serve {
-        /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
-        db: PathBuf,
+        /// SQLite run ledger path. Defaults to CRUCIBLE_DB when set and
+        /// non-empty, else the local gitignored run store.
+        #[arg(long, value_name = "PATH")]
+        db: Option<PathBuf>,
         /// Directory containing declared EvalSpec JSON files.
         #[arg(long, value_name = "DIR", default_value = "evals")]
         specs: PathBuf,
@@ -424,9 +426,10 @@ enum RunsCommand {
     /// List stored runs, optionally filtered by benchmark, config, model, or
     /// creation date.
     List {
-        /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
-        db: PathBuf,
+        /// SQLite run ledger path. Defaults to CRUCIBLE_DB when set and
+        /// non-empty, else the local gitignored run store.
+        #[arg(long, value_name = "PATH")]
+        db: Option<PathBuf>,
         /// Benchmark id to filter on, e.g. prompt-smoke-v0.
         #[arg(long, value_name = "ID")]
         benchmark: Option<String>,
@@ -463,18 +466,20 @@ enum RunsCommand {
         /// Stored run id from `crucible runs list`.
         #[arg(value_name = "RUN_ID")]
         run_id: String,
-        /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
-        db: PathBuf,
+        /// SQLite run ledger path. Defaults to CRUCIBLE_DB when set and
+        /// non-empty, else the local gitignored run store.
+        #[arg(long, value_name = "PATH")]
+        db: Option<PathBuf>,
         /// Emit stable JSON instead of a readable table.
         #[arg(long)]
         json: bool,
     },
     /// Compare latest stored runs for two configs or model slugs.
     Compare {
-        /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
-        db: PathBuf,
+        /// SQLite run ledger path. Defaults to CRUCIBLE_DB when set and
+        /// non-empty, else the local gitignored run store.
+        #[arg(long, value_name = "PATH")]
+        db: Option<PathBuf>,
         /// Benchmark id to compare under.
         #[arg(long, value_name = "ID")]
         benchmark: String,
@@ -511,9 +516,10 @@ enum RunsCommand {
         /// The calibration record's `licence_key`.
         #[arg(long, value_name = "KEY")]
         licence_key: String,
-        /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
-        db: PathBuf,
+        /// SQLite run ledger path. Defaults to CRUCIBLE_DB when set and
+        /// non-empty, else the local gitignored run store.
+        #[arg(long, value_name = "PATH")]
+        db: Option<PathBuf>,
         /// Emit stable JSON instead of a readable table.
         #[arg(long)]
         json: bool,
@@ -522,9 +528,10 @@ enum RunsCommand {
     /// to newest (backlog 027) — the longitudinal view a single config's
     /// trend line needs.
     History {
-        /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
-        db: PathBuf,
+        /// SQLite run ledger path. Defaults to CRUCIBLE_DB when set and
+        /// non-empty, else the local gitignored run store.
+        #[arg(long, value_name = "PATH")]
+        db: Option<PathBuf>,
         /// Benchmark id to trend.
         #[arg(long, value_name = "ID")]
         benchmark: String,
@@ -539,9 +546,10 @@ enum RunsCommand {
     /// narrowed to one harness (backlog 027) — "this benchmark, this
     /// harness, across all models".
     Pivot {
-        /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
-        db: PathBuf,
+        /// SQLite run ledger path. Defaults to CRUCIBLE_DB when set and
+        /// non-empty, else the local gitignored run store.
+        #[arg(long, value_name = "PATH")]
+        db: Option<PathBuf>,
         /// Benchmark id to pivot.
         #[arg(long, value_name = "ID")]
         benchmark: String,
@@ -641,12 +649,12 @@ fn main() -> ExitCode {
             models.as_deref(),
             &envs,
             alpha,
-            &db,
+            &db.unwrap_or_else(run_store::default_db_path),
         ),
         Command::Runs { command } => run_runs(command),
         Command::Validate { spec, json } => run_validate(&spec, json),
         Command::Serve { db, specs, port } => serve::serve(serve::ServeOptions {
-            db_path: db,
+            db_path: db.unwrap_or_else(run_store::default_db_path),
             specs_dir: specs,
             port,
         }),
@@ -849,6 +857,7 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             offset,
             json,
         } => {
+            let db = db.unwrap_or_else(run_store::default_db_path);
             let since_unix_ms = since
                 .as_deref()
                 .map(run_store::parse_timestamp_bound)
@@ -875,6 +884,7 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             }
         }
         RunsCommand::Show { run_id, db, json } => {
+            let db = db.unwrap_or_else(run_store::default_db_path);
             let detail = run_store::show_run(&db, &run_id)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&detail)?);
@@ -892,6 +902,7 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             strict,
             json,
         } => {
+            let db = db.unwrap_or_else(run_store::default_db_path);
             let comparison =
                 run_store::compare_configs(&db, &benchmark, &left, &right, alpha, strict)?;
             let findings_receipt = if let Some(path) = findings_out.as_deref() {
@@ -925,6 +936,7 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             db,
             json,
         } => {
+            let db = db.unwrap_or_else(run_store::default_db_path);
             let status = run_store::judge_licence_status(&db, &licence_key)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&status)?);
@@ -938,6 +950,7 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             config,
             json,
         } => {
+            let db = db.unwrap_or_else(run_store::default_db_path);
             let history = run_store::score_history(&db, &benchmark, &config)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&history)?);
@@ -951,6 +964,7 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             harness,
             json,
         } => {
+            let db = db.unwrap_or_else(run_store::default_db_path);
             let pivot = run_store::pivot_by_model(&db, &benchmark, harness.as_deref())?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&pivot)?);

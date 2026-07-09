@@ -1385,6 +1385,41 @@ fn crucible_db_env_var_is_read_and_an_explicit_flag_still_wins() {
     );
 }
 
+/// Regression: a fresh-context reviewer live-reproduced `CRUCIBLE_DB=""
+/// crucible runs list` crashing every `--db`-accepting subcommand with
+/// clap's "a value is required for '--db <PATH>' but none was supplied"
+/// (exit 2) under the original `env = "CRUCIBLE_DB"` clap-attribute
+/// approach -- a set-but-empty env var is a standard CI/compose templating
+/// artifact, and before this whole change an empty/unset CRUCIBLE_DB was
+/// inert. `--db` is now `Option<PathBuf>` with no clap `default_value`/`env`
+/// at all, resolved through the same `run_store::default_db_path` the MCP
+/// call sites already use -- one function, empty-means-unset on both
+/// surfaces. Isolated to its own cwd so the "default" resolution can't
+/// touch this repo's own `runs/` tree.
+#[test]
+fn crucible_db_env_var_set_to_empty_string_is_treated_as_unset() {
+    let root = temp_root("crucible-db-env-empty");
+    let out = crucible()
+        .current_dir(&root)
+        .env("CRUCIBLE_DB", "")
+        .arg("runs")
+        .arg("list")
+        .arg("--json")
+        .output()
+        .expect("crucible runs list executes");
+    assert!(
+        out.status.success(),
+        "an empty CRUCIBLE_DB must resolve as unset, not error the arg parse; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let list: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("runs list emits JSON");
+    assert_eq!(
+        list["db"], "runs/local/crucible-runs.sqlite",
+        "empty CRUCIBLE_DB falls back to the compiled-in default, same as unset"
+    );
+}
+
 /// `crucible runs list` filters by config/model/date, and `runs compare
 /// --alpha` threads the significance threshold through to the CLI, over the
 /// real binary (not just the `run_store` unit tests).
