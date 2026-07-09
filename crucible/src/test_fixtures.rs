@@ -70,6 +70,7 @@ fn persist_prompt_run(root: &Path, db: &Path, model: &str, passed: &impl Fn(usiz
                 "prompt_hash": format!("fnv1a64:prompt-{i}"),
                 "rubric_hash": format!("fnv1a64:rubric-{i}"),
                 "passed": ok,
+                "tracked_results": [{ "id": "style", "passed": !ok }],
                 "output": if ok { "match" } else { "miss" },
                 "latency_ms": 1,
                 "requested_model": model,

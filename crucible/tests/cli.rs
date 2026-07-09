@@ -2275,6 +2275,122 @@ fn regex_and_case_insensitive_contains_expectations_validate_and_dispatch() {
     );
 }
 
+#[test]
+fn run_strict_tracked_exits_nonzero_after_persisting_run() {
+    let root = temp_root("strict-tracked");
+    let spec_path = root.join("strict-tracked.json");
+    std::fs::write(
+        &spec_path,
+        serde_json::to_string_pretty(&json!({
+            "schema_version": "crucible.eval_spec.v1",
+            "id": "strict-tracked-v0",
+            "task": "strict tracked prompt",
+            "inputs": "one prompt",
+            "outputs": "text",
+            "graders": { "graders": [{ "id": "text", "kind": "deterministic" }] },
+            "aggregation": "proportion",
+            "uncertainty": { "method": "wilson", "confidence": 0.95 },
+            "decision": "test strict tracked promotion",
+            "runner": {
+                "kind": "prompt_benchmark",
+                "corpus": {
+                    "source": "prompt_benchmark",
+                    "config": {
+                        "provider": "open_router",
+                        "model": "test/model",
+                        "system_prompt": "Answer exactly.",
+                        "credential_env": "OPENROUTER_API_KEY"
+                    },
+                    "tasks": [{
+                        "task_id": "t1",
+                        "prompt": "reply gate-ok",
+                        "expectation": { "kind": "exact", "value": "gate-ok" },
+                        "tracked": [{
+                            "id": "style",
+                            "expectation": { "kind": "contains", "value": "missing-style-marker" }
+                        }]
+                    }]
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .expect("write strict tracked spec");
+    let out_dir = root.join("out");
+    let db = root.join("runs.sqlite");
+
+    let out = crucible()
+        .arg("run")
+        .arg(&spec_path)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--db")
+        .arg(&db)
+        .arg("--strict-tracked")
+        .arg("--json")
+        .env("OPENROUTER_API_KEY", "fixture-key")
+        .env("CRUCIBLE_OPENROUTER_FIXTURE_OUTPUT", "gate-ok")
+        .output()
+        .expect("crucible binary runs");
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "--strict-tracked promotes the tracked miss to the process exit code"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("tracked checks failed") && stderr.contains("t1:style"),
+        "error names the failed task/check: {stderr}"
+    );
+
+    let evidence_path = out_dir.join("prompt-run.json");
+    let evidence: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&evidence_path).expect("read evidence"))
+            .expect("prompt evidence is JSON");
+    assert_eq!(evidence["score"]["successes"], 1);
+    assert_eq!(evidence["tasks"][0]["passed"], true);
+    assert_eq!(
+        evidence["tasks"][0]["tracked_results"],
+        json!([{ "id": "style", "passed": false }])
+    );
+    assert!(
+        db.exists(),
+        "strict tracked failure happens after the ordinary run-store persist"
+    );
+
+    let list = crucible()
+        .arg("runs")
+        .arg("list")
+        .arg("--db")
+        .arg(&db)
+        .arg("--benchmark")
+        .arg("strict-tracked-v0")
+        .arg("--json")
+        .output()
+        .expect("runs list executes");
+    assert!(list.status.success());
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list.stdout).expect("runs list emits JSON");
+    let run_id = list_json["runs"][0]["run_id"]
+        .as_str()
+        .expect("persisted run id");
+    let show = crucible()
+        .arg("runs")
+        .arg("show")
+        .arg(run_id)
+        .arg("--db")
+        .arg(&db)
+        .output()
+        .expect("runs show executes");
+    assert!(show.status.success());
+    let show_stdout = String::from_utf8_lossy(&show.stdout);
+    assert!(
+        show_stdout.contains("tracked  t1  style=fail"),
+        "runs show displays tracked outcomes per task: {show_stdout}"
+    );
+}
+
 /// A spec declaring a `Regex` expectation whose pattern does not compile
 /// refuses at `crucible validate` time — before any runnable corpus is
 /// needed — and again at `crucible run` time before any model call.

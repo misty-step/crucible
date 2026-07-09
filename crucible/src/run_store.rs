@@ -18,7 +18,7 @@ use crucible_core::{
     RunScore, EVALUATION_CARD_SCHEMA, RUN_RECORD_SCHEMA, TRACE_SCHEMA,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
@@ -218,6 +218,8 @@ pub struct StoredPromptTask {
     pub response_model: Option<String>,
     pub prompt_hash: Option<String>,
     pub rubric_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracked_results: Vec<StoredTrackedCheck>,
     #[serde(rename = "prompt_tokens")]
     pub input_units: Option<u64>,
     #[serde(rename = "completion_tokens")]
@@ -227,6 +229,12 @@ pub struct StoredPromptTask {
     pub cost_usd: Option<f64>,
     pub output_text: Option<String>,
     pub evidence_json: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredTrackedCheck {
+    pub id: String,
+    pub passed: bool,
 }
 
 impl TaskOutcome for StoredPromptTask {
@@ -556,6 +564,7 @@ struct PromptTaskInsert {
     response_model: Option<String>,
     prompt_hash: Option<String>,
     rubric_hash: Option<String>,
+    tracked_results_json: String,
     input_units: Option<u64>,
     output_units: Option<u64>,
     total_units: Option<u64>,
@@ -723,11 +732,11 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 "INSERT INTO prompt_task_results (
                     run_id, task_id, task_class, passed, latency_ms, response_id,
                     requested_model, response_model, prompt_hash, rubric_hash,
-                    prompt_tokens, completion_tokens, total_tokens, cost_usd,
-                    output_text, evidence_json
+                    tracked_results_json, prompt_tokens, completion_tokens, total_tokens,
+                    cost_usd, output_text, evidence_json
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                    ?14, ?15, ?16
+                    ?14, ?15, ?16, ?17
                 )",
                 params![
                     run_id,
@@ -740,6 +749,7 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                     task.response_model,
                     task.prompt_hash,
                     task.rubric_hash,
+                    task.tracked_results_json,
                     opt_i64(task.input_units)?,
                     opt_i64(task.output_units)?,
                     opt_i64(task.total_units)?,
@@ -1710,6 +1720,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
             response_model TEXT,
             prompt_hash TEXT,
             rubric_hash TEXT,
+            tracked_results_json TEXT NOT NULL DEFAULT '[]',
             prompt_tokens INTEGER,
             completion_tokens INTEGER,
             total_tokens INTEGER,
@@ -1762,6 +1773,12 @@ fn init_schema(conn: &Connection) -> Result<()> {
     )
     .context("initializing run-store schema")?;
     ensure_column(conn, "prompt_task_results", "task_class", "TEXT")?;
+    ensure_column(
+        conn,
+        "prompt_task_results",
+        "tracked_results_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
     ensure_column(conn, "run_records", "harness", "TEXT")?;
     ensure_column(conn, "run_records", "tool_allowlist", "TEXT")?;
     ensure_column(conn, "run_records", "trace_path", "TEXT")?;
@@ -2057,6 +2074,15 @@ fn merge_prompt_metadata(
             .get("passed")
             .and_then(Value::as_bool)
             .with_context(|| format!("{artifact} prompt task {task_id:?} is missing passed"))?;
+        let tracked_results_json = match task.get("tracked_results") {
+            None => "[]".to_string(),
+            Some(value) if value.is_array() => {
+                serde_json::to_string(value).context("serializing prompt tracked results")?
+            }
+            Some(_) => {
+                anyhow::bail!("{artifact} prompt task {task_id:?} tracked_results is not an array")
+            }
+        };
         metadata.prompt_tasks.push(PromptTaskInsert {
             task_id: task_id.to_string(),
             class: opt_string(task.get("class")),
@@ -2067,6 +2093,7 @@ fn merge_prompt_metadata(
             response_model: opt_string(task.get("response_model")),
             prompt_hash: opt_string(task.get("prompt_hash")),
             rubric_hash: opt_string(task.get("rubric_hash")),
+            tracked_results_json,
             input_units: opt_u64(task.get("prompt_tokens")),
             output_units: opt_u64(task.get("completion_tokens")),
             total_units: opt_u64(task.get("total_tokens")),
@@ -2205,6 +2232,7 @@ fn merge_pass_k_task_rows(metadata: &mut EvidenceMetadata, value: &Value) {
             response_model: None,
             prompt_hash: None,
             rubric_hash: None,
+            tracked_results_json: "[]".to_string(),
             input_units: None,
             output_units: None,
             total_units: None,
@@ -2386,8 +2414,9 @@ fn query_prompt_tasks(conn: &Connection, run_id: &str) -> Result<Vec<StoredPromp
     let mut stmt = conn
         .prepare(
             "SELECT task_id, task_class, passed, latency_ms, response_id, requested_model,
-                response_model, prompt_hash, rubric_hash, prompt_tokens,
-                completion_tokens, total_tokens, cost_usd, output_text, evidence_json
+                response_model, prompt_hash, rubric_hash, tracked_results_json,
+                prompt_tokens, completion_tokens, total_tokens, cost_usd, output_text,
+                evidence_json
              FROM prompt_task_results
              WHERE run_id = ?1
              ORDER BY task_id",
@@ -2395,7 +2424,8 @@ fn query_prompt_tasks(conn: &Connection, run_id: &str) -> Result<Vec<StoredPromp
         .context("preparing prompt task query")?;
     let tasks = stmt
         .query_map(params![run_id], |row| {
-            let evidence_json: String = row.get(14)?;
+            let tracked_results_json: String = row.get(9)?;
+            let evidence_json: String = row.get(15)?;
             Ok(StoredPromptTask {
                 task_id: row.get(0)?,
                 class: row.get(1)?,
@@ -2406,11 +2436,13 @@ fn query_prompt_tasks(conn: &Connection, run_id: &str) -> Result<Vec<StoredPromp
                 response_model: row.get(6)?,
                 prompt_hash: row.get(7)?,
                 rubric_hash: row.get(8)?,
-                input_units: opt_i64_to_u64(row.get(9)?),
-                output_units: opt_i64_to_u64(row.get(10)?),
-                total_units: opt_i64_to_u64(row.get(11)?),
-                cost_usd: row.get(12)?,
-                output_text: row.get(13)?,
+                tracked_results: serde_json::from_str(&tracked_results_json)
+                    .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,
+                input_units: opt_i64_to_u64(row.get(10)?),
+                output_units: opt_i64_to_u64(row.get(11)?),
+                total_units: opt_i64_to_u64(row.get(12)?),
+                cost_usd: row.get(13)?,
+                output_text: row.get(14)?,
                 evidence_json: serde_json::from_str(&evidence_json)
                     .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,
             })
@@ -2861,6 +2893,21 @@ mod tests {
                 notes: Vec::new(),
             }],
         }
+    }
+
+    fn add_tracked_result(report: &RunReport, check_id: &str, passed: bool) {
+        let evidence_path = Path::new(&report.evals[0].artifacts[1]);
+        let mut evidence: Value = serde_json::from_str(
+            &std::fs::read_to_string(evidence_path).expect("read prompt evidence"),
+        )
+        .expect("prompt evidence is JSON");
+        evidence["tasks"][0]["tracked_results"] =
+            serde_json::json!([{ "id": check_id, "passed": passed }]);
+        std::fs::write(
+            evidence_path,
+            format!("{}\n", serde_json::to_string_pretty(&evidence).unwrap()),
+        )
+        .expect("rewrite prompt evidence with tracked results");
     }
 
     /// Fabricated `crucible.harbor_run_evidence.v1` evidence — no real
@@ -3696,6 +3743,34 @@ mod tests {
     }
 
     #[test]
+    fn compare_configs_ignores_tracked_results_for_paired_outcomes() {
+        let root = temp_dir("compare-tracked-nonscoring");
+        let db = root.join("runs.sqlite");
+        let left = prompt_report(&root, "test/model-a", true);
+        add_tracked_result(&left, "style", false);
+        persist_report(&db, &left).expect("persist left");
+        let right = prompt_report(&root, "test/model-b", true);
+        add_tracked_result(&right, "style", true);
+        persist_report(&db, &right).expect("persist right");
+
+        let comparison = compare_configs(
+            &db,
+            "prompt-smoke-v0",
+            "test/model-a",
+            "test/model-b",
+            0.05,
+            false,
+        )
+        .expect("compare configs");
+        assert_eq!(comparison.left.successes, 1);
+        assert_eq!(comparison.right.successes, 1);
+        assert_eq!(comparison.delta_point, Some(0.0));
+        let paired = comparison.paired.expect("shared gate task is paired");
+        assert_eq!(paired.b, 0);
+        assert_eq!(paired.c, 0);
+    }
+
+    #[test]
     fn compare_configs_labels_harness_delta_when_only_harness_differs() {
         let root = temp_dir("attrib-harness-delta");
         let db = root.join("runs.sqlite");
@@ -4076,6 +4151,7 @@ mod tests {
             detail.prompt_tasks[0].output_text.as_deref(),
             Some("crucible-smoke")
         );
+        assert!(detail.prompt_tasks[0].tracked_results.is_empty());
         let card = detail
             .evaluation_card
             .as_ref()
@@ -4104,6 +4180,36 @@ mod tests {
         assert_eq!(record["benchmark_id"], "prompt-smoke-v0");
         assert_eq!(record["score"]["metric"], "prompt_rubric_pass_rate");
         assert_eq!(record["evaluation_card"], *card);
+    }
+
+    #[test]
+    fn persists_prompt_tracked_results_without_changing_score() {
+        let root = temp_dir("persist-tracked");
+        let db = root.join("runs.sqlite");
+        let report = prompt_report(&root, "test/model-a", true);
+        add_tracked_result(&report, "style", false);
+        persist_report(&db, &report).expect("persist report");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list runs");
+        assert_eq!(list.runs[0].successes, 1);
+        assert_eq!(list.runs[0].n, 1);
+        assert_eq!(list.runs[0].point, Some(1.0));
+
+        let detail = show_run(&db, &list.runs[0].run_id).expect("show run");
+        assert_eq!(
+            detail.prompt_tasks[0].tracked_results,
+            vec![StoredTrackedCheck {
+                id: "style".to_string(),
+                passed: false,
+            }]
+        );
     }
 
     #[test]

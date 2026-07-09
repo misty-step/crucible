@@ -520,6 +520,7 @@ fn prompt_task_from_flags(args: &AuthorArgs) -> anyhow::Result<PromptBenchmarkTa
         context_file: non_empty(&args.prompt_task_context_file),
         prompt,
         expectation,
+        tracked: Vec::new(),
     })
 }
 
@@ -564,6 +565,7 @@ fn prompt_benchmark_from_interactive<R: BufRead, W: Write>(
                 context_file: None,
                 prompt: prompt_text,
                 expectation,
+                tracked: Vec::new(),
             }],
         },
     })

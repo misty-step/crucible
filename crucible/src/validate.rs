@@ -17,7 +17,8 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::spec_run::{
-    check_prompt_regexes, load_spec, preflight_spec, resolve_spec_path_with_alias,
+    check_prompt_regexes, check_prompt_tracked_ids, load_spec, preflight_spec,
+    resolve_spec_path_with_alias,
 };
 use crucible_core::{required_sample_size, CorpusSpec, EvalSpec, RunnerKind};
 
@@ -83,6 +84,13 @@ pub fn validate(spec_path: &Path) -> anyhow::Result<ValidationReport> {
                     if let Err(err) = check_prompt_regexes(tasks) {
                         errors.push(ValidationIssue {
                             field: "runner.corpus.tasks[].expectation.pattern".to_string(),
+                            message: err.to_string(),
+                        });
+                        runnable = false;
+                    }
+                    if let Err(err) = check_prompt_tracked_ids(tasks) {
+                        errors.push(ValidationIssue {
+                            field: "runner.corpus.tasks[].tracked[].id".to_string(),
                             message: err.to_string(),
                         });
                         runnable = false;
@@ -249,7 +257,7 @@ mod tests {
     use crucible_core::{
         AgenticJudgeConfig, AgenticJudgeTask, AggregationMethod, CorpusSpec, EvalSpec, Grader,
         GraderKind, GraderManifest, ModelProvider, PromptBenchmarkTask, PromptExpectation,
-        PromptModelConfig, RunnerKind, RunnerSpec, UncertaintyRule,
+        PromptModelConfig, RunnerKind, RunnerSpec, TrackedCheck, UncertaintyRule,
     };
 
     fn write_spec(dir: &Path, name: &str, spec: &EvalSpec) -> std::path::PathBuf {
@@ -632,6 +640,7 @@ mod tests {
                     expectation: PromptExpectation::Regex {
                         pattern: "(unclosed".to_string(),
                     },
+                    tracked: Vec::new(),
                 }],
             },
         });
@@ -648,6 +657,79 @@ mod tests {
             report.errors[0].message.contains("broken"),
             "{:?}",
             report.errors[0]
+        );
+    }
+
+    fn prompt_benchmark_spec_with_tracked(ids: &[&str]) -> EvalSpec {
+        let mut spec = base_spec();
+        spec.graders = GraderManifest {
+            graders: vec![Grader {
+                id: "text_rubric".to_string(),
+                kind: GraderKind::Deterministic,
+            }],
+        };
+        spec.runner = Some(RunnerSpec {
+            kind: RunnerKind::PromptBenchmark,
+            corpus: CorpusSpec::PromptBenchmark {
+                config: PromptModelConfig {
+                    provider: ModelProvider::OpenRouter,
+                    model: "test/model".to_string(),
+                    system_prompt: "Answer.".to_string(),
+                    credential_env: "OPENROUTER_API_KEY".to_string(),
+                    max_output_units: None,
+                    temperature: None,
+                    harness: None,
+                    tool_allowlist: Vec::new(),
+                },
+                tasks: vec![PromptBenchmarkTask {
+                    task_id: "tracked-task".to_string(),
+                    class: None,
+                    context_file: None,
+                    prompt: "Say crucible-smoke.".to_string(),
+                    expectation: PromptExpectation::Contains {
+                        value: "crucible".to_string(),
+                    },
+                    tracked: ids
+                        .iter()
+                        .map(|id| TrackedCheck {
+                            id: (*id).to_string(),
+                            expectation: PromptExpectation::Contains {
+                                value: "smoke".to_string(),
+                            },
+                        })
+                        .collect(),
+                }],
+            },
+        });
+        spec
+    }
+
+    #[test]
+    fn prompt_benchmark_tracked_checks_validate_cleanly() {
+        let dir = temp_dir("tracked-valid");
+        let spec = prompt_benchmark_spec_with_tracked(&["mentions-smoke", "mentions-crucible"]);
+        let path = write_spec(&dir, "spec.json", &spec);
+        let report = validate(&path).unwrap();
+        assert!(report.valid, "{:?}", report.errors);
+        assert!(report.runnable, "{:?}", report.errors);
+    }
+
+    #[test]
+    fn duplicate_tracked_id_within_one_task_is_invalid() {
+        let dir = temp_dir("tracked-duplicate");
+        let spec = prompt_benchmark_spec_with_tracked(&["style", "style"]);
+        let path = write_spec(&dir, "spec.json", &spec);
+        let report = validate(&path).unwrap();
+        assert!(!report.valid);
+        assert!(!report.runnable);
+        let error = report
+            .errors
+            .iter()
+            .find(|error| error.field == "runner.corpus.tasks[].tracked[].id")
+            .expect("duplicate tracked id is reported");
+        assert!(
+            error.message.contains("tracked-task") && error.message.contains("style"),
+            "{error:?}"
         );
     }
 

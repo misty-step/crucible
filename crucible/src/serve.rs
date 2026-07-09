@@ -1409,6 +1409,8 @@ struct MatrixCell {
     run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     passed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tracked_results: Vec<run_store::StoredTrackedCheck>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     output_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1486,6 +1488,7 @@ fn matrix_response(
                 .push(MatrixCell {
                     run_id: run.run_id.clone(),
                     passed: Some(task.passed),
+                    tracked_results: task.tracked_results.clone(),
                     output_text: task.output_text.clone(),
                     latency_ms: task.latency_ms,
                     response_model: task.response_model.clone(),
@@ -1510,6 +1513,7 @@ fn matrix_response(
                 .push(MatrixCell {
                     run_id: run.run_id.clone(),
                     passed: Some(task.passed),
+                    tracked_results: Vec::new(),
                     output_text: None,
                     latency_ms: task.latency_ms,
                     response_model: None,
@@ -3198,6 +3202,14 @@ mod tests {
             left_cell_t0.passed,
             Some(true),
             "seed_paired_signal makes only i == 0 (t0) pass on the left run"
+        );
+        assert_eq!(
+            left_cell_t0.tracked_results,
+            vec![run_store::StoredTrackedCheck {
+                id: "style".to_string(),
+                passed: false,
+            }],
+            "tracked outcomes ride alongside the gate verdict instead of replacing it"
         );
         assert_eq!(row_t0.class.as_deref(), Some("format_adherence"));
 
