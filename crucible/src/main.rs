@@ -320,7 +320,7 @@ enum Command {
         #[arg(long, value_name = "ALPHA", default_value_t = run_store::DEFAULT_ALPHA)]
         alpha: f64,
         /// SQLite run ledger path. Defaults to the local gitignored run store.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
         db: PathBuf,
     },
     /// Query Crucible's SQLite run ledger.
@@ -344,7 +344,7 @@ enum Command {
     /// Serve Crucible's local benchmark workbench over HTTP on 127.0.0.1.
     Serve {
         /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
         db: PathBuf,
         /// Directory containing declared EvalSpec JSON files.
         #[arg(long, value_name = "DIR", default_value = "evals")]
@@ -425,7 +425,7 @@ enum RunsCommand {
     /// creation date.
     List {
         /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
         db: PathBuf,
         /// Benchmark id to filter on, e.g. prompt-smoke-v0.
         #[arg(long, value_name = "ID")]
@@ -464,7 +464,7 @@ enum RunsCommand {
         #[arg(value_name = "RUN_ID")]
         run_id: String,
         /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
         db: PathBuf,
         /// Emit stable JSON instead of a readable table.
         #[arg(long)]
@@ -473,7 +473,7 @@ enum RunsCommand {
     /// Compare latest stored runs for two configs or model slugs.
     Compare {
         /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
         db: PathBuf,
         /// Benchmark id to compare under.
         #[arg(long, value_name = "ID")]
@@ -512,7 +512,7 @@ enum RunsCommand {
         #[arg(long, value_name = "KEY")]
         licence_key: String,
         /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
         db: PathBuf,
         /// Emit stable JSON instead of a readable table.
         #[arg(long)]
@@ -523,7 +523,7 @@ enum RunsCommand {
     /// trend line needs.
     History {
         /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
         db: PathBuf,
         /// Benchmark id to trend.
         #[arg(long, value_name = "ID")]
@@ -540,7 +540,7 @@ enum RunsCommand {
     /// harness, across all models".
     Pivot {
         /// SQLite run ledger path.
-        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH)]
+        #[arg(long, value_name = "PATH", default_value = run_store::DEFAULT_DB_PATH, env = "CRUCIBLE_DB")]
         db: PathBuf,
         /// Benchmark id to pivot.
         #[arg(long, value_name = "ID")]

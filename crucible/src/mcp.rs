@@ -294,7 +294,7 @@ fn tool_defs() -> Value {
                     },
                     "db": {
                         "type": "string",
-                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                        "description": "SQLite run ledger path. Defaults to CRUCIBLE_DB when set and non-empty, else runs/local/crucible-runs.sqlite."
                     },
                     "model": {
                         "type": "string",
@@ -405,7 +405,7 @@ fn tool_defs() -> Value {
                 "properties": {
                     "db": {
                         "type": "string",
-                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                        "description": "SQLite run ledger path. Defaults to CRUCIBLE_DB when set and non-empty, else runs/local/crucible-runs.sqlite."
                     },
                     "benchmark": {
                         "type": "string",
@@ -451,7 +451,7 @@ fn tool_defs() -> Value {
                 "properties": {
                     "db": {
                         "type": "string",
-                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                        "description": "SQLite run ledger path. Defaults to CRUCIBLE_DB when set and non-empty, else runs/local/crucible-runs.sqlite."
                     },
                     "run_id": {
                         "type": "string",
@@ -469,7 +469,7 @@ fn tool_defs() -> Value {
                 "properties": {
                     "db": {
                         "type": "string",
-                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                        "description": "SQLite run ledger path. Defaults to CRUCIBLE_DB when set and non-empty, else runs/local/crucible-runs.sqlite."
                     },
                     "benchmark": {
                         "type": "string",
@@ -514,7 +514,7 @@ fn tool_defs() -> Value {
                 "properties": {
                     "db": {
                         "type": "string",
-                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                        "description": "SQLite run ledger path. Defaults to CRUCIBLE_DB when set and non-empty, else runs/local/crucible-runs.sqlite."
                     },
                     "licence_key": {
                         "type": "string",
@@ -532,7 +532,7 @@ fn tool_defs() -> Value {
                 "properties": {
                     "db": {
                         "type": "string",
-                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                        "description": "SQLite run ledger path. Defaults to CRUCIBLE_DB when set and non-empty, else runs/local/crucible-runs.sqlite."
                     },
                     "benchmark": {
                         "type": "string",
@@ -554,7 +554,7 @@ fn tool_defs() -> Value {
                 "properties": {
                     "db": {
                         "type": "string",
-                        "description": "SQLite run ledger path. Defaults to runs/local/crucible-runs.sqlite."
+                        "description": "SQLite run ledger path. Defaults to CRUCIBLE_DB when set and non-empty, else runs/local/crucible-runs.sqlite."
                     },
                     "benchmark": {
                         "type": "string",
@@ -754,9 +754,7 @@ fn crucible_run(arguments: Value) -> Result<Value> {
             .ok_or_else(|| anyhow!("built-in receipt runs require out"))?;
         eval_run::run(parse_run_eval(args.eval.as_deref())?, out)?
     };
-    let db_path = args
-        .db
-        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let db_path = args.db.unwrap_or_else(run_store::default_db_path);
     let stored = run_store::persist_report(&db_path, &report)?;
 
     let report_json = serde_json::to_value(&report)?;
@@ -859,9 +857,7 @@ struct RunsListArgs {
 fn crucible_runs_list(arguments: Value) -> Result<Value> {
     let args: RunsListArgs =
         serde_json::from_value(arguments).context("parse crucible_runs_list arguments")?;
-    let db = args
-        .db
-        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let db = args.db.unwrap_or_else(run_store::default_db_path);
     let since_unix_ms = args
         .since
         .as_deref()
@@ -898,9 +894,7 @@ struct RunsShowArgs {
 fn crucible_runs_show(arguments: Value) -> Result<Value> {
     let args: RunsShowArgs =
         serde_json::from_value(arguments).context("parse crucible_runs_show arguments")?;
-    let db = args
-        .db
-        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let db = args.db.unwrap_or_else(run_store::default_db_path);
     let detail = run_store::show_run(&db, &args.run_id)?;
     Ok(json!({
         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&detail)? }],
@@ -917,9 +911,7 @@ struct RunsJudgeStatusArgs {
 fn crucible_runs_judge_status(arguments: Value) -> Result<Value> {
     let args: RunsJudgeStatusArgs =
         serde_json::from_value(arguments).context("parse crucible_runs_judge_status arguments")?;
-    let db = args
-        .db
-        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let db = args.db.unwrap_or_else(run_store::default_db_path);
     let status = run_store::judge_licence_status(&db, &args.licence_key)?;
     Ok(json!({
         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&status)? }],
@@ -956,9 +948,7 @@ fn default_alpha() -> f64 {
 fn crucible_runs_compare(arguments: Value) -> Result<Value> {
     let args: RunsCompareArgs =
         serde_json::from_value(arguments).context("parse crucible_runs_compare arguments")?;
-    let db = args
-        .db
-        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let db = args.db.unwrap_or_else(run_store::default_db_path);
     let comparison = run_store::compare_configs(
         &db,
         &args.benchmark,
@@ -1021,9 +1011,7 @@ struct RunsHistoryArgs {
 fn crucible_runs_history(arguments: Value) -> Result<Value> {
     let args: RunsHistoryArgs =
         serde_json::from_value(arguments).context("parse crucible_runs_history arguments")?;
-    let db = args
-        .db
-        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let db = args.db.unwrap_or_else(run_store::default_db_path);
     let history = run_store::score_history(&db, &args.benchmark, &args.config)?;
     Ok(json!({
         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&history)? }],
@@ -1041,9 +1029,7 @@ struct RunsPivotArgs {
 fn crucible_runs_pivot(arguments: Value) -> Result<Value> {
     let args: RunsPivotArgs =
         serde_json::from_value(arguments).context("parse crucible_runs_pivot arguments")?;
-    let db = args
-        .db
-        .unwrap_or_else(|| PathBuf::from(run_store::DEFAULT_DB_PATH));
+    let db = args.db.unwrap_or_else(run_store::default_db_path);
     let pivot = run_store::pivot_by_model(&db, &args.benchmark, args.harness.as_deref())?;
     Ok(json!({
         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&pivot)? }],
