@@ -29,7 +29,7 @@
 //! full report — an agent or CI step can act on the exit code alone, and a
 //! human still gets the per-check detail either way.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -187,6 +187,13 @@ fn check_mcp() -> DoctorCheck {
 fn check_serve() -> DoctorCheck {
     match check_serve_inner() {
         Ok(message) => DoctorCheck::ok("serve", message),
+        Err(err) if err.to_string().contains("loopback bind refused") => DoctorCheck::warn(
+            "serve",
+            format!(
+                "serve self-check skipped: {err:#} (this environment does not permit loopback \
+                 listeners)"
+            ),
+        ),
         Err(err) => DoctorCheck::fail("serve", format!("serve self-check failed: {err:#}")),
     }
 }
@@ -224,12 +231,24 @@ fn check_serve_inner() -> Result<String> {
         reader
             .read_line(&mut line)
             .context("reading crucible serve's startup line")?;
-        let port: u16 = line
+        let port: u16 = match line
             .split("http://127.0.0.1:")
             .nth(1)
             .and_then(|rest| rest.split_whitespace().next())
             .and_then(|port| port.parse().ok())
-            .with_context(|| format!("parsing bound port from startup line {line:?}"))?;
+        {
+            Some(port) => port,
+            None => {
+                let mut stderr = String::new();
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = pipe.read_to_string(&mut stderr);
+                }
+                if stderr.contains("Operation not permitted") {
+                    anyhow::bail!("loopback bind refused by OS: {stderr}");
+                }
+                anyhow::bail!("parsing bound port from startup line {line:?}; stderr={stderr}");
+            }
+        };
 
         let url = format!("http://127.0.0.1:{port}/api/specs");
         let response = reqwest::blocking::Client::builder()

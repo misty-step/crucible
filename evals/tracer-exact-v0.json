@@ -1,6 +1,7 @@
 {
   "schema_version": "crucible.eval_spec.v1",
   "id": "tracer-exact-v0",
+  "context": "smoke",
   "task": "tracer-exact",
   "inputs": "Three tiny deterministic prompt tasks: two fixed-value extractions and one arithmetic answer.",
   "outputs": "Model text graded by exact-match rubrics only. No judge model is called.",

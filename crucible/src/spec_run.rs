@@ -3361,6 +3361,7 @@ mod tests {
         EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "agentic-judge-smoke".to_string(),
+            context: None,
             task: "agentic-judge-smoke".to_string(),
             inputs: String::new(),
             outputs: String::new(),
@@ -3458,6 +3459,7 @@ mod tests {
         let spec = EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "key-recall".to_string(),
+            context: None,
             task: "key-recall".to_string(),
             inputs: String::new(),
             outputs: String::new(),
@@ -3551,6 +3553,7 @@ mod tests {
         let spec = EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "prompt-smoke".to_string(),
+            context: None,
             task: "prompt-smoke".to_string(),
             inputs: String::new(),
             outputs: String::new(),
@@ -3723,6 +3726,7 @@ mod tests {
         let spec = EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "prompt-concurrency".to_string(),
+            context: None,
             task: "prompt-concurrency".to_string(),
             inputs: String::new(),
             outputs: String::new(),
@@ -3967,6 +3971,7 @@ mod tests {
         let spec = EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "prompt-bad-regex".to_string(),
+            context: None,
             task: "prompt-bad-regex".to_string(),
             inputs: String::new(),
             outputs: String::new(),

@@ -121,6 +121,10 @@ fn crucible_author_tool_def() -> Value {
                     "type": "string",
                     "description": "Stable eval id, e.g. my-eval-v0. Defaults to the output file stem."
                 },
+                "context": {
+                    "type": "string",
+                    "description": "Optional project/workflow grouping for UI sort and filter, e.g. agentic-swe."
+                },
                 "task_family": {
                     "type": "string",
                     "description": "The task family this eval measures, e.g. code-review."
@@ -599,6 +603,7 @@ struct CrucibleAuthorArgs {
     #[serde(default)]
     force: bool,
     id: Option<String>,
+    context: Option<String>,
     task_family: Option<String>,
     inputs: Option<String>,
     outputs: Option<String>,
@@ -662,6 +667,7 @@ impl CrucibleAuthorArgs {
             force: self.force,
             json: false,
             id: self.id,
+            context: self.context,
             task_family: self.task_family,
             inputs: self.inputs,
             outputs: self.outputs,

@@ -1,6 +1,7 @@
 {
   "schema_version": "crucible.eval_spec.v1",
   "id": "model-routing-v0",
+  "context": "fleet-routing",
   "task": "model-routing",
   "inputs": "Six class-stratified, exact/strict-graded prompt tasks standing in for the fleet's real routing task classes: structured extraction, instruction following, format discipline (strict JSON), pattern output, arithmetic reasoning, and field lookup. Held constant across environments so the only thing that varies between runs is the model/config under test.",
   "outputs": "Model text graded by deterministic exact/strict-json/regex rubrics. No judge model is called, so the score is reproducible and free to grade.",

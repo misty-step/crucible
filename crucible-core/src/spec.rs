@@ -575,6 +575,10 @@ pub struct EvalSpec {
     /// Stable eval id, e.g. `pr-review-key-recall-v0`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
+    /// Optional project/workflow grouping for UI sorting and filtering. Older
+    /// specs leave this absent and still deserialize normally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
     /// The task this eval measures, e.g. `code-review`.
     pub task: String,
     /// Free-form description of the inputs the eval consumes. Defaults to empty.
@@ -720,6 +724,7 @@ mod tests {
         let spec = EvalSpec {
             schema_version: EVAL_SPEC_SCHEMA.to_string(),
             id: String::new(),
+            context: None,
             task: "code-review".to_string(),
             inputs: String::new(),
             outputs: String::new(),
@@ -750,6 +755,7 @@ mod tests {
         let spec: EvalSpec = serde_json::from_str(r#"{"task":"code-review"}"#).unwrap();
         assert_eq!(spec.schema_version, EVAL_SPEC_SCHEMA);
         assert!(spec.id.is_empty());
+        assert!(spec.context.is_none());
         assert_eq!(spec.task, "code-review");
         assert_eq!(spec.aggregation, AggregationMethod::Proportion);
         assert_eq!(spec.uncertainty, UncertaintyRule::default());
@@ -764,6 +770,7 @@ mod tests {
         let spec = EvalSpec {
             schema_version: EVAL_SPEC_SCHEMA.to_string(),
             id: "code-review-calibration-v0".to_string(),
+            context: Some("code-review".to_string()),
             task: "code-review".to_string(),
             inputs: "Cerberus ReviewArtifact over a diff".to_string(),
             outputs: "matched / disputed / missed".to_string(),
@@ -809,8 +816,30 @@ mod tests {
         let back: EvalSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(spec, back);
         assert_eq!(back.graders.graders.len(), 3);
+        assert_eq!(back.context.as_deref(), Some("code-review"));
         assert_eq!(back.graders.graders[1].kind, GraderKind::Agentic);
         assert_eq!(back.runner.unwrap().kind, RunnerKind::KeyRecall);
+    }
+
+    #[test]
+    fn eval_spec_context_is_additive_and_skipped_when_absent() {
+        let old: EvalSpec = serde_json::from_str(
+            r#"{"schema_version":"crucible.eval_spec.v1","task":"prompt-smoke"}"#,
+        )
+        .unwrap();
+        assert!(old.context.is_none());
+
+        let mut with_context = old;
+        with_context.context = Some("smoke".to_string());
+        let json = serde_json::to_string(&with_context).unwrap();
+        assert!(json.contains(r#""context":"smoke""#), "{json}");
+
+        with_context.context = None;
+        let json = serde_json::to_string(&with_context).unwrap();
+        assert!(
+            !json.contains("context"),
+            "absent context must be omitted, not serialized as null: {json}"
+        );
     }
 
     #[test]

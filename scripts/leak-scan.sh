@@ -65,6 +65,25 @@ patterns=(
   'url-credentials|[a-zA-Z][a-zA-Z0-9+.-]*://[^/:@[:space:]]+:[^/@[:space:]]+@'
 )
 
+known_non_secret_hit() {
+  local label="$1"
+  local line="$2"
+  case "$label" in
+    generic-assignment)
+      # Shell parameter expansion defaults such as
+      # `${BASTION_RUNTIME_SECRET_DIR:-/var/run/bastion-secrets}` contain
+      # "secret" and a colon, but the fallback is a path, not a credential.
+      [[ "$line" == *'${'*':-/'*'}'* ]] && return 0
+      ;;
+    url-credentials)
+      # `https://x-access-token:${GITHUB_TOKEN}@...` is a runtime env reference,
+      # not a committed credential value. Literal URL passwords still match.
+      [[ "$line" == *':${'*'}@'* ]] && return 0
+      ;;
+  esac
+  return 1
+}
+
 # Tracked paths, read NUL-delimited so unusual paths survive. bash 3.2 (macOS's
 # system shell) has no `mapfile`, so populate the array with a portable read
 # loop — the floor's zero-dependency guarantee must hold on the oldest shell we
@@ -86,6 +105,9 @@ grep_floor() {
     # ARG_MAX and make the scan silently exec-fail; `-H` forces the path prefix
     # even on a one-file batch. A real hit emits a line, which sets rc=1.
     while IFS= read -r hit; do
+      content="${hit#*:}"
+      content="${content#*:}"
+      known_non_secret_hit "$label" "$content" && continue
       rc=1
       # Keep only `path:line`; drop the matched content to avoid echoing secrets.
       printf '  LEAK[%s] %s\n' "$label" "$(awk -F: '{print $1 ":" $2}' <<<"$hit")"

@@ -96,6 +96,11 @@ pub struct AuthorArgs {
     #[arg(long)]
     pub id: Option<String>,
 
+    /// Optional project/workflow grouping for UI sort and filter, e.g.
+    /// `agentic-swe` or `fleet-routing`.
+    #[arg(long)]
+    pub context: Option<String>,
+
     /// The task family this eval measures, e.g. `code-review`. Required
     /// unless `--interactive`.
     #[arg(long = "task-family", value_name = "TASK")]
@@ -297,6 +302,7 @@ struct ResolvedRunner {
 #[derive(Debug)]
 struct AuthorInputs {
     id: Option<String>,
+    context: Option<String>,
     task: String,
     inputs: String,
     outputs: String,
@@ -324,6 +330,7 @@ impl AuthorInputs {
 
         Ok(Self {
             id: non_empty(&args.id),
+            context: non_empty(&args.context),
             task,
             inputs: args.inputs.clone().unwrap_or_default(),
             outputs: args.outputs.clone().unwrap_or_default(),
@@ -349,6 +356,7 @@ impl AuthorInputs {
         )?;
 
         let id = prompt_optional(reader, writer, "Eval id (blank = derived from --out)")?;
+        let context = prompt_optional(reader, writer, "Context/project (blank = none)")?;
         let task = prompt_required(reader, writer, "Task family (e.g. code-review)")?;
         let inputs = prompt_optional(reader, writer, "Inputs description")?.unwrap_or_default();
         let outputs = prompt_optional(reader, writer, "Outputs description")?.unwrap_or_default();
@@ -371,6 +379,7 @@ impl AuthorInputs {
 
         Ok(Self {
             id,
+            context,
             task,
             inputs,
             outputs,
@@ -397,6 +406,7 @@ impl AuthorInputs {
         EvalSpec {
             schema_version: EVAL_SPEC_SCHEMA.to_string(),
             id: self.id.unwrap_or_default(),
+            context: self.context,
             task: self.task,
             inputs: self.inputs,
             outputs: self.outputs,
@@ -787,6 +797,7 @@ mod tests {
             force: false,
             json: false,
             id: None,
+            context: None,
             task_family: None,
             inputs: None,
             outputs: None,
@@ -851,6 +862,7 @@ mod tests {
     fn from_flags_assembles_a_runnable_prompt_benchmark_spec_with_default_grader() {
         let mut args = base_args();
         args.task_family = Some("prompt-smoke".to_string());
+        args.context = Some("smoke".to_string());
         args.runner_kind = Some(AuthorRunnerKind::PromptBenchmark);
         args.prompt_model = Some("openrouter/auto".to_string());
         args.prompt_system_prompt = Some("Answer exactly.".to_string());
@@ -862,6 +874,7 @@ mod tests {
         let inputs = AuthorInputs::from_flags(&args).unwrap();
         let spec = inputs.into_eval_spec();
         assert_eq!(spec.task, "prompt-smoke");
+        assert_eq!(spec.context.as_deref(), Some("smoke"));
         assert_eq!(spec.graders.graders.len(), 1);
         assert_eq!(spec.graders.graders[0].kind, GraderKind::Deterministic);
         assert!(spec.runner.is_some());
@@ -915,6 +928,7 @@ mod tests {
     #[test]
     fn from_interactive_drives_a_full_prompt_benchmark_answer_set() {
         let script = "\n\
+            \n\
             code-review\n\
             \n\
             \n\
@@ -946,6 +960,7 @@ mod tests {
     #[test]
     fn from_interactive_reprompts_on_unknown_runner_kind_then_accepts() {
         let script = "\n\
+            \n\
             code-review\n\
             \n\
             \n\
