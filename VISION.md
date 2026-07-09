@@ -69,6 +69,44 @@ over time, leaving Threshold focused on the optimization search loop. Until that
 migration lands, Crucible reads and writes the existing Threshold arena and
 Harbor artifacts in place rather than duplicating them.
 
+## Form Factor
+
+Ratified 2026-07-09 after a live week of fleet use and an industry survey
+(Eve/Vercel, promptfoo, Inspect, Evalite, Braintrust, LangSmith, Weave,
+OpenAI evals, vendor MCP servers): **the operator is never "in Crucible."**
+Crucible is infrastructure that surfaces occasionally, not a destination. It
+is three things:
+
+1. **An engine** — one binary, installed once, that any repo points at its own
+   committed `evals/` directory. **Eval definitions live in the repo they
+   measure** (specs + fixtures + reference solutions), PR-reviewed and
+   versioned with the code, exactly like tests. This is near-universal
+   industry practice and Anthropic's stated guidance (eval tasks contributed
+   as PRs). Crucible's own `evals/` is its dogfood set, not the fleet's
+   registry. Nobody credible puts definitions in a platform; the documented
+   failure mode is silent dataset drift that no one can PR-review.
+2. **A globally registered MCP + the `eval-design` skill** — the primary agent
+   surface. An agent in any project designs, validates, and runs that
+   project's evals without leaving it: author/validate/run against local
+   definitions, query/compare against the fleet ledger. The MCP carries the
+   verbs; the skill carries the judgment (the industry's own finding: vendor
+   MCPs without a process layer produce agents that query scores and invent
+   wrong failure taxonomies).
+3. **A central run ledger + the review UI on the box** — runs execute locally
+   (offline-first is first-class) and land, via thin ingest, in one queryable
+   fleet history keyed by config identity + spec hash + project context +
+   **git sha**. Results-only-on-laptops kills fleet comparison;
+   results-only-central-without-sha makes "which commit broke quality?"
+   unanswerable — the ledger refuses both failure modes. The box UI is where
+   the operator shows up: review results, adjudicate disputes, watch
+   leaderboards, from a phone.
+
+Central truth is a purpose-built ingest service, not multi-writer SQLite —
+the local ledger stays as scratch/offline truth and ships run records upward,
+the same split every surveyed system converged on (local-first tools for
+speed/privacy, centralized experiments for comparison, git-sha as the
+linkage).
+
 ## What Crucible Should Do
 
 Crucible should support the full eval lifecycle:
@@ -223,6 +261,11 @@ Next families after that:
   family: task definition, fixture references, grader manifest, runner hints,
   rubric, baselines, run records, labels, aggregate scores, uncertainty,
   provenance, and the queryable run ids that produced them.
+- Form factor (2026-07-09): definitions in-repo per project; runs local-first
+  with thin ingest to one central fleet ledger keyed by config identity +
+  spec hash + context + git sha; the globally registered MCP (paired with the
+  `eval-design` skill) is the primary agent surface; the box UI is the
+  operator's review and adjudication surface. See "Form Factor" above.
 
 ## Sources
 
@@ -259,3 +302,13 @@ Next families after that:
   benchmarks/evals others have defined and run them locally"
   (`backlog.d/026-external-benchmark-import-adapters.md`) — added as a small
   surgical gap-fill, not a reframing.
+- Operator ratification on 2026-07-09 (form factor): "is Crucible something we
+  are ever using on its own... or always in the context of another project?
+  ... the most critical part of it would be as an MCP." Grounded by the
+  2026-07-09 industry survey (scratchpad `formfactor-research/findings.md`,
+  Grok lane): definitions-in-repo near-universal (Eve/Vercel `evals/` dirs,
+  promptfoo YAML, Inspect `@task`, Evalite `.eval.ts`, OpenAI OSS registry;
+  Anthropic: tasks as PRs); results centralize with scale, git-sha as the
+  code linkage (Braintrust first-class); vendor MCP servers (Braintrust,
+  LangSmith, Phoenix) are ledger-query surfaces while definitions and gates
+  stay repo+CLI; no surveyed vendor ships multi-writer SQLite as fleet truth.
