@@ -220,6 +220,7 @@ fn import_promptfoo(args: &PromptfooImportArgs) -> anyhow::Result<ImportReport> 
     let spec = EvalSpec {
         schema_version: EVAL_SPEC_SCHEMA.to_string(),
         id,
+        context: None,
         task,
         inputs,
         outputs: "Deterministic rubric pass/fail per imported promptfoo test case".to_string(),

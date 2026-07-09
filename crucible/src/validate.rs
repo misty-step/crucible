@@ -278,6 +278,7 @@ mod tests {
         EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "test".to_string(),
+            context: None,
             task: "test".to_string(),
             inputs: String::new(),
             outputs: String::new(),

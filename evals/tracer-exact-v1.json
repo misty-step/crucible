@@ -1,6 +1,7 @@
 {
   "schema_version": "crucible.eval_spec.v1",
   "id": "tracer-exact-v1",
+  "context": "smoke",
   "task": "tracer-exact",
   "inputs": "A 37-task deterministic exact-match battery with structured extraction, format transformation, checksum extraction, and small code outputs.",
   "outputs": "Model text graded by exact-match rubrics only. No judge model is called.",

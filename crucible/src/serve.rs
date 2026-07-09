@@ -658,6 +658,7 @@ fn split_target(target: &str) -> Result<(String, HashMap<String, String>)> {
 struct SpecsResponse {
     schema_version: &'static str,
     specs_dir: String,
+    env_files: Vec<String>,
     specs: Vec<SpecSummary>,
     load_errors: Vec<SpecLoadError>,
 }
@@ -666,6 +667,7 @@ struct SpecsResponse {
 struct SpecSummary {
     path: String,
     id: String,
+    context: Option<String>,
     object_label: &'static str,
     benchmark_title: String,
     plain_summary: String,
@@ -685,6 +687,8 @@ struct SpecSummary {
     aggregation: String,
     uncertainty_method: String,
     confidence: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    min_effect_of_interest: Option<f64>,
     runner_kind: Option<String>,
     corpus: String,
     validation: validate::ValidationReport,
@@ -733,9 +737,23 @@ fn specs_response(specs_dir: &Path) -> Result<SpecsResponse> {
     Ok(SpecsResponse {
         schema_version: SPECS_SCHEMA,
         specs_dir: display_path(specs_dir),
+        env_files: environment_files(specs_dir)?,
         specs,
         load_errors,
     })
+}
+
+fn environment_files(specs_dir: &Path) -> Result<Vec<String>> {
+    let env_dir = specs_dir.join("environments");
+    if !env_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut envs = json_files(&env_dir)?
+        .into_iter()
+        .map(|path| display_path(&path))
+        .collect::<Vec<_>>();
+    envs.sort();
+    Ok(envs)
 }
 
 fn load_error_spec_summary(error: &SpecLoadError) -> SpecSummary {
@@ -748,6 +766,7 @@ fn load_error_spec_summary(error: &SpecLoadError) -> SpecSummary {
     SpecSummary {
         path: error.path.clone(),
         id,
+        context: None,
         object_label: "benchmark",
         benchmark_title: "Unloaded benchmark".to_string(),
         plain_summary:
@@ -769,6 +788,7 @@ fn load_error_spec_summary(error: &SpecLoadError) -> SpecSummary {
         aggregation: "unknown".to_string(),
         uncertainty_method: "unknown".to_string(),
         confidence: 0.95,
+        min_effect_of_interest: None,
         runner_kind: None,
         corpus: "unloaded".to_string(),
         validation: validate::ValidationReport {
@@ -828,6 +848,7 @@ fn spec_summary(
     SpecSummary {
         path: display_path(&path),
         id: spec.id,
+        context: spec.context,
         object_label: "benchmark",
         benchmark_title,
         plain_summary,
@@ -855,6 +876,7 @@ fn spec_summary(
         aggregation: json_string(&spec.aggregation),
         uncertainty_method: json_string(&spec.uncertainty.method),
         confidence: spec.uncertainty.confidence,
+        min_effect_of_interest: spec.min_effect_of_interest,
         runner_kind,
         corpus,
         validation,
@@ -926,6 +948,15 @@ struct SpecTaskDetail {
     context_content: Option<String>,
     expectation_kind: String,
     expectation_value: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tracked: Vec<TrackedCheckDetail>,
+}
+
+#[derive(Debug, Serialize)]
+struct TrackedCheckDetail {
+    id: String,
+    expectation_kind: String,
+    expectation_value: Value,
 }
 
 /// Every `prompt_benchmark` task's declared definition, empty for any other
@@ -954,6 +985,19 @@ fn spec_task_details(spec_path: &Path, spec: &EvalSpec) -> Vec<SpecTaskDetail> {
             });
             let (expectation_kind, expectation_value) =
                 expectation_kind_and_value(&task.expectation);
+            let tracked = task
+                .tracked
+                .iter()
+                .map(|check| {
+                    let (expectation_kind, expectation_value) =
+                        expectation_kind_and_value(&check.expectation);
+                    TrackedCheckDetail {
+                        id: check.id.clone(),
+                        expectation_kind,
+                        expectation_value,
+                    }
+                })
+                .collect();
             SpecTaskDetail {
                 task_id: task.task_id.clone(),
                 class: task.class.clone(),
@@ -962,6 +1006,7 @@ fn spec_task_details(spec_path: &Path, spec: &EvalSpec) -> Vec<SpecTaskDetail> {
                 context_content,
                 expectation_kind,
                 expectation_value,
+                tracked,
             }
         })
         .collect()
@@ -2271,29 +2316,32 @@ fn percent_encode(raw: &str) -> String {
 }
 
 fn render_index() -> String {
-    r#"<!doctype html>
+    r##"<!doctype html>
 <html lang="en" data-ae-mode="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Crucible eval arena</title>
+  <title>Crucible evals</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231a1a1a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2'/%3E%3Cpath d='M6.453 15h11.094'/%3E%3Cpath d='M8.5 2h7'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/assets/aesthetic.css">
   <style>
-    /* Crucible identity within the house kit: brass — the crucible's metal.
-       Verdict washes derive from the kit's own ok/err tokens so both themes
-       inherit correct contrast for free. */
     :root { --ae-accent: #8f6b33; --ae-accent-dark: #c7a366; --cru-ok-wash: color-mix(in srgb, var(--ae-ok) 12%, transparent); --cru-err-wash: color-mix(in srgb, var(--ae-err) 12%, transparent); }
-    .cru-desk { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ae-space-5); align-content: start; }
+    .cru-shell { min-height: 100vh; background: var(--ae-bg); color: var(--ae-ink); }
+    .cru-header { display: flex; align-items: center; justify-content: space-between; gap: var(--ae-space-3); padding: .85rem clamp(.85rem, 2vw, 1.5rem); border-bottom: 1px solid var(--ae-line); background: var(--ae-surface); position: sticky; top: 0; z-index: 5; }
+    .cru-brand { display: inline-flex; align-items: center; gap: .55rem; min-height: 44px; }
+    .cru-desk { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ae-space-5); align-content: start; padding: clamp(.85rem, 2vw, 1.5rem); max-width: 1280px; margin: 0 auto; }
     .cru-toolbar { display: flex; gap: var(--ae-space-3); align-items: start; justify-content: space-between; flex-wrap: wrap; }
-    .cru-title { font-weight: var(--ae-w-black); }
+    .cru-title { font-weight: var(--ae-w-black); margin: 0; }
     .cru-lede { color: var(--ae-ink-muted); max-width: 58rem; }
     .cru-subtle { color: var(--ae-ink-muted); }
+    .cru-breadcrumbs { font-family: var(--ae-font-mono); font-size: 13px; color: var(--ae-ink-muted); display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+    .cru-breadcrumbs a { color: var(--ae-ink); text-decoration: none; border-bottom: 1px solid var(--ae-line); }
+    .cru-h1 { font-size: clamp(1.45rem, 2.2vw, 2.1rem); line-height: 1.1; margin: 0; letter-spacing: 0; }
+    .cru-kicker { font-family: var(--ae-font-mono); font-size: 13px; color: var(--ae-ink-muted); }
     .cru-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ae-space-4); }
     .cru-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .cru-grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-    .cru-card { border: 1px solid var(--ae-line); background: var(--ae-surface); padding: var(--ae-space-5); display: grid; gap: var(--ae-space-3); align-content: start; }
-    .cru-card.selected { border-color: var(--ae-ink); box-shadow: inset 0 0 0 1px var(--ae-ink); }
+    .cru-card { border: 1px solid var(--ae-line); background: var(--ae-surface); padding: var(--ae-space-5); display: grid; gap: var(--ae-space-3); align-content: start; border-radius: 4px; }
     .cru-card.warning { background: var(--ae-wash); }
     .cru-actions { display: flex; gap: var(--ae-space-2); align-items: center; flex-wrap: wrap; }
     .cru-button { appearance: none; border: 1px solid var(--ae-ink); background: var(--ae-ink); color: var(--ae-surface); padding: .65em 1em; min-height: 44px; border-radius: 0; cursor: pointer; transition: transform var(--ae-quick) var(--ae-ease), background var(--ae-quick) var(--ae-ease); }
@@ -2321,8 +2369,11 @@ fn render_index() -> String {
     .cru-table-wrap { overflow: auto; border: 1px solid var(--ae-line); }
     .cru-table-wrap .ae-table th, .cru-table-wrap .ae-table td { white-space: nowrap; vertical-align: top; }
     .cru-table-wrap .ae-table td.wrap { white-space: normal; min-width: 14em; }
+    .cru-table-wrap .ae-table td.summary { white-space: normal; min-width: 20em; max-width: 34em; }
+    .cru-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40em; }
     .cru-click { cursor: pointer; }
     .cru-click:hover td { background: var(--ae-wash); }
+    .cru-sort { all: unset; cursor: pointer; display: inline-flex; min-height: 44px; align-items: center; gap: .25em; }
     .cru-ci { position: relative; height: 1.45em; border-bottom: 1px solid var(--ae-line); margin-top: .35em; min-width: 12em; }
     .cru-ci .band { position: absolute; top: .58em; height: 4px; background: var(--ae-wash); border: 1px solid var(--ae-line); }
     .cru-ci .point { position: absolute; top: .25em; width: 1px; height: 1em; background: var(--ae-ink); }
@@ -2332,142 +2383,96 @@ fn render_index() -> String {
     .cru-progress > div:nth-child(-n + 3) { border-top: 0; }
     .cru-json { max-height: 28em; overflow: auto; padding: var(--ae-space-4); background: var(--ae-wash); border: 1px solid var(--ae-line); }
     .cru-toast { position: fixed; right: 1em; bottom: 1em; max-width: 32em; border: 1px solid var(--ae-line); background: var(--ae-surface); padding: .8em 1em; z-index: var(--ae-z-toast); }
-    .cru-mobile-bar { display: none; }
     .cru-progress-runner-label { display: none; }
-    /* Evals table (nav-level list) and the eval-detail hub it opens into. */
+    .cru-tabs { display: flex; gap: .35rem; flex-wrap: wrap; border-bottom: 1px solid var(--ae-line); }
+    .cru-tab { appearance: none; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--ae-ink-muted); min-height: 44px; padding: .65em .85em; cursor: pointer; font-family: var(--ae-font-mono); }
+    .cru-tab[aria-current="page"] { color: var(--ae-ink); border-color: var(--ae-ink); }
     .cru-back { background: none; border: 0; color: var(--ae-ink-muted); cursor: pointer; padding: 0; font-family: var(--ae-font-mono); font-size: 13px; text-decoration: underline; }
     .cru-hub-head { display: grid; gap: var(--ae-space-2); }
     .cru-hub-meta { display: flex; gap: .6em; flex-wrap: wrap; align-items: center; }
     .cru-section { display: grid; gap: var(--ae-space-3); margin-top: var(--ae-space-5); }
     .cru-section-title { font-weight: var(--ae-w-black); }
-    /* Results matrix: first column (task id) pinned while the run columns
-       scroll horizontally -- the centerpiece table can have many run
-       columns, and losing the task label while scrolling right defeats the
-       point of a matrix. */
-    .cru-matrix { border-collapse: collapse; width: 100%; }
-    .cru-matrix th, .cru-matrix td { border: 1px solid var(--ae-line); padding: .5em .65em; text-align: left; white-space: nowrap; }
-    .cru-matrix thead th { background: var(--ae-wash); vertical-align: bottom; }
-    .cru-matrix tbody th, .cru-matrix tbody td.task-cell, .cru-matrix tfoot th {
-      position: sticky; left: 0; background: var(--ae-surface); z-index: 1;
-    }
-    .cru-matrix thead th:first-child { position: sticky; left: 0; z-index: 2; }
-    .cru-matrix tfoot th { background: var(--ae-wash); }
-    .cru-matrix tbody tr:hover td, .cru-matrix tbody tr:hover th { background: var(--ae-wash); }
-    .cru-matrix .mark { font-family: var(--ae-font-mono); cursor: pointer; display: inline-block; min-width: 2.1em; text-align: center; padding: .12em .3em; font-weight: var(--ae-w-medium); }
-    .cru-matrix .mark.ok { color: var(--ae-ok); background: var(--cru-ok-wash); }
-    .cru-matrix .mark.err { color: var(--ae-err); background: var(--cru-err-wash); }
-    .cru-matrix .mark.na { color: var(--ae-ink-faint); }
-    .cru-matrix tfoot td { font-variant-numeric: tabular-nums; font-weight: var(--ae-w-medium); }
-    .cru-matrix tfoot .col-sub { font-weight: var(--ae-w-regular); }
-    .cru-matrix .col-label { display: block; font-weight: var(--ae-w-medium); }
-    .cru-matrix .col-sub { display: block; color: var(--ae-ink-muted); font-weight: var(--ae-w-regular); font-size: 12px; }
-    .cru-drilldown { border: 1px solid var(--ae-ink); background: var(--ae-surface); padding: var(--ae-space-5); display: grid; gap: var(--ae-space-3); }
-    .cru-drilldown-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(18em, 1fr)); gap: var(--ae-space-3); }
-    .cru-response-card { border: 1px solid var(--ae-line); padding: var(--ae-space-3); display: grid; gap: var(--ae-space-2); align-content: start; }
-    .cru-response-card .cru-chip.ok { background: var(--cru-ok-wash); border-color: transparent; }
-    .cru-response-card .cru-chip.err { background: var(--cru-err-wash); border-color: transparent; }
+    .cru-run-expand { background: var(--ae-wash); }
+    .cru-response-pre { white-space: pre-wrap; word-break: break-word; font-family: var(--ae-font-mono); font-size: 13px; max-height: 20em; overflow: auto; padding: var(--ae-space-3); background: var(--ae-surface); border-left: 3px solid var(--ae-line); }
+    .cru-response-pre.ok { border-left-color: var(--ae-ok); }
+    .cru-response-pre.err { border-left-color: var(--ae-err); }
     .cru-pre { white-space: pre-wrap; word-break: break-word; font-family: var(--ae-font-mono); font-size: 13px; max-height: 16em; overflow: auto; background: var(--ae-wash); padding: var(--ae-space-2); border-left: 2px solid var(--ae-line); }
-    .cru-response-card.ok .cru-pre { border-left-color: var(--ae-ok); }
-    .cru-response-card.err .cru-pre { border-left-color: var(--ae-err); }
     .cru-table-wrap .ae-table td, .cru-table-wrap .ae-table th { padding-top: .7em; padding-bottom: .7em; }
     .cru-table-wrap .ae-table td.num { font-variant-numeric: tabular-nums; }
     @media (max-width: 820px) {
-      .cru-mobile-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--ae-space-3); padding-bottom: var(--ae-space-4); border-bottom: 1px solid var(--ae-line); }
-      .cru-mobile-bar .ae-name { margin: 0; }
       .ae-desk { padding: 1em; }
       .cru-grid, .cru-grid.two, .cru-grid.four, .cru-progress { grid-template-columns: 1fr; }
       .cru-progress > div { border-left: 0; }
       .cru-progress > div:nth-child(-n + 3) { border-top: 1px solid var(--ae-line); }
       .cru-progress > div:first-child { border-top: 0; }
-      /* Collapsed to one column, the task/runner grid loses its row/column
-         correspondence -- a task name, then each runner's header, then each
-         runner's result cell, stack in position order alone. Hide the now-
-         redundant header row and instead label each result cell inline with
-         its runner, so a viewer never has to count position to tell runners
-         apart. */
       .cru-progress-head { display: none; }
       .cru-progress-runner-label { display: inline; font-weight: var(--ae-w-medium); margin-right: .35em; }
     }
     @media (max-width: 480px) {
-      /* Phone: the operator's primary surface. Tighten the chrome, keep every
-         interactive target >= 44px, and let data tables carry smaller type --
-         the sticky task column + per-container horizontal scroll do the rest. */
       .ae-desk { padding: .75em; }
       .cru-desk { gap: var(--ae-space-4); }
-      .cru-card, .cru-drilldown { padding: var(--ae-space-4); }
-      .cru-matrix th, .cru-matrix td { padding: .45em .5em; font-size: 13px; }
+      .cru-card { padding: var(--ae-space-4); }
       .cru-table-wrap .ae-table th, .cru-table-wrap .ae-table td { font-size: 13px; }
       .cru-select, .cru-input { min-height: 44px; }
       .cru-toast { left: 1em; right: 1em; max-width: none; }
-      .cru-drilldown-grid { grid-template-columns: 1fr; }
       .cru-toolbar { gap: var(--ae-space-2); }
       .cru-hub-meta { font-size: 13px; }
+      .cru-header { align-items: flex-start; }
     }
   </style>
 </head>
 <body>
-  <div class="ae-shell">
-    <aside class="ae-rail">
-      <h1 class="ae-logo"><span class="ae-app-mark"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></svg></span><span class="ae-name">CRUCIBLE</span></h1>
-      <p class="ae-h">EVAL ARENA</p>
-      <nav>
-        <button data-view-button="evals" aria-current="page">Evals</button>
-        <button data-view-button="receipts">Receipts</button>
-      </nav>
-      <div class="ae-rail-foot">
-        <button class="ae-mode" type="button" id="mode-toggle" aria-label="toggle color mode">
-          <svg class="ae-icon ae-sun" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v2M12 18v2M4 12h2M18 12h2M6.6 6.6 8 8M16 16l1.4 1.4M17.4 6.6 16 8M8 16l-1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
-          <svg class="ae-icon ae-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M17.5 15.8A7 7 0 0 1 8.2 6.5 7.5 7.5 0 1 0 17.5 15.8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
-        </button>
+  <div class="cru-shell">
+    <header class="cru-header">
+      <div class="cru-brand"><span class="ae-app-mark"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></svg></span><span class="ae-name">CRUCIBLE</span></div>
+      <div class="cru-actions">
+        <button class="cru-button secondary cru-icon-button" id="reload" type="button" aria-label="Refresh" title="Refresh"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+        <button class="ae-mode cru-icon-button" type="button" id="mode-toggle" aria-label="toggle color mode" title="Theme"><svg class="ae-icon ae-sun" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v2M12 18v2M4 12h2M18 12h2M6.6 6.6 8 8M16 16l1.4 1.4M17.4 6.6 16 8M8 16l-1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg><svg class="ae-icon ae-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M17.5 15.8A7 7 0 0 1 8.2 6.5 7.5 7.5 0 1 0 17.5 15.8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
       </div>
-    </aside>
+    </header>
     <main class="ae-desk cru-desk">
-      <div class="cru-mobile-bar">
-        <p class="ae-logo"><span class="ae-app-mark"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></svg></span><span class="ae-name">CRUCIBLE</span></p>
-        <select class="cru-select" id="mobile-view">
-          <option value="evals">Evals</option>
-          <option value="receipts">Receipts</option>
-        </select>
-      </div>
+      <nav id="breadcrumbs" class="cru-breadcrumbs" aria-label="Breadcrumbs"></nav>
       <section id="view"></section>
     </main>
   </div>
   <div id="toast" class="cru-toast" hidden></div>
   <script>
-    // view is one of 'evals' (the table) | 'eval-detail' (the hub, opened by
-    // a row click -- not a persistent nav item) | 'receipts' (global audit
-    // trail). NOTE: this markup/CSS is structural scaffolding for the new
-    // eval-centric IA (table-first Evals list -> eval-detail hub -> results
-    // matrix -> task drill-down); a binding visual design pass follows.
+    const RUNNER_EXPLANATIONS = {
+      prompt_benchmark: 'Send a prompt, grade the text: the model answers each task fresh and a deterministic rule (exact / contains / regex) scores it.',
+      agentic_judge: 'A model grades a candidate against a rubric. The judge is calibrated against human labels and canary-checked before its verdicts are trusted.',
+      key_recall: 'Grade a code review against an answer key: findings are matched to known planted defects; recall and precision against ground truth.',
+      harbor_task: 'Run it in a sandbox: the task executes in a container and the outcome is scored.'
+    };
     const state = {
-      view: 'evals',
       specs: null,
       runs: null,
-      selectedSpecPath: null,
+      route: routeFromHash(),
+      selectedSpecId: null,
       specDetail: null,
       matrix: null,
-      drilldownTaskId: null,
+      latestComparison: null,
+      selectedTaskId: null,
+      expandedRunTaskId: null,
+      compareAcross: false,
       compareLeft: null,
       compareRight: null,
       compareResult: null,
       selectedRunId: null,
       detail: null,
       activeRun: null,
-      filters: {}
+      filters: { text: '', runner: '', context: '' },
+      sort: { key: 'eval', dir: 'asc' },
+      legendOpen: false
     };
     const view = document.querySelector('#view');
+    const crumbs = document.querySelector('#breadcrumbs');
     const toast = document.querySelector('#toast');
 
-    function esc(value) {
-      return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-    }
+    function esc(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
     function pct(value) { return value == null ? 'n/a' : (value * 100).toFixed(1) + '%'; }
-    function scoreText(run) { return run?.point == null ? 'No score yet' : `${pct(run.point)} (${run.successes}/${run.n} tasks passed)`; }
-    function uncertaintyText(run) { return `uncertainty range ${pct(run.lower)} to ${pct(run.upper)}`; }
-    // kind is one of 'ok' | 'err' | 'progress' -- 'progress' is a neutral
-    // in-progress state (a still-executing run, a receipt not yet detailed),
-    // never a judgment, so it rides the same muted ink as supporting text
-    // rather than the warn/err hues reserved for actual verdicts.
+    function scoreText(run) { return run?.point == null ? 'not yet run' : `${pct(run.point)} (${run.successes}/${run.n})`; }
+    function uncertaintyText(run) { return `95% CI ${pct(run.lower)} to ${pct(run.upper)}`; }
+    function scoreCi(run) { return run?.point == null ? '<span class="cru-subtle">not yet run</span>' : `${esc(scoreText(run))}<br><span class="cru-subtle">${esc(uncertaintyText(run))}</span>`; }
     const PROGRESS_ICON = '<svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
     function statusGlyph(kind) {
       const glyph = kind === 'ok' ? '✓' : kind === 'progress' ? PROGRESS_ICON : '×';
@@ -2477,10 +2482,17 @@ fn render_index() -> String {
       const lower = Math.max(0, Math.min(1, run?.lower ?? 0));
       const upper = Math.max(0, Math.min(1, run?.upper ?? 0));
       const point = run?.point == null ? 0 : Math.max(0, Math.min(1, run.point));
-      return `<div class="cru-ci" title="${esc(uncertaintyText(run))}">
-        <i class="band" style="left:${lower * 100}%;width:${Math.max(1, (upper - lower) * 100)}%"></i>
-        <i class="point" style="left:${point * 100}%"></i>
-      </div>`;
+      return `<div class="cru-ci" title="${esc(uncertaintyText(run))}"><i class="band" style="left:${lower * 100}%;width:${Math.max(1, (upper - lower) * 100)}%"></i><i class="point" style="left:${point * 100}%"></i></div>`;
+    }
+    function shortModel(model) { return model ? String(model).split('/').pop() : 'deterministic'; }
+    function shortRunId(runId) { return String(runId || '').split(':').pop().slice(0, 12); }
+    function relativeTime(ms) {
+      if (!ms) return 'unknown';
+      const delta = Date.now() - Number(ms);
+      const abs = Math.abs(delta);
+      const units = [['d', 86400000], ['h', 3600000], ['m', 60000], ['s', 1000]];
+      for (const [label, size] of units) if (abs >= size) { const n = Math.round(delta / size); return n <= 0 ? `${Math.abs(n)}${label} ago` : `in ${n}${label}`; }
+      return 'now';
     }
     function withAuth(options) {
       const next = { ...(options || {}) };
@@ -2493,10 +2505,7 @@ fn render_index() -> String {
       let res = await fetch(url, withAuth(options));
       if (res.status === 401) {
         const access = window.prompt('Crucible serve token');
-        if (access) {
-          window.sessionStorage.setItem('crucibleServeToken', access);
-          res = await fetch(url, withAuth(options));
-        }
+        if (access) { window.sessionStorage.setItem('crucibleServeToken', access); res = await fetch(url, withAuth(options)); }
       }
       return res;
     }
@@ -2512,553 +2521,294 @@ fn render_index() -> String {
     function specs() { return state.specs?.specs || []; }
     function runs() { return state.runs?.runs || []; }
     function specById(id) { return specs().find(spec => spec.id === id); }
-    function currentSpec() {
-      return specs().find(spec => spec.path === state.selectedSpecPath) || null;
+    function runsForSpec(spec) { return runs().filter(run => run.benchmark_id === spec.id); }
+    function lastRunFor(spec) { return runsForSpec(spec).sort((a, b) => b.created_at_unix_ms - a.created_at_unix_ms)[0]; }
+    function enc(value) { return encodeURIComponent(value); }
+    function routeFromHash() {
+      const raw = window.location.hash.replace(/^#\/?/, '') || 'evals';
+      const parts = raw.split('/').filter(Boolean).map(decodeURIComponent);
+      if (parts[0] !== 'evals') return { view: 'evals' };
+      if (parts[1] && parts[2] === 'runs' && parts[3]) return { view: 'run', evalId: parts[1], runId: parts[3] };
+      if (parts[1]) return { view: 'eval', evalId: parts[1], tab: ['overview', 'tasks', 'runs', 'compare'].includes(parts[2]) ? parts[2] : 'overview' };
+      return { view: 'evals' };
     }
-    function lastRunFor(spec) {
-      return runs().find(run => run.benchmark_id === spec.id);
-    }
-    function runsForSpec(spec) {
-      return runs().filter(run => run.benchmark_id === spec.id);
-    }
+    function go(path) { window.location.hash = path; }
+    function evalPath(evalId, tab = 'overview') { return `#/evals/${enc(evalId)}${tab === 'overview' ? '' : '/' + enc(tab)}`; }
+    function runPath(evalId, runId) { return `#/evals/${enc(evalId)}/runs/${enc(runId)}`; }
 
     async function refreshAll() {
-      const params = new URLSearchParams(state.filters);
-      const [specsPayload, runsPayload] = await Promise.all([
-        loadJson('/api/specs'),
-        loadJson('/api/runs' + (params.toString() ? '?' + params : ''))
-      ]);
+      const [specsPayload, runsPayload] = await Promise.all([loadJson('/api/specs'), loadJson('/api/runs')]);
       state.specs = specsPayload;
       state.runs = runsPayload;
-      if (state.selectedRunId) await loadDetail(state.selectedRunId, false).catch(() => {});
-      if (state.view === 'eval-detail' && state.selectedSpecPath) await loadEvalDetail(false).catch(() => {});
+      await loadRouteData();
       render();
     }
-    async function loadDetail(runId, rerender = true) {
+    async function loadDetail(runId) {
       state.selectedRunId = runId;
       state.detail = await loadJson('/api/runs/' + encodeURIComponent(runId));
-      if (rerender) render();
     }
-    // Opens the eval-detail hub for one eval spec (a row click from the
-    // Evals table, or an "Open eval" link from Receipts) -- resets every
-    // piece of hub-scoped state so a stale matrix/comparison/drill-down from
-    // a previously open eval never bleeds into the newly opened one.
-    async function openEvalDetail(specPath) {
-      state.selectedSpecPath = specPath;
-      state.specDetail = null;
-      state.matrix = null;
-      state.drilldownTaskId = null;
-      state.compareResult = null;
-      state.compareLeft = null;
-      state.compareRight = null;
-      state.activeRun = null;
-      setView('eval-detail');
-      await loadEvalDetail().catch(err => showToast('Eval detail load failed: ' + err.message));
-    }
-    // Loads the two eval-detail data sources in parallel: the declared task
-    // definitions (GET /api/spec) and the results-matrix aggregation
-    // (GET /api/matrix). Either can fail independently (e.g. no bearer token
-    // yet for the protected matrix route) without blocking the other.
-    async function loadEvalDetail(rerender = true) {
-      const spec = currentSpec();
+    async function loadEvalData(evalId) {
+      const spec = specById(evalId);
       if (!spec) return;
+      if (state.selectedSpecId !== evalId) {
+        state.selectedSpecId = evalId;
+        state.specDetail = null;
+        state.matrix = null;
+        state.latestComparison = null;
+        state.selectedTaskId = null;
+        state.expandedRunTaskId = null;
+        state.compareResult = null;
+      }
       const [specDetail, matrix] = await Promise.all([
         loadJson('/api/spec?id=' + encodeURIComponent(spec.id)).catch(err => ({ error: err.message })),
         loadJson('/api/matrix?benchmark=' + encodeURIComponent(spec.id)).catch(err => ({ error: err.message }))
       ]);
       state.specDetail = specDetail;
       state.matrix = matrix;
-      if (rerender) render();
+      await loadLatestComparison(spec);
     }
-    function setView(next) {
-      state.view = next;
-      document.querySelectorAll('[data-view-button]').forEach(button => {
-        // The eval-detail hub has no nav button of its own (it opens from a
-        // row click, per the redesign's IA); keep "Evals" highlighted while
-        // it's open rather than showing no active nav item at all.
-        const active = button.dataset.viewButton === next
-          || (next === 'eval-detail' && button.dataset.viewButton === 'evals');
-        if (active) button.setAttribute('aria-current', 'page');
-        else button.removeAttribute('aria-current');
-      });
-      document.querySelector('#mobile-view').value = next === 'eval-detail' ? 'evals' : next;
-      render();
+    async function loadLatestComparison(spec) {
+      const rows = runsForSpec(spec).slice().sort((a, b) => b.created_at_unix_ms - a.created_at_unix_ms);
+      if (rows.length < 2) { state.latestComparison = null; return; }
+      const params = new URLSearchParams({ benchmark: spec.id, left: rows[1].config_id, right: rows[0].config_id });
+      state.latestComparison = await loadJson('/api/compare?' + params).catch(err => ({ error: err.message }));
+    }
+    async function loadRouteData() {
+      const route = state.route;
+      if (route.view === 'eval' || route.view === 'run') await loadEvalData(route.evalId).catch(err => showToast('Eval load failed: ' + err.message));
+      if (route.view === 'run') await loadDetail(route.runId).catch(err => showToast('Run load failed: ' + err.message));
     }
     function render() {
-      if (state.view === 'evals') renderEvals();
-      if (state.view === 'eval-detail') renderEvalDetail();
-      if (state.view === 'receipts') renderReceipts();
+      renderBreadcrumbs();
+      if (state.route.view === 'evals') renderEvals();
+      if (state.route.view === 'eval') renderEvalDetail();
+      if (state.route.view === 'run') renderRunView();
+    }
+    function renderBreadcrumbs() {
+      const route = state.route;
+      if (route.view === 'evals') { crumbs.innerHTML = '<span>evals</span>'; return; }
+      if (route.view === 'eval') { crumbs.innerHTML = `<a href="#/evals">evals</a><span>/</span><span>${esc(route.evalId)}</span>`; return; }
+      crumbs.innerHTML = `<a href="#/evals">evals</a><span>/</span><a href="${evalPath(route.evalId)}">${esc(route.evalId)}</a><span>/</span><span>runs</span><span>/</span><span>${esc(shortRunId(route.runId))}</span>`;
     }
 
     function renderEvals() {
-      const rows = specs();
-      view.innerHTML = `<div class="cru-toolbar">
-        <div><p class="cru-title">Evals</p><p class="cru-lede">An eval is a declared task set with a grader. Pick one to see its results matrix, comparisons, and receipts.</p></div>
-        <button class="cru-button secondary cru-icon-button" id="reload" type="button" aria-label="Refresh" title="Refresh"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+      const rows = sortedSpecs(filteredSpecs());
+      const runnerOptions = unique(specs().map(spec => spec.runner_kind).filter(Boolean));
+      const contextOptions = unique(specs().map(spec => spec.context).filter(Boolean));
+      view.innerHTML = `<div class="cru-toolbar"><div><h1 class="cru-h1">evals</h1></div></div>
+      <div class="cru-grid">
+        <label class="cru-field"><span class="cru-label">filter</span><input class="cru-input" id="eval-filter" value="${esc(state.filters.text)}" placeholder="id or summary"></label>
+        <label class="cru-field"><span class="cru-label">runner</span><select class="cru-select" id="runner-filter"><option value="">all</option>${runnerOptions.map(kind => `<option value="${esc(kind)}" ${state.filters.runner === kind ? 'selected' : ''}>${esc(kind)}</option>`).join('')}</select></label>
+        <label class="cru-field"><span class="cru-label">context</span><select class="cru-select" id="context-filter"><option value="">all</option>${contextOptions.map(ctx => `<option value="${esc(ctx)}" ${state.filters.context === ctx ? 'selected' : ''}>${esc(ctx)}</option>`).join('')}</select></label>
       </div>
-      <div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>eval</th><th>runner kind</th><th>tasks</th><th>runs</th><th>last score</th></tr></thead><tbody>
+      <div class="cru-table-wrap"><table class="ae-table" data-evals-table><thead><tr>${sortHeader('eval', 'eval')}${sortHeader('context', 'context')}<th><button class="cru-sort" data-toggle-legend type="button">runner</button></th>${sortHeader('tasks', 'tasks')}${sortHeader('runs', 'runs')}${sortHeader('last_score', 'last score')}${sortHeader('last_run', 'last run')}</tr></thead><tbody>
         ${rows.map(spec => {
           const last = lastRunFor(spec);
           const runCount = runsForSpec(spec).length;
-          const valid = spec.validation?.valid && spec.validation?.runnable;
-          return `<tr class="cru-click" data-eval-row="${esc(spec.path)}">
-            <td class="ae-item">${esc(spec.id)}<br><span class="cru-subtle">${esc(spec.benchmark_title)}</span> <span class="cru-chip ${valid ? 'ok' : 'err'}">${valid ? 'ready' : 'needs work'}</span></td>
-            <td class="cru-code">${esc(spec.runner_kind || 'none')}</td>
-            <td>${esc(spec.task_count_label)}</td>
-            <td>${runCount}</td>
-            <td>${last ? `${esc(scoreText(last))}<br><span class="cru-subtle">${esc(uncertaintyText(last))}</span>` : '<span class="cru-subtle">No runs yet</span>'}</td>
-          </tr>`;
+          return `<tr class="cru-click" data-eval-id="${esc(spec.id)}"><td class="summary"><span class="cru-code"><strong>${esc(spec.id)}</strong></span><br><span class="cru-subtle cru-truncate">${esc(spec.plain_summary)}</span></td><td>${contextChip(spec.context)}</td><td>${kindChip(spec.runner_kind)}</td><td>${esc(spec.task_count_label)}</td><td>${runCount}</td><td>${last ? `${scoreCi(last)}<br><span class="cru-subtle">${esc(shortModel(last.model || last.provider))}</span>` : '<span class="cru-subtle">not yet run</span>'}</td><td>${last ? esc(relativeTime(last.created_at_unix_ms)) : '<span class="cru-subtle">never</span>'}</td></tr>`;
         }).join('')}
-      </tbody></table></div>
+      </tbody><tfoot ${state.legendOpen ? '' : 'hidden'} data-runner-legend><tr><td colspan="7">${runnerLegend()}</td></tr></tfoot></table></div>
       ${state.specs?.load_errors?.length ? `<div class="cru-empty">${state.specs.load_errors.map(err => esc(err.path + ': ' + err.error)).join('<br>')}</div>` : ''}`;
-      document.querySelector('#reload').onclick = refreshAll;
-      document.querySelectorAll('[data-eval-row]').forEach(row => row.onclick = () => openEvalDetail(row.dataset.evalRow));
+      document.querySelector('#eval-filter').oninput = event => { state.filters.text = event.target.value; renderEvals(); };
+      document.querySelector('#runner-filter').onchange = event => { state.filters.runner = event.target.value; renderEvals(); };
+      document.querySelector('#context-filter').onchange = event => { state.filters.context = event.target.value; renderEvals(); };
+      document.querySelector('[data-toggle-legend]').onclick = () => { state.legendOpen = !state.legendOpen; renderEvals(); };
+      document.querySelectorAll('[data-sort]').forEach(button => button.onclick = () => setSort(button.dataset.sort));
+      document.querySelectorAll('[data-eval-id]').forEach(row => row.onclick = () => go(evalPath(row.dataset.evalId)));
     }
+    function unique(values) { return Array.from(new Set(values)).sort(); }
+    function sortHeader(key, label) { const active = state.sort.key === key; return `<th><button class="cru-sort" data-sort="${esc(key)}" type="button">${esc(label)}${active ? (state.sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}</button></th>`; }
+    function setSort(key) { if (state.sort.key === key) state.sort.dir = state.sort.dir === 'asc' ? 'desc' : 'asc'; else state.sort = { key, dir: 'asc' }; renderEvals(); }
+    function filteredSpecs() {
+      const q = state.filters.text.trim().toLowerCase();
+      return specs().filter(spec => (!q || `${spec.id} ${spec.plain_summary}`.toLowerCase().includes(q)) && (!state.filters.runner || spec.runner_kind === state.filters.runner) && (!state.filters.context || spec.context === state.filters.context));
+    }
+    function sortedSpecs(rows) {
+      const dir = state.sort.dir === 'asc' ? 1 : -1;
+      return rows.slice().sort((a, b) => { const av = sortValue(a, state.sort.key); const bv = sortValue(b, state.sort.key); return av < bv ? -dir : av > bv ? dir : 0; });
+    }
+    function sortValue(spec, key) {
+      const last = lastRunFor(spec);
+      if (key === 'context') return spec.context || '';
+      if (key === 'tasks') return spec.task_count || 0;
+      if (key === 'runs') return runsForSpec(spec).length;
+      if (key === 'last_score') return last?.point ?? -1;
+      if (key === 'last_run') return last?.created_at_unix_ms ?? 0;
+      return spec.id || '';
+    }
+    function contextChip(context) { return context ? `<span class="cru-chip">${esc(context)}</span>` : '<span class="cru-subtle">&mdash;</span>'; }
+    function kindChip(kind) { return kind ? `<span class="cru-chip" title="${esc(RUNNER_EXPLANATIONS[kind] || '')}">${esc(kind)}</span>` : '<span class="cru-subtle">&mdash;</span>'; }
+    function runnerLegend() { return `<div class="cru-grid four">${Object.entries(RUNNER_EXPLANATIONS).map(([kind, text]) => `<div><p class="cru-code">${esc(kind)}</p><p class="cru-subtle">${esc(text)}</p></div>`).join('')}</div>`; }
 
-    // The eval-detail hub: header, results matrix (centerpiece), the task
-    // drill-down (when a matrix row is selected), per-class breakdown,
-    // pairwise comparisons, the run-launch form + live status, and this
-    // eval's own runs -- everything the redesign asked to reach from one
-    // eval's row, with no separate Run setup/Live run/Comparison nav items.
     function renderEvalDetail() {
-      const spec = currentSpec();
-      if (!spec) {
-        view.innerHTML = '<div class="cru-empty">Eval not found. <button class="cru-back" id="back-to-evals-missing" type="button">Back to Evals</button></div>';
-        document.querySelector('#back-to-evals-missing').onclick = () => setView('evals');
-        return;
-      }
-      const matrix = state.matrix && !state.matrix.error ? state.matrix : null;
+      const spec = specById(state.route.evalId);
+      if (!spec) { view.innerHTML = '<div class="cru-empty">Eval not found.</div>'; return; }
+      const tab = state.route.tab || 'overview';
+      view.innerHTML = `${renderEvalHeader(spec)}<div class="cru-tabs" role="tablist">${['overview', 'tasks', 'runs', 'compare'].map(name => `<button class="cru-tab" data-tab="${name}" type="button" aria-current="${tab === name ? 'page' : 'false'}">${esc(name)}</button>`).join('')}</div><section>${tab === 'tasks' ? renderTasksTab(spec) : tab === 'runs' ? renderRunsTab(spec) : tab === 'compare' ? renderCompareTab(spec) : renderOverviewTab(spec)}</section>`;
+      document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => go(evalPath(spec.id, button.dataset.tab)));
+      wireEvalDetail(spec);
+    }
+    function renderEvalHeader(spec) {
       const valid = spec.validation?.valid && spec.validation?.runnable;
-      view.innerHTML = `
-        <button class="cru-back" id="back-to-evals" type="button">&larr; All evals</button>
-        <div class="cru-hub-head">
-          <p class="cru-title">${esc(spec.id)}</p>
-          <p class="cru-lede">${esc(spec.plain_summary)}</p>
-          <p><strong>Decision this informs:</strong> ${esc(spec.decision || 'not declared')}</p>
-          <div class="cru-hub-meta">
-            <span class="cru-chip ${valid ? 'ok' : 'err'}">${valid ? 'ready' : 'needs work'}</span>
-            <span class="cru-chip">${esc(spec.runner_kind || 'no runner')}</span>
-            ${(spec.graders || []).map(grader => `<span class="cru-chip">${esc(grader.kind)}:${esc(grader.id)}</span>`).join('')}
-          </div>
-        </div>
-
-        <section class="cru-section">
-          <p class="cru-section-title">Results matrix</p>
-          ${renderMatrix(matrix)}
-        </section>
-
-        ${state.drilldownTaskId ? `<section class="cru-section">${renderDrilldown(matrix)}</section>` : ''}
-
-        <section class="cru-section">
-          <p class="cru-section-title">Per-class breakdown</p>
-          ${renderClassBreakdown(matrix)}
-        </section>
-
-        <section class="cru-section">
-          <p class="cru-section-title">Comparisons</p>
-          ${renderComparisons(matrix)}
-        </section>
-
-        <section class="cru-section">
-          <p class="cru-section-title">Run this eval</p>
-          ${renderLaunchForm(spec)}
-          <div id="live-status">${renderLive()}</div>
-        </section>
-
-        <section class="cru-section">
-          <p class="cru-section-title">This eval's runs</p>
-          ${renderEvalRuns(spec)}
-        </section>
-      `;
-      wireEvalDetail(spec, matrix);
+      return `<div class="cru-toolbar"><div class="cru-hub-head"><h1 class="cru-h1">${esc(spec.id)}</h1><p class="cru-lede">${esc(spec.plain_summary)}</p><p class="cru-kicker">${esc(spec.decision || 'decision not declared')}</p><div class="cru-hub-meta"><span class="cru-chip ${valid ? 'ok' : 'err'}">${valid ? 'ready' : 'needs work'}</span>${kindChip(spec.runner_kind)}${contextChip(spec.context)}${(spec.graders || []).map(grader => `<span class="cru-chip">${esc(grader.kind)}:${esc(grader.id)}</span>`).join('')}</div></div><div class="cru-actions"><button class="cru-button" id="run-this-eval" type="button">Run this eval</button></div></div>`;
     }
-
-    function renderMatrix(matrix) {
-      if (!matrix) {
-        return '<div class="ae-empty"><p class="ae-item">Results matrix unavailable</p><p class="ae-dim">Sign in with the serve token to load stored runs, or launch this eval below.</p></div>';
-      }
-      if (!matrix.columns.length) {
-        return '<div class="ae-empty"><p class="ae-item">No stored runs yet</p><p class="ae-dim">Launch this eval below to populate the results matrix.</p></div>';
-      }
-      const columns = matrix.columns;
-      return `<div class="cru-table-wrap"><table class="cru-matrix">
-        <thead><tr><th>task</th>${columns.map(col => `<th><span class="col-label">${esc(col.label)}</span><span class="col-sub">${esc(col.config_id)}</span></th>`).join('')}</tr></thead>
-        <tbody>${matrix.rows.map(row => {
-          const cellsByRun = new Map(row.cells.map(cell => [cell.run_id, cell]));
-          return `<tr class="cru-click" data-task-row="${esc(row.task_id)}">
-            <th class="task-cell">${esc(row.task_id)}${row.class ? `<span class="col-sub">${esc(row.class)}</span>` : ''}</th>
-            ${columns.map(col => {
-              const cell = cellsByRun.get(col.run_id);
-              if (!cell || cell.passed == null) return '<td><span class="mark na">n/a</span></td>';
-              return `<td><span class="mark ${cell.passed ? 'ok' : 'err'}">${cell.passed ? 'pass' : 'fail'}</span></td>`;
-            }).join('')}
-          </tr>`;
-        }).join('')}</tbody>
-        <tfoot><tr><th>score (95% CI)</th>${columns.map(col => `<td class="cru-code">${esc(scoreText(col))}<br><span class="cru-subtle">${esc(uncertaintyText(col))}</span></td>`).join('')}</tr></tfoot>
-      </table></div>`;
+    function renderOverviewTab(spec) { const rows = runsForSpec(spec); return `<div class="cru-grid">${infoCard(spec)}${topConfigsCard(spec)}${latestVerdictCard(spec)}</div><section class="cru-section"><p class="cru-section-title">Recent runs</p>${recentRunsList(spec, rows.slice(0, 3))}</section>`; }
+    function infoCard(spec) {
+      const classes = classCounts();
+      const graderKinds = unique((spec.graders || []).map(g => g.kind)).join(', ') || 'none';
+      const valid = spec.validation?.valid && spec.validation?.runnable;
+      return `<section class="cru-card"><p class="cru-title">Info</p><p>${kindChip(spec.runner_kind)} <span class="cru-subtle">${esc(RUNNER_EXPLANATIONS[spec.runner_kind] || 'No runner declared.')}</span></p><p><span class="cru-code">${esc(spec.task_count_label)}</span>${classes ? `<br><span class="cru-subtle">${esc(classes)}</span>` : ''}</p><p><span class="cru-label">graders</span><br>${esc(graderKinds)}</p><p><span class="cru-label">validation</span><br>${valid ? 'runnable' : 'needs work'}</p><p><span class="cru-label">min effect</span><br>${spec.min_effect_of_interest == null ? 'not declared' : esc(pct(spec.min_effect_of_interest))}</p></section>`;
     }
-
-    function renderClassBreakdown(matrix) {
-      if (!matrix || !matrix.class_breakdowns.length) {
-        return '<p class="cru-subtle">No class-stratified tasks in this eval.</p>';
-      }
-      const columns = matrix.columns;
-      return `<div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>class</th>${columns.map(col => `<th>${esc(col.label)}</th>`).join('')}</tr></thead><tbody>
-        ${matrix.class_breakdowns.map(breakdown => {
-          const byRun = new Map(breakdown.columns.map(entry => [entry.run_id, entry]));
-          return `<tr><td class="ae-item">${esc(breakdown.class)}</td>${columns.map(col => {
-            const entry = byRun.get(col.run_id);
-            return `<td>${entry ? `${esc(pct(entry.point))} (${entry.successes}/${entry.n})` : 'n/a'}</td>`;
-          }).join('')}</tr>`;
-        }).join('')}
-      </tbody></table></div>`;
+    function classCounts() { const tasks = state.specDetail?.prompt_tasks || []; if (!tasks.length) return ''; const counts = {}; tasks.forEach(task => { counts[task.class || 'unclassified'] = (counts[task.class || 'unclassified'] || 0) + 1; }); return Object.entries(counts).map(([klass, n]) => `${klass}: ${n}`).join(' / '); }
+    function topConfigsCard(spec) {
+      const latest = new Map();
+      runsForSpec(spec).forEach(run => { const old = latest.get(run.config_id); if (!old || run.created_at_unix_ms > old.created_at_unix_ms) latest.set(run.config_id, run); });
+      const rows = Array.from(latest.values()).sort((a, b) => (b.point ?? -1) - (a.point ?? -1)).slice(0, 3);
+      return `<section class="cru-card"><p class="cru-title">Top configs</p>${rows.length ? rows.map(run => `<div><p class="cru-code">${esc(shortModel(run.model || run.config_id))}</p><p>${scoreCi(run)}</p><p class="cru-subtle">${esc(relativeTime(run.created_at_unix_ms))}</p></div>`).join('') : '<p class="cru-subtle">No stored runs yet.</p>'}</section>`;
     }
-
-    function renderComparisons(matrix) {
-      const columns = matrix?.columns || [];
-      if (columns.length < 2) {
-        return '<p class="cru-subtle">Store at least two runs of this eval to compare them.</p>';
-      }
-      const options = columns.map(col => `<option value="${esc(col.config_id)}">${esc(col.label)}</option>`).join('');
-      return `<div class="cru-card">
-        <p class="cru-subtle">Pick two of this eval's stored runs. Crucible reports the paired verdict and noise-floor diagnosis -- never a bare percentage delta.</p>
-        <div class="cru-grid two">
-          <label class="cru-field"><span class="cru-label">left</span><select class="cru-select" id="compare-left">${options}</select></label>
-          <label class="cru-field"><span class="cru-label">right</span><select class="cru-select" id="compare-right">${options}</select></label>
-        </div>
-        <div class="cru-actions"><button class="cru-button" id="run-compare" type="button">Compare</button></div>
-        <div id="compare-result">${state.compareResult ? renderComparisonPanel(state.compareResult) : ''}</div>
-      </div>`;
-    }
-
-    // `/api/compare`'s CompareResponse carries the comparison + findings
-    // journal but not the launch-time RunComparisonResponse's precomputed
-    // control_label/verdict_explanation (those only exist right after a
-    // fresh POST /api/run) -- verdictExplanation rebuilds the same plain-
-    // English verdict text client-side from `paired`/`common_tasks` so a
-    // comparison picked here reads identically to one just launched.
-    function verdictExplanation(c) {
-      if (c.paired) {
-        const interval = `${c.common_tasks} shared task${c.common_tasks === 1 ? '' : 's'}`;
-        return c.paired.verdict === 'signal'
-          ? `The paired tasks clear the noise floor over ${interval}; this is evidence of a real difference for this eval.`
-          : `The shared tasks do not clear the noise floor over ${interval}; with this sample size, treat the result as inconclusive and run more tasks.`;
-      }
-      return 'Crucible could not pair shared task rows, so this is only a latest-run score difference and not a significance claim.';
-    }
-    function renderComparisonPanel(result) {
+    function latestVerdictCard(spec) {
+      const result = state.latestComparison;
+      if (!result) return `<section class="cru-card"><p class="cru-title">Latest verdict</p><p class="cru-subtle">Store at least two runs to compare.</p></section>`;
+      if (result.error) return `<section class="cru-card warning"><p class="cru-title">Latest verdict</p><p class="cru-subtle">${esc(result.error)}</p></section>`;
       const c = result.comparison;
-      return `<div class="cru-grid two">
-        ${scoreCard('left', c.left)}
-        ${scoreCard('right', c.right)}
-      </div>
-      <section class="cru-card" style="margin-top: var(--ae-space-3)">
-        <p class="cru-title">Noise floor verdict</p>
-        <p>${esc(verdictExplanation(c))}</p>
-        <p class="cru-subtle">Plain English: the uncertainty range shows where the true pass rate could plausibly land for this task sample. If the paired result is inside the noise floor, the measured difference is not strong enough to trust yet.</p>
-        <pre class="cru-json cru-code">${esc(JSON.stringify(c.paired || { comparison_kind: c.comparison_kind, note: c.note }, null, 2))}</pre>
-      </section>
-      ${renderFindings(result.findings_journal)}`;
+      const paired = c.paired;
+      return `<section class="cru-card"><p class="cru-title">Latest verdict</p><p class="cru-code">${esc(shortModel(c.left.model || c.left.config_id))} vs ${esc(shortModel(c.right.model || c.right.config_id))}</p><p>${esc(paired ? paired.verdict : c.comparison_kind)} ${c.delta_point == null ? '' : esc('delta ' + pct(c.delta_point))}</p><p class="cru-subtle">${esc(c.resolution?.diagnosis || c.note || 'No paired resolution.')}${c.resolution?.required_n ? esc(' / required_n ' + c.resolution.required_n) : ''}</p><p><button class="cru-back" data-open-compare type="button">Compare tab</button></p></section>`;
     }
-
-    // Task drill-down (redesign card item 3): the declared definition (from
-    // /api/spec's prompt_tasks -- prompt text, resolved context content,
-    // expectation) alongside every run's actual response and verdict, read
-    // straight out of the already-loaded matrix cells so opening a task
-    // needs no further network round trip.
-    function renderDrilldown(matrix) {
-      const taskId = state.drilldownTaskId;
-      const row = matrix?.rows.find(candidate => candidate.task_id === taskId);
-      const taskDef = state.specDetail?.prompt_tasks?.find(candidate => candidate.task_id === taskId);
-      const columnsById = new Map((matrix?.columns || []).map(col => [col.run_id, col]));
-      return `<div class="cru-drilldown">
-        <div class="cru-toolbar"><p class="cru-title">Task: ${esc(taskId)}</p><button class="cru-back" id="close-drilldown" type="button">close</button></div>
-        ${taskDef ? `
-          <p><strong>Prompt</strong></p><pre class="cru-pre">${esc(taskDef.prompt)}</pre>
-          ${taskDef.context_content ? `<p><strong>Context file: ${esc(taskDef.context_file)}</strong></p><pre class="cru-pre">${esc(taskDef.context_content)}</pre>` : ''}
-          <p><strong>Expectation:</strong> ${esc(taskDef.expectation_kind)} <span class="cru-code">${esc(JSON.stringify(taskDef.expectation_value))}</span></p>
-        ` : '<p class="cru-subtle">No declared task definition available for this runner kind.</p>'}
-        <p class="cru-section-title">Every run's response</p>
-        <div class="cru-drilldown-grid">
-          ${(row?.cells || []).map(cell => {
-            const column = columnsById.get(cell.run_id);
-            return `<div class="cru-response-card ${cell.passed == null ? '' : cell.passed ? 'ok' : 'err'}">
-              <p class="cru-title">${esc(column?.label || cell.run_id)}</p>
-              <p>${statusGlyph(cell.passed == null ? 'progress' : cell.passed ? 'ok' : 'err')}${cell.passed == null ? 'no data' : cell.passed ? 'pass' : 'fail'}</span></p>
-              ${cell.output_text != null ? `<pre class="cru-pre">${esc(cell.output_text)}</pre>` : '<p class="cru-subtle">No response text indexed.</p>'}
-              <p class="cru-subtle">${cell.latency_ms != null ? esc(cell.latency_ms + 'ms') : ''} ${esc(cell.response_model || '')}</p>
-            </div>`;
-          }).join('')}
-        </div>
-      </div>`;
-    }
-
-    function renderEvalRuns(spec) {
-      const rows = runsForSpec(spec);
+    function recentRunsList(spec, rows) {
       if (!rows.length) return '<p class="cru-subtle">No stored runs for this eval yet.</p>';
-      return `<div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>score</th><th>runner</th><th>time</th><th></th></tr></thead><tbody>
-        ${rows.map(run => `<tr><td>${esc(scoreText(run))}<br><span class="cru-subtle">${esc(uncertaintyText(run))}</span></td><td class="wrap cru-code">${esc(run.config_id)}<br>${esc(run.model || run.provider || 'deterministic')}</td><td>${esc(new Date(run.created_at_unix_ms).toISOString())}</td><td><button class="cru-button secondary" data-open-receipt="${esc(run.run_id)}" type="button">Open receipt</button></td></tr>`).join('')}
-      </tbody></table></div>`;
+      return `<div class="cru-table-wrap"><table class="ae-table"><tbody>${rows.map(run => `<tr class="cru-click" data-run-id="${esc(run.run_id)}"><td class="cru-code">${esc(shortRunId(run.run_id))}</td><td>${scoreCi(run)}</td><td>${esc(shortModel(run.model || run.config_id))}</td><td>${esc(relativeTime(run.created_at_unix_ms))}</td></tr>`).join('')}</tbody></table></div>`;
     }
 
-    function wireEvalDetail(spec, matrix) {
-      document.querySelector('#back-to-evals').onclick = () => setView('evals');
-      document.querySelectorAll('[data-task-row]').forEach(row => row.onclick = () => {
-        state.drilldownTaskId = row.dataset.taskRow;
-        renderEvalDetail();
-      });
-      document.querySelector('#close-drilldown')?.addEventListener('click', () => {
-        state.drilldownTaskId = null;
-        renderEvalDetail();
-      });
+    function renderTasksTab(spec) {
+      const tasks = state.specDetail?.prompt_tasks || [];
+      if (!tasks.length) return `<section class="cru-section"><div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>id</th><th>class</th><th>expectation</th><th>tracked</th></tr></thead><tbody>${(spec.task_ids || []).map(id => `<tr><td class="cru-code">${esc(id)}</td><td><span class="cru-subtle">&mdash;</span></td><td>definition unavailable</td><td>0</td></tr>`).join('')}</tbody></table></div></section>`;
+      const selected = state.selectedTaskId ? tasks.find(task => task.task_id === state.selectedTaskId) : null;
+      return `<section class="cru-section"><div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>id</th><th>class</th><th>expectation kind</th><th>tracked-check count</th></tr></thead><tbody>${tasks.map(task => `<tr class="cru-click" data-task-definition="${esc(task.task_id)}"><td class="cru-code">${esc(task.task_id)}</td><td>${task.class ? `<span class="cru-chip">${esc(task.class)}</span>` : '<span class="cru-subtle">&mdash;</span>'}</td><td>${esc(task.expectation_kind)}</td><td data-tracked-check-count>${task.tracked?.length || 0}</td></tr>`).join('')}</tbody></table></div>${selected ? taskPanel(selected) : ''}</section>`;
+    }
+    function taskPanel(task) { return `<section class="cru-card" style="margin-top: var(--ae-space-4)"><div class="cru-toolbar"><p class="cru-title">${esc(task.task_id)}</p><button class="cru-back" id="close-task-panel" type="button">close</button></div><p><strong>prompt</strong></p><pre class="cru-pre">${esc(task.prompt)}</pre>${task.context_content ? `<p><strong>context file: ${esc(task.context_file)}</strong></p><pre class="cru-pre">${esc(task.context_content)}</pre>` : ''}<p><strong>expectation</strong> ${esc(task.expectation_kind)} <span class="cru-code">${esc(JSON.stringify(task.expectation_value))}</span></p><p><strong>tracked checks</strong></p>${task.tracked?.length ? `<div class="cru-chipline">${task.tracked.map(check => `<span class="cru-chip">${esc(check.id)}:${esc(check.expectation_kind)}</span>`).join('')}</div>` : '<p class="cru-subtle">none</p>'}</section>`; }
+
+    function renderRunsTab(spec) {
+      const rows = runsForSpec(spec);
+      return `<section class="cru-section" id="runs-launcher">${renderLaunchForm(spec)}<div id="live-status">${renderLive()}</div><p class="cru-section-title">Runs</p>${rows.length ? `<div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>model/config</th><th>score + CI</th><th>tracked summary</th><th>trusted</th><th>response model</th><th>when</th></tr></thead><tbody>${rows.map(run => `<tr class="cru-click" data-run-id="${esc(run.run_id)}"><td class="wrap cru-code">${esc(shortModel(run.model || run.config_id))}<br><span class="cru-subtle">${esc(run.config_id)}</span></td><td>${scoreCi(run)}</td><td>${esc(trackedSummary(run.run_id))}</td><td>${run.trusted ? '<span class="cru-chip ok">trusted</span>' : '<span class="cru-chip err">untrusted</span>'}</td><td>${responseModelText(run)}</td><td>${esc(relativeTime(run.created_at_unix_ms))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="cru-subtle">No stored runs for this eval yet.</p>'}</section>`;
+    }
+    function trackedSummary(runId) { let misses = 0; let total = 0; (state.matrix?.rows || []).forEach(row => { const cell = (row.cells || []).find(cell => cell.run_id === runId); (cell?.tracked_results || []).forEach(check => { total += 1; if (!check.passed) misses += 1; }); }); return total ? `${misses} tracked misses` : '0 tracked misses'; }
+    function responseModelText(run) { if (!run.response_model) return '<span class="cru-subtle">not recorded</span>'; const drift = run.model && run.response_model !== run.model; return `<span class="${drift ? 'cru-chip warn' : 'cru-code'}">${esc(run.response_model)}</span>`; }
+    function renderLaunchForm(spec) {
+      const defaults = spec.runner_defaults || {};
+      const envs = state.specs?.env_files || [];
+      return `<section class="cru-card"><p class="cru-title">Launcher</p><div class="cru-grid"><label class="cru-field"><span class="cru-label">models</span><input class="cru-input" id="launcher-models" value="${esc(defaults.model || '')}" placeholder="model-a, model-b"></label><label class="cru-field"><span class="cru-label">env file</span><select class="cru-select" id="launcher-env"><option value="">none</option>${envs.map(env => `<option value="${esc(env)}">${esc(env.split('/').pop())}</option>`).join('')}</select></label><label class="cru-field"><span class="cru-label">strict tracked</span><select class="cru-select" id="launcher-strict"><option value="false">off</option><option value="true">on</option></select></label></div><div class="cru-actions"><button class="cru-button" id="launch" type="button">Launch</button></div></section>`;
+    }
+    function renderCompareTab(spec) {
+      const rows = runsForSpec(spec);
+      if (rows.length < 2) return '<section class="cru-section"><p class="cru-subtle">Store at least two runs of this eval to compare them.</p></section>';
+      const options = rows.map(run => `<option value="${esc(run.config_id)}">${esc(shortRunId(run.run_id))} / ${esc(shortModel(run.model || run.config_id))}</option>`).join('');
+      return `<div class="cru-card"><div class="cru-grid two"><label class="cru-field"><span class="cru-label">left</span><select class="cru-select" id="compare-left">${options}</select></label><label class="cru-field"><span class="cru-label">right</span><select class="cru-select" id="compare-right">${options}</select></label></div><div class="cru-actions"><button class="cru-button" id="run-compare" type="button">Compare</button></div><div id="compare-result">${state.compareResult ? renderComparisonPanel(state.compareResult) : ''}</div></div>`;
+    }
+    function verdictExplanation(c) { if (c.paired) { const interval = `${c.common_tasks} shared task${c.common_tasks === 1 ? '' : 's'}`; return c.paired.verdict === 'signal' ? `The paired tasks clear the noise floor over ${interval}; this is evidence of a real difference for this eval.` : `The shared tasks do not clear the noise floor over ${interval}; with this sample size, treat the result as inconclusive and run more tasks.`; } return 'Crucible could not pair shared task rows, so this is only a latest-run score difference and not a significance claim.'; }
+    function renderComparisonPanel(result) { const c = result.comparison; return `<div class="cru-grid two">${scoreCard('left', c.left)}${scoreCard('right', c.right)}</div><section class="cru-card" style="margin-top: var(--ae-space-3)"><p class="cru-title">Noise floor verdict</p><p>${esc(verdictExplanation(c))}</p><p class="cru-subtle">${esc(c.resolution?.diagnosis || c.note || '')}</p><pre class="cru-json cru-code">${esc(JSON.stringify(c.paired || { comparison_kind: c.comparison_kind, note: c.note }, null, 2))}</pre></section>${renderFindings(result.findings_journal)}`; }
+    function renderFindings(journal) { const findings = journal?.findings || []; if (!findings.length) return ''; return `<section class="cru-card" style="margin-top: var(--ae-space-4)"><p class="cru-title">Defensible findings</p>${findings.map(finding => `<div class="cru-card" style="margin-top: var(--ae-space-2)"><p>${esc(finding.hypothesis)}</p><p class="cru-subtle">delta ${esc(finding.delta.point.toFixed(4))} [${esc(finding.delta.lower.toFixed(4))}, ${esc(finding.delta.upper.toFixed(4))}] over ${esc(finding.delta.common_tasks)} shared tasks.</p><p class="cru-code">${esc(finding.repro_command)}</p></div>`).join('')}</section>`; }
+    function scoreCard(side, run) { return `<section class="cru-card"><p class="cru-label">${esc(side)}</p><p class="cru-title">${esc(run.model || run.config_id)}</p><p>${esc(scoreText(run))}</p>${ci(run)}<p class="cru-subtle">${esc(uncertaintyText(run))}</p><p class="cru-code">${esc(run.config_id)}</p></section>`; }
+
+    function wireEvalDetail(spec) {
+      document.querySelector('#run-this-eval')?.addEventListener('click', () => go(evalPath(spec.id, 'runs')));
+      document.querySelector('[data-open-compare]')?.addEventListener('click', () => go(evalPath(spec.id, 'compare')));
+      document.querySelectorAll('[data-run-id]').forEach(row => row.onclick = () => go(runPath(spec.id, row.dataset.runId)));
+      document.querySelectorAll('[data-task-definition]').forEach(row => row.onclick = () => { state.selectedTaskId = row.dataset.taskDefinition; renderEvalDetail(); });
+      document.querySelector('#close-task-panel')?.addEventListener('click', () => { state.selectedTaskId = null; renderEvalDetail(); });
       const leftSelect = document.querySelector('#compare-left');
       const rightSelect = document.querySelector('#compare-right');
       if (leftSelect && rightSelect) {
-        const columns = matrix?.columns || [];
-        leftSelect.value = state.compareLeft || columns[0]?.config_id || '';
-        rightSelect.value = state.compareRight || columns[1]?.config_id || '';
+        const rows = runsForSpec(spec);
+        leftSelect.value = state.compareLeft || rows[1]?.config_id || rows[0]?.config_id || '';
+        rightSelect.value = state.compareRight || rows[0]?.config_id || '';
         document.querySelector('#run-compare').onclick = async () => {
           state.compareLeft = leftSelect.value;
           state.compareRight = rightSelect.value;
-          try {
-            const params = new URLSearchParams({ benchmark: spec.id, left: state.compareLeft, right: state.compareRight });
-            state.compareResult = await loadJson('/api/compare?' + params);
-          } catch (err) {
-            showToast('Compare failed: ' + err.message);
-          }
+          try { const params = new URLSearchParams({ benchmark: spec.id, left: state.compareLeft, right: state.compareRight }); state.compareResult = await loadJson('/api/compare?' + params); }
+          catch (err) { showToast('Compare failed: ' + err.message); }
           renderEvalDetail();
         };
       }
-      document.querySelectorAll('[data-runner-field]').forEach(input => input.oninput = updateDiffBox);
-      document.querySelector('#launch').onclick = () => launchComparison(spec);
-      updateDiffBox();
-      // The empty live-status state's CTA has nowhere standalone to send the
-      // operator to anymore (Run setup was folded into this same section,
-      // not left as its own view) -- it focuses the launch form already on
-      // screen instead of navigating away from it.
-      document.querySelector('#live-empty-cta')?.addEventListener('click', () => {
-        document.querySelector('[data-runner-field="runner-a"][name="model"]')?.focus();
-      });
-      document.querySelectorAll('[data-open-receipt]').forEach(button => button.onclick = async () => {
-        await loadDetail(button.dataset.openReceipt, false);
-        setView('receipts');
-      });
+      document.querySelector('#launch')?.addEventListener('click', () => launchRun(spec));
+      document.querySelector('#live-empty-cta')?.addEventListener('click', () => { document.querySelector('#launcher-models')?.focus(); });
     }
-
-    function renderLaunchForm(spec) {
+    async function launchRun(spec) {
+      const models = document.querySelector('#launcher-models').value.split(',').map(s => s.trim()).filter(Boolean);
       const defaults = spec.runner_defaults || {};
-      return `<section class="cru-card">
-        <p>${esc(spec.plain_summary)}</p>
-        <p><strong>Locked verifier:</strong> ${esc(spec.verifier_summary)}</p>
-        <p><strong>Locked tool policy:</strong> ${esc(defaults.tool_policy || 'No tool policy declared for this runner.')}</p>
-      </section>
-      <div class="cru-grid two" style="margin-top: var(--ae-space-4)">
-        ${runnerEditor('runner-a', 'Runner A', defaults)}
-        ${runnerEditor('runner-b', 'Runner B', { ...defaults, model: alternateModel(defaults.model) })}
-      </div>
-      <section class="cru-card warning" style="margin-top: var(--ae-space-4)" id="diff-box"></section>
-      <div class="cru-actions"><button class="cru-button" id="launch" ${spec.supports_controlled_comparison ? '' : 'disabled'} type="button">Launch controlled comparison</button></div>`;
-    }
-
-    function runnerEditor(prefix, title, defaults) {
-      return `<section class="cru-card" data-runner="${prefix}">
-        <p class="cru-title">${esc(title)}</p>
-        <label class="cru-field"><span class="cru-label">runner name</span><input class="cru-input" data-runner-field="${prefix}" name="id" value="${esc(title)}"></label>
-        <label class="cru-field"><span class="cru-label">model</span><input class="cru-input" data-runner-field="${prefix}" name="model" value="${esc(defaults.model || '')}"></label>
-        <label class="cru-field"><span class="cru-label">system prompt</span><textarea class="cru-textarea" data-runner-field="${prefix}" name="system_prompt">${esc(defaults.system_prompt || '')}</textarea></label>
-        <div class="cru-grid two">
-          <label class="cru-field"><span class="cru-label">temperature</span><input class="cru-input" data-runner-field="${prefix}" name="temperature" type="number" min="0" step="1" value="${esc(defaults.temperature ?? 0)}"></label>
-          <label class="cru-field"><span class="cru-label">max output</span><input class="cru-input" data-runner-field="${prefix}" name="max_output_units" type="number" min="1" step="1" value="${esc(defaults.max_output_units ?? 512)}"></label>
-        </div>
-      </section>`;
-    }
-    function alternateModel(model) {
-      if (!model) return '';
-      return model.includes('deepseek') ? 'z-ai/glm-5.2' : 'deepseek/deepseek-v4-flash';
-    }
-    function runnerFrom(prefix) {
-      const root = document.querySelector(`[data-runner="${prefix}"]`);
-      const value = name => root.querySelector(`[name="${name}"]`).value.trim();
-      return {
-        id: value('id'),
-        model: value('model'),
-        system_prompt: value('system_prompt'),
-        temperature: Number(value('temperature') || 0),
-        max_output_units: Number(value('max_output_units') || 512)
-      };
-    }
-    function runnerDiff(a, b) {
-      const keys = [['model','model'], ['system_prompt','system prompt'], ['temperature','temperature'], ['max_output_units','max output']];
-      return keys.filter(([key]) => String(a[key] ?? '') !== String(b[key] ?? '')).map(([, label]) => label);
-    }
-    function updateDiffBox() {
-      const box = document.querySelector('#diff-box');
-      if (!box) return;
-      const a = runnerFrom('runner-a');
-      const b = runnerFrom('runner-b');
-      const diff = runnerDiff(a, b);
-      const label = diff.length === 1 ? `Controlled comparison: only ${diff[0]} differs.` : diff.length === 0 ? 'Repeatability check: no runner fields differ.' : `Multi-variable comparison: ${diff.join(', ')} differ.`;
-      box.innerHTML = `<p class="cru-title">${esc(label)}</p><p class="cru-subtle">Locked across both runners: benchmark tasks, deterministic verifier, provider boundary, credential source, and tool policy.</p>`;
-    }
-    // Launches this eval's controlled comparison inline, scoped to whichever
-    // eval-detail hub is currently open (redesign card item 2: "the 'run
-    // this eval' launch flow ... after launch, live status shows here"). The
-    // live-run polling/progress mechanics (state.activeRun, renderLive,
-    // taskCell) are unchanged from the old standalone Live-run view -- only
-    // relocated into this hub instead of a separate nav destination.
-    async function launchComparison(spec) {
-      const runners = [runnerFrom('runner-a'), runnerFrom('runner-b')];
+      const runners = models.map((model, index) => ({ id: `runner-${index + 1}`, model, system_prompt: defaults.system_prompt, temperature: defaults.temperature ?? 0, max_output_units: defaults.max_output_units ?? 512 }));
       const tasks = spec.task_ids?.length ? spec.task_ids : Array.from({ length: spec.task_count || 1 }, (_, index) => `task-${index + 1}`);
       state.activeRun = { status: 'running', spec, runners, tasks, startedAt: new Date().toISOString(), response: null, error: null };
       renderEvalDetail();
       try {
-        const response = await loadJson('/api/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ spec: spec.path, runners })
-        });
+        const body = runners.length >= 2 ? { spec: spec.path, runners } : { spec: spec.path };
+        const response = await loadJson('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         state.activeRun = { ...state.activeRun, status: 'complete', response };
         if (response.comparison) state.compareResult = response.comparison;
-        showToast(response.comparison ? 'Comparison stored and paired.' : 'Runs stored; comparison needs attention.');
+        showToast('Run stored.');
         await refreshAll();
-      } catch (err) {
-        state.activeRun = { ...state.activeRun, status: 'failed', error: err.message };
-        renderEvalDetail();
-        showToast('Run failed: ' + err.message);
-      }
+      } catch (err) { state.activeRun = { ...state.activeRun, status: 'failed', error: err.message }; renderEvalDetail(); showToast('Run failed: ' + err.message); }
     }
-
-    // Renders the live-run status panel embedded in the eval-detail hub's
-    // "Run this eval" section (see `renderEvalDetail`'s `#live-status` div).
-    // Returns markup rather than assigning `view.innerHTML` directly, since
-    // it is only ever a fragment of the larger hub render now.
     function renderLive() {
       const active = state.activeRun;
-      if (!active) {
-        return `<div class="ae-empty">
-          <p class="ae-item"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg> No active run</p>
-          <p class="ae-dim">Launch a controlled comparison above to watch it execute here.</p>
-          <p><button class="cru-button" id="live-empty-cta" type="button">Focus runner settings</button></p>
-        </div>`;
-      }
+      if (!active) return `<div class="ae-empty"><p class="ae-item"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg> No active run</p><p class="ae-dim">Launch from this tab to watch it execute here.</p><p><button class="cru-button" id="live-empty-cta" type="button">Focus runner settings</button></p></div>`;
       const done = active.status === 'complete';
       const failed = active.status === 'failed';
-      return `<section class="cru-card ${failed ? 'warning' : ''}"><p>${statusGlyph(failed ? 'err' : done ? 'ok' : 'progress')}${failed ? 'failed' : done ? 'complete' : 'running'}</span> ${failed ? esc(active.error) : done ? 'Both runner receipts are stored.' : 'Crucible is executing the runner bundle now.'}</p></section>
-      <div class="cru-progress" style="margin-top: var(--ae-space-4)">
-        <div class="cru-label cru-progress-head">task</div>${active.runners.map(runner => `<div class="cru-label cru-progress-head">${esc(runner.id || runner.model)}</div>`).join('')}
-        ${active.tasks.map(task => `<div class="cru-code">${esc(task)}</div>${active.runners.map(runner => taskCell(active, runner, task)).join('')}`).join('')}
-      </div>`;
+      return `<section class="cru-card ${failed ? 'warning' : ''}"><p>${statusGlyph(failed ? 'err' : done ? 'ok' : 'progress')}${failed ? 'failed' : done ? 'complete' : 'running'}</span> ${failed ? esc(active.error) : done ? 'Run stored.' : 'Crucible is executing the runner bundle now.'}</p></section><div class="cru-progress" style="margin-top: var(--ae-space-4)"><div class="cru-label cru-progress-head">task</div>${active.runners.map(runner => `<div class="cru-label cru-progress-head">${esc(runner.id || runner.model)}</div>`).join('')}${active.tasks.map(task => `<div class="cru-code">${esc(task)}</div>${active.runners.map(runner => taskCell(active, runner, task)).join('')}`).join('')}</div>`;
     }
     function taskCell(active, runner, taskId) {
-      // The runner label repeats inline in every cell (shown only at the
-      // mobile breakpoint via .cru-progress-runner-label) so the task/runner
-      // grouping survives the grid collapsing to one column: nothing here
-      // depends on counting position to know which runner a result is for.
       const runnerLabel = `<span class="cru-progress-runner-label">${esc(runner.id || runner.model)}</span>`;
       if (!active.response) return `<div>${runnerLabel}${statusGlyph('progress')}running</span></div>`;
       const run = (active.response.runs || []).find(row => row.runner_id === runner.id || row.model === runner.model);
       const detail = run?.report?.evals?.[0];
       if (!detail) return `<div>${runnerLabel}${statusGlyph('progress')}stored</span></div>`;
-      return `<div>${runnerLabel}${statusGlyph('ok')}receipt written</span><br><span class="cru-subtle">${esc(scoreText(run))}</span></div>`;
+      return `<div>${runnerLabel}${statusGlyph('ok')}run written</span><br><span class="cru-subtle">${esc(scoreText(run))}</span></div>`;
     }
 
-    function renderFindings(journal) {
-      const findings = journal?.findings || [];
-      if (!findings.length) return '';
-      return `<section class="cru-card" style="margin-top: var(--ae-space-4)">
-        <p class="cru-title">Defensible findings</p>
-        <p class="cru-subtle">Crucible only mints a finding record when the paired result clears the noise floor above — this is the same crucible.findings_journal.v1 artifact crucible runs compare --findings-out writes.</p>
-        ${findings.map(finding => `<div class="cru-card" style="margin-top: var(--ae-space-2)">
-          <p>${esc(finding.hypothesis)}</p>
-          <p class="cru-subtle">Δ ${esc(finding.delta.point.toFixed(4))} [${esc(finding.delta.lower.toFixed(4))}, ${esc(finding.delta.upper.toFixed(4))}] over ${esc(finding.delta.common_tasks)} shared tasks, ${esc((finding.delta.confidence * 100).toFixed(0))}% confidence.</p>
-          <p class="cru-code">${esc(finding.repro_command)}</p>
-        </div>`).join('')}
-      </section>`;
-    }
-    function scoreCard(side, run) {
-      return `<section class="cru-card">
-        <p class="cru-label">${esc(side)}</p>
-        <p class="cru-title">${esc(run.model || run.config_id)}</p>
-        <p>${esc(scoreText(run))}</p>
-        ${ci(run)}
-        <p class="cru-subtle">${esc(uncertaintyText(run))}. This is the range, not a guarantee.</p>
-        <p class="cru-code">${esc(run.config_id)}</p>
-      </section>`;
-    }
-
-    function renderReceipts() {
-      const rows = runs();
+    function renderRunView() {
       const detail = state.detail;
-      view.innerHTML = `<div class="cru-toolbar"><div><p class="cru-title">Receipts</p><p class="cru-lede">Stored run records and artifacts -- the global audit trail underneath every eval.</p></div></div>
-      <div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>eval</th><th>score</th><th>runner</th><th>time</th></tr></thead><tbody>
-        ${rows.map(run => `<tr class="cru-click" data-run-id="${esc(run.run_id)}"><td class="ae-item">${esc(run.benchmark_id)}</td><td>${esc(scoreText(run))}<br><span class="cru-subtle">${esc(uncertaintyText(run))}</span></td><td class="wrap cru-code">${esc(run.config_id)}<br>${esc(run.model || run.provider || 'deterministic')}</td><td>${esc(new Date(run.created_at_unix_ms).toISOString())}</td></tr>`).join('')}
-      </tbody></table></div>
-      ${detail ? renderDetail(detail) : ''}`;
-      document.querySelectorAll('[data-run-id]').forEach(row => row.onclick = async () => { await loadDetail(row.dataset.runId, true); });
-      document.querySelectorAll('[data-artifact-url]').forEach(link => link.onclick = openArtifact);
-      document.querySelector('#detail-open-eval')?.addEventListener('click', () => {
-        const spec = specById(detail.run.benchmark_id);
-        if (spec) openEvalDetail(spec.path);
-      });
-    }
-    function renderDetail(detail) {
+      if (!detail) { view.innerHTML = '<div class="cru-empty">Run not found.</div>'; return; }
       const run = detail.run;
-      const artifactHref = index => `/artifacts/${encodeURIComponent(run.run_id)}/${index}`;
-      const spec = specById(run.benchmark_id);
-      return `<section class="cru-card" style="margin-top: var(--ae-space-4)">
-        <div class="cru-toolbar"><p class="cru-title">Run receipt</p>${spec ? '<button class="cru-button secondary" id="detail-open-eval" type="button">Open eval</button>' : ''}</div>
-        <p class="cru-code">${esc(run.run_id)}</p>
-        <div class="cru-grid two"><div><p>${esc(scoreText(run))}</p>${ci(run)}<p class="cru-subtle">${esc(uncertaintyText(run))}</p></div><dl class="cru-code"><dt>eval</dt><dd>${esc(run.benchmark_id)}</dd><dt>runner</dt><dd>${esc(run.runner_kind)}</dd><dt>report</dt><dd>${esc(run.run_report)}</dd></dl></div>
-        <p class="cru-title">Task results</p>${renderTasks(detail)}
-        <p class="cru-title">Artifacts</p>${detail.artifacts.length ? `<table class="ae-table"><tbody>${detail.artifacts.map((artifact, index) => `<tr><td>${esc(artifact.kind)}</td><td class="wrap cru-code">${esc(artifact.path)}</td><td><a href="${artifactHref(index)}" data-artifact-url="${artifactHref(index)}" target="_blank" rel="noreferrer">open</a></td></tr>`).join('')}</tbody></table>` : '<p class="cru-subtle">No artifacts indexed.</p>'}
-      </section>`;
+      const totals = tokenTotals(detail);
+      view.innerHTML = `<div class="cru-toolbar"><div class="cru-hub-head"><h1 class="cru-h1">${esc(shortModel(run.model || run.config_id))}</h1><p class="cru-code">${esc(run.config_id)} <button class="cru-back" data-copy-config type="button">copy</button></p><p class="cru-kicker">${esc(relativeTime(run.created_at_unix_ms))} / ${scoreText(run)} / ${run.trusted ? 'trusted' : 'untrusted'}${run.response_model ? ' / response_model ' + esc(run.response_model) : ''}${totals ? ' / ' + esc(totals) : ''}</p></div></div><section class="cru-section"><label class="cru-field"><span class="cru-label">compare across runs</span><select class="cru-select" id="compare-across-runs"><option value="false">off</option><option value="true" ${state.compareAcross ? 'selected' : ''}>on</option></select></label>${renderRunTasks(detail)}</section>`;
+      document.querySelector('#compare-across-runs').onchange = event => { state.compareAcross = event.target.value === 'true'; renderRunView(); };
+      document.querySelector('[data-copy-config]')?.addEventListener('click', () => navigator.clipboard?.writeText(run.config_id));
+      document.querySelectorAll('[data-run-task-row]').forEach(row => row.onclick = () => { state.expandedRunTaskId = state.expandedRunTaskId === row.dataset.runTaskRow ? null : row.dataset.runTaskRow; renderRunView(); });
     }
-    async function openArtifact(event) {
-      event.preventDefault();
-      try {
-        const res = await fetchWithAuth(event.currentTarget.dataset.artifactUrl);
-        const blob = await res.blob();
-        if (!res.ok) throw new Error(await blob.text());
-        const url = URL.createObjectURL(blob);
-        window.open(url, '_blank', 'noopener');
-        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      } catch (err) {
-        showToast('Artifact open failed: ' + err.message);
-      }
+    function tokenTotals(detail) { const tasks = detail.prompt_tasks || []; const total = tasks.reduce((sum, task) => sum + (task.total_tokens || task.total_units || 0), 0); const cost = tasks.reduce((sum, task) => sum + (task.cost_usd || 0), 0); return total || cost ? `${total || 0} tokens${cost ? ' / $' + cost.toFixed(5) : ''}` : ''; }
+    function renderRunTasks(detail) {
+      const run = detail.run;
+      const tasks = detail.prompt_tasks?.length ? detail.prompt_tasks : detail.harbor_tasks?.length ? detail.harbor_tasks : (detail.task_results || []);
+      if (!tasks.length) return '<p class="cru-subtle">No per-task rows were indexed for this runner.</p>';
+      const compareCols = state.compareAcross ? (state.matrix?.columns || []).filter(col => col.run_id !== run.run_id) : [];
+      return `<div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>task</th><th>class</th><th>verdict</th><th>latency</th><th>tokens</th>${compareCols.map(col => `<th>${esc(shortModel(col.model || col.config_id))}</th>`).join('')}</tr></thead><tbody>${tasks.map(task => runTaskRows(task, compareCols)).join('')}</tbody></table></div>`;
     }
-    function renderTasks(detail) {
-      if (detail.prompt_tasks.length) {
-        return `<div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>task</th><th>verdict</th><th>latency</th><th>model</th><th>cost</th></tr></thead><tbody>${detail.prompt_tasks.map(task => `<tr><td class="ae-item">${esc(task.task_id)}</td><td>${statusGlyph(task.passed ? 'ok' : 'err')}${task.passed ? 'pass' : 'fail'}</span></td><td>${task.latency_ms == null ? 'n/a' : esc(task.latency_ms + 'ms')}</td><td>${esc(task.response_model || task.requested_model || '')}</td><td>${task.cost_usd == null ? 'n/a' : '$' + Number(task.cost_usd).toFixed(5)}</td></tr>`).join('')}</tbody></table></div>`;
-      }
-      if (detail.task_results && detail.task_results.length) {
-        return `<div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>task</th><th>trial</th><th>matched</th><th>missed</th><th>false positives</th><th>verifier</th></tr></thead><tbody>${detail.task_results.map(task => `<tr><td class="ae-item">${esc(task.task_id)}</td><td>${esc(task.trial ?? '')}</td><td>${esc(task.matched ?? '')}/${esc(task.expected_defects ?? '')}</td><td>${esc(task.missed ?? '')}</td><td>${esc(task.false_positives ?? '')}</td><td>${statusGlyph(!task.error && !task.scorer_error ? 'ok' : 'err')}${task.error || task.scorer_error ? esc(task.error || task.scorer_error) : 'graded'}</span></td></tr>`).join('')}</tbody></table></div>`;
-      }
-      return '<p class="cru-subtle">No per-task rows were indexed for this runner.</p>';
+    function runTaskRows(task, compareCols) {
+      const taskId = task.task_id;
+      const pass = task.passed ?? (!task.error && !task.scorer_error);
+      const row = (state.matrix?.rows || []).find(row => row.task_id === taskId);
+      const cells = new Map((row?.cells || []).map(cell => [cell.run_id, cell]));
+      const expanded = state.expandedRunTaskId === taskId;
+      const tracked = (task.tracked_results || []).map(check => `<span class="cru-chip ${check.passed ? 'ok' : 'err'}">${esc(check.id)}</span>`).join('');
+      const main = `<tr class="cru-click" data-run-task-row="${esc(taskId)}"><td class="cru-code">${esc(taskId)}</td><td>${task.class ? `<span class="cru-chip">${esc(task.class)}</span>` : '<span class="cru-subtle">&mdash;</span>'}</td><td>${statusGlyph(pass ? 'ok' : 'err')}${pass ? 'pass' : 'fail'}</span> ${tracked}</td><td>${task.latency_ms == null ? 'n/a' : esc(task.latency_ms + 'ms')}</td><td>${task.total_tokens || task.total_units || 'n/a'}</td>${compareCols.map(col => { const cell = cells.get(col.run_id); return `<td>${cell ? `<span class="cru-chip ${cell.passed ? 'ok' : 'err'}">${cell.passed ? 'pass' : 'fail'}</span>` : '<span class="cru-subtle">n/a</span>'}</td>`; }).join('')}</tr>`;
+      if (!expanded) return main;
+      const def = (state.specDetail?.prompt_tasks || []).find(candidate => candidate.task_id === taskId);
+      const output = task.output_text || task.output || task.evidence_json?.output || '';
+      const expectation = def ? `${def.expectation_kind} ${JSON.stringify(def.expectation_value)}` : 'definition unavailable';
+      return main + `<tr class="cru-run-expand"><td colspan="${5 + compareCols.length}"><div class="cru-grid two"><div><p class="cru-label">response</p><pre class="cru-response-pre ${pass ? 'ok' : 'err'}">${esc(output || 'No response text indexed.')}</pre></div><div><p class="cru-label">expectation</p><pre class="cru-pre">${esc(expectation)}</pre></div></div></td></tr>`;
     }
-    function showToast(message) {
-      toast.textContent = message;
-      toast.hidden = false;
-      clearTimeout(showToast.timer);
-      showToast.timer = setTimeout(() => { toast.hidden = true; }, 5000);
-    }
+    function showToast(message) { toast.textContent = message; toast.hidden = false; clearTimeout(showToast.timer); showToast.timer = setTimeout(() => { toast.hidden = true; }, 5000); }
 
-    document.querySelectorAll('[data-view-button]').forEach(button => button.onclick = () => setView(button.dataset.viewButton));
-    document.querySelector('#mobile-view').onchange = event => setView(event.target.value);
     const root = document.documentElement;
     const savedMode = localStorage.getItem('crucible-mode') || 'light';
     root.setAttribute('data-ae-mode', savedMode);
-    document.querySelector('#mode-toggle').onclick = () => {
-      const next = root.getAttribute('data-ae-mode') === 'dark' ? 'light' : 'dark';
-      root.setAttribute('data-ae-mode', next);
-      localStorage.setItem('crucible-mode', next);
-    };
-    refreshAll().catch(err => {
-      view.innerHTML = `<div class="cru-empty">Load failed: ${esc(err.message)}</div>`;
-    });
+    document.querySelector('#reload').onclick = refreshAll;
+    document.querySelector('#mode-toggle').onclick = () => { const next = root.getAttribute('data-ae-mode') === 'dark' ? 'light' : 'dark'; root.setAttribute('data-ae-mode', next); localStorage.setItem('crucible-mode', next); };
+    window.addEventListener('hashchange', async () => { state.route = routeFromHash(); await loadRouteData(); render(); });
+    refreshAll().catch(err => { view.innerHTML = `<div class="cru-empty">Load failed: ${esc(err.message)}</div>`; });
   </script>
 </body>
 </html>
-"#
+"##
     .to_string()
 }
 
@@ -3144,6 +2894,42 @@ mod tests {
         );
         assert_eq!(task.expectation_kind, "contains");
         assert_eq!(task.expectation_value, json!("needle"));
+        assert!(task.tracked.is_empty());
+    }
+
+    #[test]
+    fn specs_response_surfaces_context_and_environment_files() {
+        let dir = temp_specs_dir("context-and-envs");
+        std::fs::create_dir_all(dir.join("environments")).unwrap();
+        std::fs::write(dir.join("environments").join("local.json"), "{}").unwrap();
+        std::fs::write(
+            dir.join("contextual-v0.json"),
+            serde_json::to_string_pretty(&json!({
+                "schema_version": "crucible.eval_spec.v1",
+                "id": "contextual-v0",
+                "context": "fleet-routing",
+                "task": "routing",
+                "aggregation": "proportion",
+                "uncertainty": { "method": "wilson", "confidence": 0.95 }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let response = specs_response(&dir).expect("specs response loads");
+        assert_eq!(response.schema_version, SPECS_SCHEMA);
+        assert_eq!(response.env_files.len(), 1);
+        assert!(
+            response.env_files[0].ends_with("environments/local.json"),
+            "env selector should be populated from evals/environments/*.json: {:?}",
+            response.env_files
+        );
+        let spec = response
+            .specs
+            .iter()
+            .find(|spec| spec.id == "contextual-v0")
+            .expect("contextual spec is listed");
+        assert_eq!(spec.context.as_deref(), Some("fleet-routing"));
     }
 
     #[test]
@@ -3396,6 +3182,57 @@ mod tests {
             is_compare_request_error(&err),
             "a missing required query param must classify as a client error (400), not a 500: {err}"
         );
+    }
+
+    #[test]
+    fn index_shell_is_eval_table_without_rail_or_global_receipts_nav() {
+        let html = render_index();
+        assert!(html.contains("data-evals-table"));
+        assert!(html.contains("data-runner-legend"));
+        assert!(html.contains("id=\"context-filter\""));
+        assert!(html.contains("RUNNER_EXPLANATIONS"));
+        assert!(
+            !html.contains("ae-rail") && !html.contains("data-view-button"),
+            "the standalone rail/mobile view select must be removed: {html}"
+        );
+        assert!(
+            !html.contains(">Receipts<") && !html.contains("renderReceipts"),
+            "the global Receipts view must be absorbed into eval run pages: {html}"
+        );
+    }
+
+    #[test]
+    fn hash_routing_renders_eval_tabs_and_run_view() {
+        let html = render_index();
+        assert!(html.contains("function routeFromHash()"));
+        assert!(html.contains("renderEvals()"));
+        assert!(html.contains("renderEvalDetail()"));
+        assert!(html.contains("renderRunView()"));
+        assert!(html.contains("['overview', 'tasks', 'runs', 'compare']"));
+        assert!(html.contains("<span>/</span>"));
+        assert!(html.contains("#/evals"));
+    }
+
+    #[test]
+    fn tasks_tab_has_definition_panel_contract() {
+        let html = render_index();
+        assert!(html.contains("function renderTasksTab"));
+        assert!(html.contains("data-task-definition"));
+        assert!(html.contains("data-tracked-check-count"));
+        assert!(html.contains("function taskPanel"));
+        assert!(html.contains("context_content"));
+        assert!(html.contains("expectation_value"));
+        assert!(html.contains("tracked checks"));
+    }
+
+    #[test]
+    fn run_view_has_per_task_table_and_compare_toggle() {
+        let html = render_index();
+        assert!(html.contains("function renderRunView"));
+        assert!(html.contains("id=\"compare-across-runs\""));
+        assert!(html.contains("function renderRunTasks"));
+        assert!(html.contains("data-run-task-row"));
+        assert!(html.contains("cru-response-pre"));
     }
 
     /// Extract the declaration body of the first CSS rule with an exact

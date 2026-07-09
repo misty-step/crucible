@@ -133,6 +133,28 @@ mod spec_save;
 mod test_fixtures;
 mod validate;
 
+#[cfg(test)]
+static LIVE_SOCKET_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn live_socket_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIVE_SOCKET_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
+
+#[cfg(test)]
+fn bind_loopback_listener_for_test(context: &str) -> Option<std::net::TcpListener> {
+    match std::net::TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => Some(listener),
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping live socket test {context}: loopback bind refused by OS: {err}");
+            None
+        }
+        Err(err) => panic!("{context}: bind ephemeral loopback port: {err}"),
+    }
+}
+
 /// Standard-normal quantile for a two-sided 95% interval.
 const Z_95: f64 = 1.96;
 /// The confidence level [`Z_95`] corresponds to, surfaced in reports.

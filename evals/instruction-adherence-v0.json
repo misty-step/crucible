@@ -1,6 +1,7 @@
 {
   "schema_version": "crucible.eval_spec.v1",
   "id": "instruction-adherence-v0",
+  "context": "agentic-swe",
   "task": "instruction-adherence",
   "inputs": "23 prompt tasks across four conflict classes (tool_choice, format_contract, negative_constraint, counter_convention), each embedding one explicit rule plus a small job. Within each class, 4 tasks state a rule that conflicts with the model's likely training prior and 2 control tasks state a same-style rule that already agrees with the prior, so the corpus separates genuine instruction-following from reflexive prior-following.",
   "outputs": "Model text graded by deterministic rubrics only: exact match, regex, case-insensitive contains, and Python unit tests that inspect the raw response text for required and forbidden substrings. No judge model is called.",

@@ -1,6 +1,7 @@
 {
   "schema_version": "crucible.eval_spec.v1",
   "id": "tracer-exact-v2",
+  "context": "smoke",
   "task": "tracer-exact",
   "inputs": "A 60-task class-stratified deterministic battery designed to discriminate: code output, long-context extraction, strict format adherence, and arithmetic/logic.",
   "outputs": "Model text graded by deterministic rubrics only: exact match, strict JSON equality, and Python unit tests executed in a temporary local directory. No judge model is called.",

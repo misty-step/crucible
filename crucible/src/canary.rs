@@ -292,7 +292,7 @@ fn send_with_retry(endpoint: &str, key: &str, path: &str, body: &serde_json::Val
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
-    use std::net::{TcpListener, TcpStream};
+    use std::net::TcpStream;
     use std::sync::mpsc;
     use std::time::Instant;
 
@@ -351,8 +351,8 @@ mod tests {
 
     /// Bind an ephemeral mock server that captures exactly one request per
     /// accepted connection and replies `201 Created`.
-    fn spawn_mock_server() -> (String, mpsc::Receiver<CapturedRequest>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
+    fn spawn_mock_server() -> Option<(String, mpsc::Receiver<CapturedRequest>)> {
+        let listener = crate::bind_loopback_listener_for_test("canary mock server")?;
         let addr = listener.local_addr().expect("mock listener local addr");
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -364,7 +364,7 @@ mod tests {
                 }
             }
         });
-        (format!("http://{addr}"), rx)
+        Some((format!("http://{addr}"), rx))
     }
 
     fn clear_canary_env() {
@@ -382,8 +382,11 @@ mod tests {
     #[test]
     fn check_in_posts_monitor_status_and_ttl_to_the_mock_server() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _socket_guard = crate::live_socket_test_guard();
         clear_canary_env();
-        let (endpoint, rx) = spawn_mock_server();
+        let Some((endpoint, rx)) = spawn_mock_server() else {
+            return;
+        };
         // SAFETY: serialized by `ENV_LOCK` above.
         unsafe {
             std::env::set_var("CANARY_ENDPOINT", &endpoint);
@@ -408,8 +411,11 @@ mod tests {
     #[test]
     fn report_error_posts_service_class_and_message_to_the_mock_server() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _socket_guard = crate::live_socket_test_guard();
         clear_canary_env();
-        let (endpoint, rx) = spawn_mock_server();
+        let Some((endpoint, rx)) = spawn_mock_server() else {
+            return;
+        };
         // SAFETY: serialized by `ENV_LOCK` above.
         unsafe {
             std::env::set_var("CANARY_ENDPOINT", &endpoint);
@@ -447,10 +453,14 @@ mod tests {
     #[test]
     fn report_error_against_a_dead_port_returns_promptly_without_panicking() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _socket_guard = crate::live_socket_test_guard();
         clear_canary_env();
         // Bind then drop to reserve a port that is guaranteed closed for the
         // rest of this test.
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind throwaway listener");
+        let Some(listener) = crate::bind_loopback_listener_for_test("canary dead-port probe")
+        else {
+            return;
+        };
         let addr = listener
             .local_addr()
             .expect("throwaway listener local addr");
@@ -478,8 +488,11 @@ mod tests {
         use tracing_subscriber::prelude::*;
 
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _socket_guard = crate::live_socket_test_guard();
         clear_canary_env();
-        let (endpoint, rx) = spawn_mock_server();
+        let Some((endpoint, rx)) = spawn_mock_server() else {
+            return;
+        };
         // SAFETY: serialized by `ENV_LOCK` above.
         unsafe {
             std::env::set_var("CANARY_ENDPOINT", &endpoint);
@@ -525,8 +538,11 @@ mod tests {
         use tracing_subscriber::prelude::*;
 
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _socket_guard = crate::live_socket_test_guard();
         clear_canary_env();
-        let (endpoint, rx) = spawn_mock_server();
+        let Some((endpoint, rx)) = spawn_mock_server() else {
+            return;
+        };
         // SAFETY: serialized by `ENV_LOCK` above.
         unsafe {
             std::env::set_var("CANARY_ENDPOINT", &endpoint);
@@ -622,8 +638,11 @@ mod tests {
     #[test]
     fn report_panic_posts_a_service_scoped_panic_class_with_location_to_the_mock_server() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _socket_guard = crate::live_socket_test_guard();
         clear_canary_env();
-        let (endpoint, rx) = spawn_mock_server();
+        let Some((endpoint, rx)) = spawn_mock_server() else {
+            return;
+        };
         // SAFETY: serialized by `ENV_LOCK` above.
         unsafe {
             std::env::set_var("CANARY_ENDPOINT", &endpoint);
@@ -649,8 +668,11 @@ mod tests {
     #[test]
     fn report_panic_omits_the_location_suffix_when_it_is_empty() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _socket_guard = crate::live_socket_test_guard();
         clear_canary_env();
-        let (endpoint, rx) = spawn_mock_server();
+        let Some((endpoint, rx)) = spawn_mock_server() else {
+            return;
+        };
         // SAFETY: serialized by `ENV_LOCK` above.
         unsafe {
             std::env::set_var("CANARY_ENDPOINT", &endpoint);

@@ -423,6 +423,7 @@ mod tests {
         EvalSpec {
             schema_version: crate::spec::EVAL_SPEC_SCHEMA.to_string(),
             id: "demo-v0".to_string(),
+            context: None,
             task: "demo".to_string(),
             inputs: String::new(),
             outputs: String::new(),

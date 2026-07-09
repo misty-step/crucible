@@ -1,6 +1,7 @@
 {
   "schema_version": "crucible.eval_spec.v1",
   "id": "commit-message-quality-v1",
+  "context": "agentic-swe",
   "task": "commit-message-quality",
   "inputs": "30 diffs \u2014 23 real commits mined from five fleet repos (curated so the Conventional Commits type is inferable from the diff alone) + 7 synthetic pure-refactor diffs (no real refactor: commits exist in fleet history). Each task's diff is a committed fixture file; a known-good reference message per task lives beside it and is verified against the task's own grader.",
   "outputs": "One generated Conventional Commits message per diff, graded by a per-task regex that pins the defensible type-set (alternation where two types are expert-defensible), requires a subject, and requires a body.",

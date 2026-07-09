@@ -42,10 +42,11 @@ fn checks_by_id(
 }
 
 /// The headline test: `crucible doctor --json` with no `OPENROUTER_API_KEY`
-/// set must report every functionality check (`cli`, `mcp`, `serve`,
-/// `ledger`) as `ok`, `model_credentials` as `warn` (not `fail`), and the
-/// top-level `ok` as `true` — a missing optional credential must never sink
-/// the overall verdict.
+/// set must report every non-socket functionality check (`cli`, `mcp`,
+/// `ledger`) as `ok`, `serve` as either `ok` or an environment warning when
+/// the OS refuses loopback listeners, `model_credentials` as `warn` (not
+/// `fail`), and the top-level `ok` as `true` — a missing optional credential
+/// or sandbox socket limit must never sink the overall verdict.
 #[test]
 fn doctor_happy_path_without_openrouter_key_is_ok_overall_with_a_credentials_warning() {
     let out = crucible()
@@ -68,13 +69,24 @@ fn doctor_happy_path_without_openrouter_key_is_ok_overall_with_a_credentials_war
     assert_eq!(report["ok"], true, "report: {report}");
 
     let checks = checks_by_id(&report);
-    for id in ["cli", "mcp", "serve", "ledger"] {
+    for id in ["cli", "mcp", "ledger"] {
         let check = checks
             .get(id)
             .unwrap_or_else(|| panic!("missing {id} check: {report}"));
         assert_eq!(
             check["status"], "ok",
             "{id} check must be ok in a hermetic environment: {check}"
+        );
+    }
+    let serve = &checks["serve"];
+    if serve["status"] != "ok" {
+        assert_eq!(serve["status"], "warn", "serve must be ok or warn: {serve}");
+        assert!(
+            serve["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("loopback"),
+            "serve warning must explain the loopback bind environment limit: {serve}"
         );
     }
     let credentials = &checks["model_credentials"];

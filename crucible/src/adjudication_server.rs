@@ -441,9 +441,13 @@ mod tests {
     /// round-trips, not just the Rust-level logic.
     #[test]
     fn live_server_serves_the_panel_and_accepts_a_real_http_label_post() {
+        let _socket_guard = crate::live_socket_test_guard();
         let dir = temp_dir("live");
         let labels_path = dir.join("labels.json");
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let Some(listener) = crate::bind_loopback_listener_for_test("adjudication panel HTTP post")
+        else {
+            return;
+        };
         let port = listener.local_addr().unwrap().port();
         let queue_for_thread = queue(&["F1"]);
         let labels_path_for_thread = labels_path.clone();
@@ -503,9 +507,14 @@ mod tests {
     /// stale snapshot taken once at server start.
     #[test]
     fn live_server_serves_the_panel_html_and_reflects_an_applied_label() {
+        let _socket_guard = crate::live_socket_test_guard();
         let dir = temp_dir("live-index");
         let labels_path = dir.join("labels.json");
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let Some(listener) =
+            crate::bind_loopback_listener_for_test("adjudication panel HTML refresh")
+        else {
+            return;
+        };
         let port = listener.local_addr().unwrap().port();
         let queue_for_thread = queue(&["F1"]);
         let labels_path_for_thread = labels_path.clone();
