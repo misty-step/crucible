@@ -8,7 +8,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -27,6 +30,20 @@ use crate::eval_run::{EvalReport, RunReport};
 /// Default local run ledger path. The whole `runs/` tree is gitignored because
 /// real eval runs may contain proprietary diffs and raw model output.
 pub const DEFAULT_DB_PATH: &str = "runs/local/crucible-runs.sqlite";
+
+/// Resolve the run ledger path when no explicit `--db`/`db` argument was
+/// given: `CRUCIBLE_DB` (the central-ledger override, factory-fleet ff-s1)
+/// when set and non-empty, else [`DEFAULT_DB_PATH`]. The CLI's own `db`
+/// clap args get the identical flag > env > default precedence for free via
+/// clap's `env = "CRUCIBLE_DB"` attribute (which also resolves against the
+/// same [`DEFAULT_DB_PATH`] default and surfaces the var in `--help`); MCP's
+/// tool handlers have no clap layer to lean on, so they call this directly.
+pub fn default_db_path() -> PathBuf {
+    match std::env::var("CRUCIBLE_DB") {
+        Ok(value) if !value.is_empty() => PathBuf::from(value),
+        _ => PathBuf::from(DEFAULT_DB_PATH),
+    }
+}
 
 /// Default significance threshold for the paired McNemar verdict in
 /// [`compare_configs`].
@@ -165,6 +182,17 @@ pub struct StoredRun {
     /// `compare_configs` (an uncontrolled comparison), not just "no data."
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_envelope: Option<ResourceEnvelope>,
+    /// Full `git rev-parse HEAD` sha of the repo containing this run's spec
+    /// file, captured at persist time from the spec's containing directory
+    /// (factory-fleet ff-s1). `None` for a built-in receipt run, a spec
+    /// outside any git checkout, or when `git` itself failed — provenance is
+    /// metadata, never a run precondition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_sha: Option<String>,
+    /// Basename of `git rev-parse --show-toplevel` for the same repo. `None`
+    /// under the same conditions as [`StoredRun::git_sha`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -650,6 +678,10 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
         // `EvaluationCard.provenance.model_version` already computes, also
         // stored as a plain queryable column.
         let response_model = provenance_model_version(&metadata);
+        // Factory-fleet ff-s1: best-effort git provenance, captured from the
+        // spec file's containing directory (never the process CWD) so a
+        // CLI/MCP invocation from anywhere still records the right repo.
+        let (git_sha, repo) = git_provenance(metadata.spec_path.as_deref());
 
         tx.execute(
             "INSERT INTO run_records (
@@ -658,11 +690,11 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 run_report_path, evidence_path, spec_path, score_metric, successes,
                 n, point, lower, upper, confidence, score_method, eval_json,
                 harness, tool_allowlist, trace_path, trusted, response_model,
-                scoring_id, resource_envelope
+                scoring_id, resource_envelope, git_sha, repo
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
-                ?29, ?30
+                ?29, ?30, ?31, ?32
             )",
             params![
                 run_id,
@@ -694,7 +726,9 @@ pub fn persist_report(db_path: &Path, report: &RunReport) -> Result<PersistedRep
                 metadata.trusted,
                 response_model,
                 metadata.scoring_id,
-                metadata.resource_envelope
+                metadata.resource_envelope,
+                git_sha,
+                repo
             ],
         )
         .with_context(|| format!("inserting run record for {}", eval.id))?;
@@ -936,6 +970,47 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// Best-effort git provenance for one persisted run (factory-fleet ff-s1),
+/// captured from `spec_path`'s **containing directory** — not the process's
+/// own CWD, so a run launched from anywhere (an MCP client's cwd, `serve`'s
+/// cwd) still records the repo the spec itself lives in. `(None, None)` when
+/// there is no spec path (a built-in receipt run), the directory isn't inside
+/// a git checkout, or `git` isn't available/fails — provenance is metadata
+/// attached to a run that already persisted successfully, never a
+/// precondition for persisting it.
+fn git_provenance(spec_path: Option<&str>) -> (Option<String>, Option<String>) {
+    let dir = match spec_path.and_then(|path| Path::new(path).parent()) {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+        Some(_) => PathBuf::from("."),
+        None => return (None, None),
+    };
+    let git_sha = run_git(&dir, &["rev-parse", "HEAD"]);
+    let repo = run_git(&dir, &["rev-parse", "--show-toplevel"]).and_then(|toplevel| {
+        Path::new(&toplevel)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    });
+    (git_sha, repo)
+}
+
+/// Run `git <args>` in `dir`, returning trimmed stdout on a successful exit
+/// and `None` for every other outcome (not a git repo, `git` missing, a
+/// non-zero exit, or non-UTF8 output) — a failure here is never a reason to
+/// fail or warn-spam the run it was captured for.
+fn run_git(dir: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
     let conn = open_initialized(db_path)?;
     // SQLite treats `LIMIT -1` as "no limit" while still honoring OFFSET, so a
@@ -949,7 +1024,7 @@ pub fn list_runs(db_path: &Path, filter: RunListFilter<'_>) -> Result<RunList> {
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
                 harness, tool_allowlist, trace_path, trusted, response_model,
-                scoring_id, resource_envelope
+                scoring_id, resource_envelope, git_sha, repo
              FROM run_records
              WHERE (?1 IS NULL OR benchmark_id = ?1)
                AND (?2 IS NULL OR config_id = ?2)
@@ -1003,7 +1078,7 @@ pub fn show_run(db_path: &Path, run_id: &str) -> Result<RunDetail> {
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
                 harness, tool_allowlist, trace_path, trusted, response_model,
-                scoring_id, resource_envelope
+                scoring_id, resource_envelope, git_sha, repo
              FROM run_records
              WHERE run_id = ?1",
             params![run_id],
@@ -1472,7 +1547,7 @@ pub fn pivot_by_model(db_path: &Path, benchmark: &str, harness: Option<&str>) ->
                 run_report_path, evidence_path, spec_path, score_metric,
                 successes, n, point, lower, upper, confidence, score_method,
                 harness, tool_allowlist, trace_path, trusted, response_model,
-                scoring_id, resource_envelope
+                scoring_id, resource_envelope, git_sha, repo
              FROM run_records
              WHERE benchmark_id = ?1 AND (?2 IS NULL OR harness = ?2)
              ORDER BY created_at_unix_ms DESC, run_id DESC",
@@ -1815,6 +1890,13 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // (an uncontrolled comparison), unlike `response_model`'s "mixed or
     // unknown" empty-string sentinel.
     ensure_column(conn, "run_records", "resource_envelope", "TEXT")?;
+    // Factory-fleet ff-s1: per-run git provenance, captured from the spec
+    // file's containing directory at persist time. `NULL` for a built-in
+    // receipt run, a spec outside any git checkout, or an older ledger that
+    // predates this field — metadata only, never folded into config_id,
+    // scoring identity, trusted logic, or comparison semantics.
+    ensure_column(conn, "run_records", "git_sha", "TEXT")?;
+    ensure_column(conn, "run_records", "repo", "TEXT")?;
     Ok(())
 }
 
@@ -2377,6 +2459,8 @@ fn row_to_stored_run(row: &Row<'_>) -> rusqlite::Result<StoredRun> {
         resource_envelope: row
             .get::<_, Option<String>>(27)?
             .and_then(|json| serde_json::from_str(&json).ok()),
+        git_sha: row.get(28)?,
+        repo: row.get(29)?,
     })
 }
 
@@ -2524,7 +2608,7 @@ fn latest_for_config(conn: &Connection, benchmark: &str, config: &str) -> Result
             run_report_path, evidence_path, spec_path, score_metric,
             successes, n, point, lower, upper, confidence, score_method,
             harness, tool_allowlist, trace_path, trusted, response_model,
-            scoring_id, resource_envelope
+            scoring_id, resource_envelope, git_sha, repo
          FROM run_records
          WHERE benchmark_id = ?1 AND (config_id = ?2 OR model = ?2)
          ORDER BY created_at_unix_ms DESC, run_id DESC
@@ -2703,6 +2787,274 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    // ---- factory-fleet ff-s1: CRUCIBLE_DB central-ledger env -----------
+    //
+    // `default_db_path` reads process-global env, and `cargo test` runs this
+    // crate's tests in parallel within one process (same concern `canary.rs`'s
+    // own `ENV_LOCK` documents) -- serialize every test that touches
+    // `CRUCIBLE_DB` on this lock so no other thread ever observes a torn env
+    // mid-test.
+    static CRUCIBLE_DB_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn default_db_path_resolves_env_set_unset_and_empty_in_precedence_order() {
+        let _guard = CRUCIBLE_DB_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        // SAFETY: serialized by CRUCIBLE_DB_ENV_LOCK above.
+        unsafe {
+            std::env::remove_var("CRUCIBLE_DB");
+        }
+        assert_eq!(
+            default_db_path(),
+            PathBuf::from(DEFAULT_DB_PATH),
+            "unset CRUCIBLE_DB falls back to the compiled-in default"
+        );
+
+        // SAFETY: serialized by CRUCIBLE_DB_ENV_LOCK above.
+        unsafe {
+            std::env::set_var("CRUCIBLE_DB", "");
+        }
+        assert_eq!(
+            default_db_path(),
+            PathBuf::from(DEFAULT_DB_PATH),
+            "an empty CRUCIBLE_DB is treated as unset, not a literal empty path"
+        );
+
+        // SAFETY: serialized by CRUCIBLE_DB_ENV_LOCK above.
+        unsafe {
+            std::env::set_var("CRUCIBLE_DB", "/tmp/ff-s1-proof.sqlite");
+        }
+        assert_eq!(
+            default_db_path(),
+            PathBuf::from("/tmp/ff-s1-proof.sqlite"),
+            "a set, non-empty CRUCIBLE_DB wins over the compiled-in default"
+        );
+
+        // SAFETY: serialized by CRUCIBLE_DB_ENV_LOCK above.
+        unsafe {
+            std::env::remove_var("CRUCIBLE_DB");
+        }
+    }
+
+    // ---- factory-fleet ff-s1: run provenance (git_sha/repo) -------------
+
+    /// Runs `git <args>` in `dir` with `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`
+    /// pointed at `/dev/null` for every call (not just `init`) -- so this test
+    /// never reads, and cannot hang on, the operator's real global git config
+    /// (e.g. `commit.gpgsign = true` waiting on a passphrase).
+    fn run_git_in(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?} in {} failed", dir.display());
+    }
+
+    /// A throwaway git checkout with one commit and a per-test local
+    /// identity, isolated from the operator's real git config (see
+    /// `run_git_in`).
+    fn init_scratch_git_repo(dir: &Path) {
+        std::fs::create_dir_all(dir).expect("create scratch repo dir");
+        run_git_in(dir, &["init", "--quiet"]);
+        for (key, value) in [
+            ("user.email", "ff-s1@example.test"),
+            ("user.name", "ff-s1 test"),
+        ] {
+            run_git_in(dir, &["config", key, value]);
+        }
+        std::fs::write(dir.join("README.md"), "scratch fixture repo\n").expect("write readme");
+        run_git_in(dir, &["add", "README.md"]);
+        run_git_in(dir, &["commit", "--quiet", "-m", "initial commit"]);
+    }
+
+    fn git_head_sha(dir: &Path) -> String {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .expect("git rev-parse HEAD");
+        assert!(output.status.success());
+        String::from_utf8(output.stdout)
+            .expect("git sha is utf8")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn git_provenance_resolves_sha_and_repo_inside_a_git_checkout() {
+        let root = temp_dir("git-provenance-inside");
+        init_scratch_git_repo(&root);
+        let expected_sha = git_head_sha(&root);
+        let expected_repo = root
+            .file_name()
+            .expect("scratch repo dir has a name")
+            .to_string_lossy()
+            .into_owned();
+
+        let spec_path = root.join("spec.json").display().to_string();
+        let (git_sha, repo) = git_provenance(Some(spec_path.as_str()));
+        assert_eq!(git_sha, Some(expected_sha));
+        assert_eq!(repo, Some(expected_repo));
+    }
+
+    #[test]
+    fn git_provenance_is_null_outside_a_git_checkout_and_for_no_spec_path() {
+        let root = temp_dir("git-provenance-outside");
+        // Deliberately NOT a git repo -- system temp dirs never are.
+        let spec_path = root.join("spec.json").display().to_string();
+        assert_eq!(git_provenance(Some(spec_path.as_str())), (None, None));
+        assert_eq!(
+            git_provenance(None),
+            (None, None),
+            "a built-in receipt run has no spec path at all"
+        );
+    }
+
+    /// An integration-shaped test at this layer: persists a real run whose
+    /// spec lives inside a fresh git checkout, and asserts the stored run
+    /// carries that checkout's HEAD sha and repo name end to end through
+    /// `persist_report` -> `show_run`/`list_runs` -- not just the isolated
+    /// `git_provenance` helper above.
+    #[test]
+    fn persisted_run_carries_git_provenance_from_the_spec_directory() {
+        let root = temp_dir("git-provenance-persist");
+        init_scratch_git_repo(&root);
+        let expected_sha = git_head_sha(&root);
+        let expected_repo = root
+            .file_name()
+            .expect("scratch repo dir has a name")
+            .to_string_lossy()
+            .into_owned();
+
+        let report = prompt_report(&root, "test/model-a", true);
+        let db = root.join("runs.sqlite");
+        persist_report(&db, &report).expect("persist report from inside a git checkout");
+
+        let list = list_runs(&db, RunListFilter::default()).expect("list runs");
+        assert_eq!(list.runs.len(), 1);
+        assert_eq!(list.runs[0].git_sha, Some(expected_sha.clone()));
+        assert_eq!(list.runs[0].repo, Some(expected_repo.clone()));
+
+        let run_id = list.runs[0].run_id.clone();
+        let detail = show_run(&db, &run_id).expect("show run");
+        assert_eq!(detail.run.git_sha, Some(expected_sha));
+        assert_eq!(detail.run.repo, Some(expected_repo));
+    }
+
+    /// Sibling case: a spec outside any git checkout persists fine and
+    /// carries null provenance rather than failing or warning the run.
+    #[test]
+    fn persisted_run_carries_null_provenance_outside_a_git_checkout() {
+        let root = temp_dir("git-provenance-persist-outside");
+        let report = prompt_report(&root, "test/model-a", true);
+        let db = root.join("runs.sqlite");
+        persist_report(&db, &report).expect("persist report outside a git checkout");
+
+        let list = list_runs(&db, RunListFilter::default()).expect("list runs");
+        assert_eq!(list.runs.len(), 1);
+        assert_eq!(list.runs[0].git_sha, None);
+        assert_eq!(list.runs[0].repo, None);
+    }
+
+    // ---- factory-fleet ff-s1: additive migration for git_sha/repo -------
+
+    /// A ledger created by code that predates `git_sha`/`repo` (this crate's
+    /// full additive-migration history up to but not including this ticket)
+    /// must still open, and its pre-existing rows must read back with `NULL`
+    /// provenance rather than failing -- the same guarantee every earlier
+    /// `ensure_column` addition (harness, trusted, response_model, ...) already
+    /// carries.
+    #[test]
+    fn opening_a_ledger_that_predates_git_provenance_backfills_null_columns() {
+        let root = temp_dir("git-provenance-migration");
+        let db = root.join("runs.sqlite");
+
+        {
+            // Only the ORIGINAL base tables -- no harness/tool_allowlist/
+            // trusted/response_model/scoring_id/resource_envelope/git_sha/repo
+            // at all -- so reopening exercises the full additive-migration
+            // mechanism, not just the two newest columns.
+            let conn = Connection::open(&db).expect("open pre-migration db");
+            conn.execute_batch(
+                "CREATE TABLE invocations (
+                    invocation_id TEXT PRIMARY KEY,
+                    created_at_unix_ms INTEGER NOT NULL,
+                    output_dir TEXT NOT NULL,
+                    run_report_path TEXT NOT NULL,
+                    report_schema_version TEXT NOT NULL,
+                    report_json TEXT NOT NULL
+                );
+                CREATE TABLE run_records (
+                    run_id TEXT PRIMARY KEY,
+                    invocation_id TEXT NOT NULL REFERENCES invocations(invocation_id) ON DELETE CASCADE,
+                    ordinal INTEGER NOT NULL,
+                    benchmark_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    runner_kind TEXT NOT NULL,
+                    config_id TEXT NOT NULL,
+                    provider TEXT,
+                    model TEXT,
+                    created_at_unix_ms INTEGER NOT NULL,
+                    output_dir TEXT NOT NULL,
+                    run_report_path TEXT NOT NULL,
+                    evidence_path TEXT,
+                    spec_path TEXT,
+                    score_metric TEXT NOT NULL,
+                    successes INTEGER NOT NULL,
+                    n INTEGER NOT NULL,
+                    point REAL,
+                    lower REAL NOT NULL,
+                    upper REAL NOT NULL,
+                    confidence REAL NOT NULL,
+                    score_method TEXT NOT NULL,
+                    eval_json TEXT NOT NULL
+                );",
+            )
+            .expect("create pre-migration invocations/run_records tables");
+
+            conn.execute(
+                "INSERT INTO invocations (
+                    invocation_id, created_at_unix_ms, output_dir, run_report_path,
+                    report_schema_version, report_json
+                ) VALUES ('inv-pre', 0, 'out', 'out/run-report.json', 'crucible.run_report.v1', '{}')",
+                [],
+            )
+            .expect("seed pre-migration invocation");
+            conn.execute(
+                "INSERT INTO run_records (
+                    run_id, invocation_id, ordinal, benchmark_id, title, runner_kind,
+                    config_id, provider, model, created_at_unix_ms, output_dir,
+                    run_report_path, evidence_path, spec_path, score_metric, successes,
+                    n, point, lower, upper, confidence, score_method, eval_json
+                ) VALUES (
+                    'inv-pre:pre-migration', 'inv-pre', 0, 'pre-migration-bench', 'Pre-migration',
+                    'key_recall', 'probe', NULL, NULL, 0, 'out',
+                    'out/run-report.json', NULL, NULL, 'pr_review_key_recall', 1,
+                    1, 1.0, 0.0, 1.0, 0.95, 'Wilson', '{}'
+                )",
+                [],
+            )
+            .expect("seed pre-migration run record");
+        }
+
+        let list = list_runs(&db, RunListFilter::default())
+            .expect("list runs on a ledger that predates git provenance");
+        assert_eq!(list.runs.len(), 1);
+        assert_eq!(list.runs[0].benchmark_id, "pre-migration-bench");
+        assert_eq!(list.runs[0].git_sha, None);
+        assert_eq!(list.runs[0].repo, None);
+
+        let detail = show_run(&db, "inv-pre:pre-migration")
+            .expect("show a pre-migration run after reopening the ledger");
+        assert_eq!(detail.run.git_sha, None);
+        assert_eq!(detail.run.repo, None);
     }
 
     // ---- resolve_power / PowerResolution -------------------------------

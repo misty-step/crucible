@@ -1103,6 +1103,323 @@ fn run_persists_to_sqlite_and_cli_queries_the_ledger() {
     );
 }
 
+/// Runs `git <args>` in `dir` with `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`
+/// pointed at `/dev/null` for every call -- so these tests never read, and
+/// cannot hang on, the operator's real global git config (e.g.
+/// `commit.gpgsign = true` waiting on a passphrase).
+fn run_git_in(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .status()
+        .expect("run git");
+    assert!(status.success(), "git {args:?} in {} failed", dir.display());
+}
+
+/// A throwaway git checkout with one commit and a per-test local identity,
+/// isolated from the operator's real git config (see `run_git_in`).
+fn init_scratch_git_repo(dir: &Path) {
+    std::fs::create_dir_all(dir).expect("create scratch repo dir");
+    run_git_in(dir, &["init", "--quiet"]);
+    for (key, value) in [
+        ("user.email", "ff-s1@example.test"),
+        ("user.name", "ff-s1 test"),
+    ] {
+        run_git_in(dir, &["config", key, value]);
+    }
+    std::fs::write(dir.join("README.md"), "scratch fixture repo\n").expect("write readme");
+    run_git_in(dir, &["add", "README.md"]);
+    run_git_in(dir, &["commit", "--quiet", "-m", "initial commit"]);
+}
+
+fn git_head_sha(dir: &Path) -> String {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .expect("git rev-parse HEAD");
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .expect("git sha is utf8")
+        .trim()
+        .to_string()
+}
+
+/// Copies the shared `spec-corpus/arena` + `trials.jsonl` fixtures into
+/// `dest_dir` (the same "cp -R the arena dir, read+rewrite trials.jsonl"
+/// shape `runs_list_filters_by_config_model_and_date` already uses below),
+/// so a provenance test can give its declared spec a corpus that lives
+/// wherever the test wants (inside a scratch git checkout, or not).
+fn copy_key_recall_corpus(dest_dir: &Path) -> PathBuf {
+    std::fs::create_dir_all(dest_dir).expect("create corpus dest dir");
+    let arena_dest = dest_dir.join("arena");
+    let copy_status = Command::new("cp")
+        .arg("-R")
+        .arg(fixture("spec-corpus/arena"))
+        .arg(&arena_dest)
+        .status()
+        .expect("cp arena dir");
+    assert!(copy_status.success(), "copying the arena dir must succeed");
+    std::fs::copy(
+        fixture("spec-corpus/trials.jsonl"),
+        dest_dir.join("trials.jsonl"),
+    )
+    .expect("copy trials.jsonl");
+    dest_dir.to_path_buf()
+}
+
+/// Writes a `key_recall` spec at `spec_path` pointing (by absolute path) at
+/// a corpus copied into `corpus_dir` via [`copy_key_recall_corpus`].
+fn write_key_recall_spec(spec_path: &Path, corpus_dir: &Path) {
+    let spec = serde_json::json!({
+        "schema_version": "crucible.eval_spec.v1",
+        "id": "key-recall-fixture",
+        "task": "pr-review-key-recall",
+        "inputs": "Hermetic Daedalus-shaped trials fixture.",
+        "outputs": "Key recall over expected defects.",
+        "graders": { "graders": [{ "id": "expected_key_match", "kind": "deterministic" }] },
+        "aggregation": "proportion",
+        "uncertainty": { "method": "wilson", "confidence": 0.95 },
+        "decision": "Prove run provenance capture without a sibling Daedalus checkout.",
+        "runner": {
+            "kind": "key_recall",
+            "corpus": {
+                "source": "daedalus_trials",
+                "arena_dir": corpus_dir.join("arena").display().to_string(),
+                "trials_jsonl": corpus_dir.join("trials.jsonl").display().to_string(),
+                "candidate_id": "probe",
+                "tasks": ["t1"]
+            }
+        }
+    });
+    if let Some(parent) = spec_path.parent() {
+        std::fs::create_dir_all(parent).expect("create spec parent dir");
+    }
+    std::fs::write(
+        spec_path,
+        serde_json::to_string_pretty(&spec).expect("serialize provenance spec fixture"),
+    )
+    .expect("write provenance spec fixture");
+}
+
+/// Factory-fleet ff-s1: a run whose declared spec lives inside a git
+/// checkout persists that checkout's HEAD sha and repo name (captured from
+/// the spec's containing directory, not the test process's own cwd), and
+/// `runs list`/`runs show` both surface it over the real CLI binary.
+#[test]
+fn run_persists_git_provenance_from_the_spec_directory() {
+    let root = temp_root("git-provenance");
+    let repo_dir = root.join("scratch-repo");
+    init_scratch_git_repo(&repo_dir);
+    let expected_sha = git_head_sha(&repo_dir);
+    let expected_repo = repo_dir
+        .file_name()
+        .expect("scratch repo dir has a name")
+        .to_string_lossy()
+        .into_owned();
+
+    let corpus_dir = copy_key_recall_corpus(&repo_dir.join("spec-corpus"));
+    let spec_path = repo_dir.join("specs").join("key-recall-fixture.json");
+    write_key_recall_spec(&spec_path, &corpus_dir);
+
+    let out_dir = root.join("out");
+    let db = root.join("runs.sqlite");
+    let out = crucible()
+        .arg("run")
+        .arg(&spec_path)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    assert!(
+        out.status.success(),
+        "declared spec run inside a git checkout must exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let list = crucible()
+        .arg("runs")
+        .arg("list")
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .expect("crucible runs list executes");
+    assert!(list.status.success());
+    let list: serde_json::Value =
+        serde_json::from_slice(&list.stdout).expect("runs list emits JSON");
+    let runs = list["runs"].as_array().expect("runs array");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["git_sha"], expected_sha);
+    assert_eq!(runs[0]["repo"], expected_repo);
+    let run_id = runs[0]["run_id"].as_str().expect("run id").to_string();
+
+    let show = crucible()
+        .arg("runs")
+        .arg("show")
+        .arg(&run_id)
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .expect("crucible runs show executes");
+    assert!(show.status.success());
+    let show: serde_json::Value =
+        serde_json::from_slice(&show.stdout).expect("runs show emits JSON");
+    assert_eq!(show["run"]["git_sha"], expected_sha);
+    assert_eq!(show["run"]["repo"], expected_repo);
+}
+
+/// Sibling case: a declared spec outside any git checkout still persists
+/// successfully, carrying null (omitted) provenance rather than failing or
+/// warning the run.
+#[test]
+fn run_persists_null_provenance_outside_a_git_checkout() {
+    let root = temp_root("git-provenance-outside");
+    // Deliberately NOT a git repo -- the system temp root never is.
+    let corpus_dir = copy_key_recall_corpus(&root.join("spec-corpus"));
+    let spec_path = root.join("specs").join("key-recall-fixture.json");
+    write_key_recall_spec(&spec_path, &corpus_dir);
+
+    let out_dir = root.join("out");
+    let db = root.join("runs.sqlite");
+    let out = crucible()
+        .arg("run")
+        .arg(&spec_path)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .expect("crucible binary runs");
+    assert!(
+        out.status.success(),
+        "declared spec run outside a git checkout must still exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let list = crucible()
+        .arg("runs")
+        .arg("list")
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .expect("crucible runs list executes");
+    assert!(list.status.success());
+    let list: serde_json::Value =
+        serde_json::from_slice(&list.stdout).expect("runs list emits JSON");
+    let runs = list["runs"].as_array().expect("runs array");
+    assert_eq!(runs.len(), 1);
+    assert!(
+        runs[0].get("git_sha").is_none(),
+        "git_sha is omitted (skip_serializing_if None), not null-valued: {}",
+        runs[0]
+    );
+    assert!(runs[0].get("repo").is_none());
+}
+
+/// Factory-fleet ff-s1: `CRUCIBLE_DB` is the central-ledger env fallback for
+/// every `--db`-accepting command; an explicit `--db` flag still wins over
+/// it (flag > env > compiled-in default), and `--help` reveals the env var.
+#[test]
+fn crucible_db_env_var_is_read_and_an_explicit_flag_still_wins() {
+    let root = temp_root("crucible-db-env");
+    let env_db = root.join("env-db.sqlite");
+    let flag_db = root.join("flag-db.sqlite");
+
+    let out = crucible()
+        .env("CRUCIBLE_DB", &env_db)
+        .arg("runs")
+        .arg("list")
+        .arg("--json")
+        .output()
+        .expect("crucible runs list executes");
+    assert!(
+        out.status.success(),
+        "runs list with only CRUCIBLE_DB set exits 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let list: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("runs list emits JSON");
+    assert_eq!(list["db"], env_db.display().to_string());
+    assert!(
+        env_db.exists(),
+        "CRUCIBLE_DB's path itself must be read/created, not merely accepted"
+    );
+
+    let out = crucible()
+        .env("CRUCIBLE_DB", &env_db)
+        .arg("runs")
+        .arg("list")
+        .arg("--db")
+        .arg(&flag_db)
+        .arg("--json")
+        .output()
+        .expect("crucible runs list executes");
+    assert!(out.status.success());
+    let list: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("runs list emits JSON");
+    assert_eq!(
+        list["db"],
+        flag_db.display().to_string(),
+        "an explicit --db flag wins over CRUCIBLE_DB"
+    );
+
+    let help = crucible()
+        .arg("runs")
+        .arg("list")
+        .arg("--help")
+        .output()
+        .expect("crucible runs list --help executes");
+    assert!(help.status.success());
+    assert!(
+        String::from_utf8_lossy(&help.stdout).contains("CRUCIBLE_DB"),
+        "--help must reveal the CRUCIBLE_DB fallback"
+    );
+}
+
+/// Regression: a fresh-context reviewer live-reproduced `CRUCIBLE_DB=""
+/// crucible runs list` crashing every `--db`-accepting subcommand with
+/// clap's "a value is required for '--db <PATH>' but none was supplied"
+/// (exit 2) under the original `env = "CRUCIBLE_DB"` clap-attribute
+/// approach -- a set-but-empty env var is a standard CI/compose templating
+/// artifact, and before this whole change an empty/unset CRUCIBLE_DB was
+/// inert. `--db` is now `Option<PathBuf>` with no clap `default_value`/`env`
+/// at all, resolved through the same `run_store::default_db_path` the MCP
+/// call sites already use -- one function, empty-means-unset on both
+/// surfaces. Isolated to its own cwd so the "default" resolution can't
+/// touch this repo's own `runs/` tree.
+#[test]
+fn crucible_db_env_var_set_to_empty_string_is_treated_as_unset() {
+    let root = temp_root("crucible-db-env-empty");
+    let out = crucible()
+        .current_dir(&root)
+        .env("CRUCIBLE_DB", "")
+        .arg("runs")
+        .arg("list")
+        .arg("--json")
+        .output()
+        .expect("crucible runs list executes");
+    assert!(
+        out.status.success(),
+        "an empty CRUCIBLE_DB must resolve as unset, not error the arg parse; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let list: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("runs list emits JSON");
+    assert_eq!(
+        list["db"], "runs/local/crucible-runs.sqlite",
+        "empty CRUCIBLE_DB falls back to the compiled-in default, same as unset"
+    );
+}
+
 /// `crucible runs list` filters by config/model/date, and `runs compare
 /// --alpha` threads the significance threshold through to the CLI, over the
 /// real binary (not just the `run_store` unit tests).

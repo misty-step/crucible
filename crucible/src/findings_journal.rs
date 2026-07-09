@@ -505,6 +505,8 @@ mod tests {
             response_model: String::new(),
             scoring_id: String::new(),
             resource_envelope: None,
+            git_sha: None,
+            repo: None,
         }
     }
 }
