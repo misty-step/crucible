@@ -2347,6 +2347,14 @@ fn render_index() -> String {
     .cru-filters .cru-input, .cru-filters .cru-select { min-height: 42px; box-sizing: border-box; }
     .cru-filters .cru-input { width: 230px; }
     .cru-filters .cru-select { width: auto; }
+    .cru-decision { color: var(--ae-ink-muted); font-size: 14px; max-width: 72ch; }
+    .cru-decision .cru-label { margin-right: .5em; }
+    .cru-select.compact { width: auto; min-width: 0; }
+    .cru-inline-field { display: inline-flex; align-items: center; gap: .6em; }
+    .cru-legend { border: 1px solid var(--ae-line); background: var(--ae-wash); padding: var(--ae-space-4); display: grid; gap: .55em; margin: 0 0 var(--ae-space-3); }
+    .cru-legend .lg-row { display: flex; gap: .8em; align-items: baseline; font-size: 13.5px; }
+    .cru-legend .lg-row .cru-chip { flex: none; min-width: 132px; text-align: center; }
+    .cru-legend .cru-back { justify-self: end; }
     .cru-evals { table-layout: fixed; width: 100%; }
     .cru-evals th:nth-child(2) { width: 118px; }
     .cru-evals th:nth-child(3) { width: 168px; }
@@ -2519,13 +2527,14 @@ fn render_index() -> String {
       return `<div class="cru-ci" title="${esc(uncertaintyText(run))}"><i class="band" style="left:${lower * 100}%;width:${Math.max(1, (upper - lower) * 100)}%"></i><i class="point" style="left:${point * 100}%"></i></div>`;
     }
     function shortModel(model) { return model ? String(model).split('/').pop() : 'deterministic'; }
-    function shortRunId(runId) { return String(runId || '').split(':').pop().slice(0, 12); }
+    function humanize(value) { return String(value || '').replace(/_/g, ' '); }
+    function shortRunId(runId) { const inv = String(runId || '').split(':')[0]; return inv.replace(/^run-/, '').slice(-12); }
     function relativeTime(ms) {
       if (!ms) return 'unknown';
       const delta = Date.now() - Number(ms);
       const abs = Math.abs(delta);
       const units = [['d', 86400000], ['h', 3600000], ['m', 60000], ['s', 1000]];
-      for (const [label, size] of units) if (abs >= size) { const n = Math.round(delta / size); return n <= 0 ? `${Math.abs(n)}${label} ago` : `in ${n}${label}`; }
+      for (const [label, size] of units) if (abs >= size) { const n = Math.round(abs / size); return delta >= 0 ? `${n}${label} ago` : `in ${n}${label}`; }
       return 'now';
     }
     function withAuth(options) {
@@ -2603,8 +2612,15 @@ fn render_index() -> String {
     }
     async function loadLatestComparison(spec) {
       const rows = runsForSpec(spec).slice().sort((a, b) => b.created_at_unix_ms - a.created_at_unix_ms);
-      if (rows.length < 2) { state.latestComparison = null; return; }
-      const params = new URLSearchParams({ benchmark: spec.id, left: rows[1].config_id, right: rows[0].config_id });
+      // Headline verdict compares the two most recent DISTINCT MODELS (a
+      // grader fix changes config_id but not the question the operator is
+      // asking); fall back to distinct configs of one model when only one
+      // model has runs.
+      const distinct = [];
+      rows.forEach(run => { const key = shortModel(run.model || run.config_id); if (!distinct.some(other => shortModel(other.model || other.config_id) === key)) distinct.push(run); });
+      const pair = distinct.length >= 2 ? distinct : (() => { const byConfig = []; rows.forEach(run => { if (!byConfig.some(other => other.config_id === run.config_id)) byConfig.push(run); }); return byConfig; })();
+      if (pair.length < 2) { state.latestComparison = null; return; }
+      const params = new URLSearchParams({ benchmark: spec.id, left: pair[1].config_id, right: pair[0].config_id });
       state.latestComparison = await loadJson('/api/compare?' + params).catch(err => ({ error: err.message }));
     }
     async function loadRouteData() {
@@ -2637,6 +2653,7 @@ fn render_index() -> String {
           <select class="cru-select" id="context-filter" aria-label="Filter by context"><option value="">context: all</option>${contextOptions.map(ctx => `<option value="${esc(ctx)}" ${state.filters.context === ctx ? 'selected' : ''}>${esc(ctx)}</option>`).join('')}</select>
         </div>
       </div>
+      ${state.legendOpen ? `<div class="cru-legend" data-runner-legend>${runnerLegend()}<button class="cru-back" data-close-legend type="button">dismiss</button></div>` : ''}
       <div class="cru-table-wrap"><table class="ae-table cru-evals" data-evals-table><thead><tr>${sortHeader('eval', 'eval')}${sortHeader('context', 'context')}<th><button class="cru-sort" data-toggle-legend type="button">runner ⓘ</button></th>${sortHeader('tasks', 'tasks')}${sortHeader('runs', 'runs')}${sortHeader('last_score', 'last score')}</tr></thead><tbody>
         ${rows.map(spec => {
           const last = lastRunFor(spec);
@@ -2644,12 +2661,13 @@ fn render_index() -> String {
           const meta = last ? [uncertaintyText(last), shortModel(last.model || last.provider), relativeTime(last.created_at_unix_ms)].filter(Boolean).join(' · ') : '';
           return `<tr class="cru-click" data-eval-id="${esc(spec.id)}"><td class="cell-eval"><span class="cru-code eval-id">${esc(spec.id)}</span><span class="eval-summary">${esc(spec.plain_summary)}</span></td><td class="cell-context">${contextChip(spec.context)}</td><td class="cell-runner">${kindChip(spec.runner_kind)}</td><td class="cell-num">${spec.task_count || 0}</td><td class="cell-num">${runCount}</td><td class="cell-score">${last ? `<span class="score-line">${esc(scoreText(last))}</span><span class="cru-subtle score-meta">${esc(meta)}</span>` : '<span class="cru-subtle">&mdash;</span>'}</td></tr>`;
         }).join('')}
-      </tbody><tfoot ${state.legendOpen ? '' : 'hidden'} data-runner-legend><tr><td colspan="6">${runnerLegend()}</td></tr></tfoot></table></div>
+      </tbody></table></div>
       ${state.specs?.load_errors?.length ? `<div class="cru-empty">${state.specs.load_errors.map(err => esc(err.path + ': ' + err.error)).join('<br>')}</div>` : ''}`;
       document.querySelector('#eval-filter').oninput = event => { state.filters.text = event.target.value; renderEvals(); };
       document.querySelector('#runner-filter').onchange = event => { state.filters.runner = event.target.value; renderEvals(); };
       document.querySelector('#context-filter').onchange = event => { state.filters.context = event.target.value; renderEvals(); };
       document.querySelector('[data-toggle-legend]').onclick = () => { state.legendOpen = !state.legendOpen; renderEvals(); };
+      document.querySelector('[data-close-legend]') && (document.querySelector('[data-close-legend]').onclick = () => { state.legendOpen = false; renderEvals(); });
       document.querySelectorAll('[data-sort]').forEach(button => button.onclick = () => setSort(button.dataset.sort));
       document.querySelectorAll('[data-eval-id]').forEach(row => row.onclick = () => go(evalPath(row.dataset.evalId)));
     }
@@ -2675,7 +2693,7 @@ fn render_index() -> String {
     }
     function contextChip(context) { return context ? `<span class="cru-chip">${esc(context)}</span>` : '<span class="cru-subtle">&mdash;</span>'; }
     function kindChip(kind) { return kind ? `<span class="cru-chip" title="${esc(RUNNER_EXPLANATIONS[kind] || '')}">${esc(kind)}</span>` : '<span class="cru-subtle">&mdash;</span>'; }
-    function runnerLegend() { return `<div class="cru-grid four">${Object.entries(RUNNER_EXPLANATIONS).map(([kind, text]) => `<div><p class="cru-code">${esc(kind)}</p><p class="cru-subtle">${esc(text)}</p></div>`).join('')}</div>`; }
+    function runnerLegend() { return Object.entries(RUNNER_EXPLANATIONS).map(([kind, text]) => `<div class="lg-row"><span class="cru-chip">${esc(kind)}</span><span class="cru-subtle">${esc(text)}</span></div>`).join(''); }
 
     function renderEvalDetail() {
       const spec = specById(state.route.evalId);
@@ -2687,7 +2705,7 @@ fn render_index() -> String {
     }
     function renderEvalHeader(spec) {
       const valid = spec.validation?.valid && spec.validation?.runnable;
-      return `<div class="cru-toolbar"><div class="cru-hub-head"><h1 class="cru-h1">${esc(spec.id)}</h1><p class="cru-lede">${esc(spec.plain_summary)}</p><p class="cru-kicker">${esc(spec.decision || 'decision not declared')}</p><div class="cru-hub-meta"><span class="cru-chip ${valid ? 'ok' : 'err'}">${valid ? 'ready' : 'needs work'}</span>${kindChip(spec.runner_kind)}${contextChip(spec.context)}${(spec.graders || []).map(grader => `<span class="cru-chip">${esc(grader.kind)}:${esc(grader.id)}</span>`).join('')}</div></div><div class="cru-actions"><button class="cru-button" id="run-this-eval" type="button">Run this eval</button></div></div>`;
+      return `<div class="cru-toolbar"><div class="cru-hub-head"><h1 class="cru-h1">${esc(spec.id)}</h1><p class="cru-lede">${esc(spec.plain_summary)}</p><p class="cru-decision"><span class="cru-label">decision</span> ${esc(spec.decision || 'not declared')}</p><div class="cru-hub-meta"><span class="cru-chip ${valid ? 'ok' : 'err'}">${valid ? 'ready' : 'needs work'}</span>${kindChip(spec.runner_kind)}${contextChip(spec.context)}${(spec.graders || []).map(grader => `<span class="cru-chip">${esc(grader.kind)}:${esc(grader.id)}</span>`).join('')}</div></div><div class="cru-actions"><button class="cru-button" id="run-this-eval" type="button">Run this eval</button></div></div>`;
     }
     function renderOverviewTab(spec) { const rows = runsForSpec(spec); return `<div class="cru-grid">${infoCard(spec)}${topConfigsCard(spec)}${latestVerdictCard(spec)}</div><section class="cru-section"><p class="cru-section-title">Recent runs</p>${recentRunsList(spec, rows.slice(0, 3))}</section>`; }
     function infoCard(spec) {
@@ -2709,7 +2727,7 @@ fn render_index() -> String {
       if (result.error) return `<section class="cru-card warning"><p class="cru-title">Latest verdict</p><p class="cru-subtle">${esc(result.error)}</p></section>`;
       const c = result.comparison;
       const paired = c.paired;
-      return `<section class="cru-card"><p class="cru-title">Latest verdict</p><p class="cru-code">${esc(shortModel(c.left.model || c.left.config_id))} vs ${esc(shortModel(c.right.model || c.right.config_id))}</p><p>${esc(paired ? paired.verdict : c.comparison_kind)} ${c.delta_point == null ? '' : esc('delta ' + pct(c.delta_point))}</p><p class="cru-subtle">${esc(c.resolution?.diagnosis || c.note || 'No paired resolution.')}${c.resolution?.required_n ? esc(' / required_n ' + c.resolution.required_n) : ''}</p><p><button class="cru-back" data-open-compare type="button">Compare tab</button></p></section>`;
+      return `<section class="cru-card"><p class="cru-title">Latest verdict</p><p class="cru-code">${esc(shortModel(c.left.model || c.left.config_id))} vs ${esc(shortModel(c.right.model || c.right.config_id))}</p><p>${esc(humanize(paired ? paired.verdict : c.comparison_kind))}${c.delta_point == null ? '' : esc(' · \u0394 ' + pct(c.delta_point))}</p><p class="cru-subtle">${esc(humanize(c.resolution?.diagnosis || c.note || 'No paired resolution.'))}${c.resolution?.required_n ? esc(' · needs n=' + c.resolution.required_n) : ''}</p><p><button class="cru-back" data-open-compare type="button">Compare tab</button></p></section>`;
     }
     function recentRunsList(spec, rows) {
       if (!rows.length) return '<p class="cru-subtle">No stored runs for this eval yet.</p>';
@@ -2733,7 +2751,7 @@ fn render_index() -> String {
     function renderLaunchForm(spec) {
       const defaults = spec.runner_defaults || {};
       const envs = state.specs?.env_files || [];
-      return `<section class="cru-card"><p class="cru-title">Launcher</p><div class="cru-grid"><label class="cru-field"><span class="cru-label">models</span><input class="cru-input" id="launcher-models" value="${esc(defaults.model || '')}" placeholder="model-a, model-b"></label><label class="cru-field"><span class="cru-label">env file</span><select class="cru-select" id="launcher-env"><option value="">none</option>${envs.map(env => `<option value="${esc(env)}">${esc(env.split('/').pop())}</option>`).join('')}</select></label><label class="cru-field"><span class="cru-label">strict tracked</span><select class="cru-select" id="launcher-strict"><option value="false">off</option><option value="true">on</option></select></label></div><div class="cru-actions"><button class="cru-button" id="launch" type="button">Launch</button></div></section>`;
+      return `<section class="cru-card"><p class="cru-title">Launcher</p><div class="cru-grid"><label class="cru-field"><span class="cru-label">models</span><input class="cru-input" id="launcher-models" value="${esc(defaults.model || '')}" placeholder="model-a, model-b"></label><label class="cru-field"><span class="cru-label">env file</span><select class="cru-select" id="launcher-env"><option value="">none</option>${envs.map(env => `<option value="${esc(env)}">${esc(env.split('/').pop())}</option>`).join('')}</select></label><label class="cru-field"><span class="cru-label">strict tracked</span><select class="cru-select compact" id="launcher-strict"><option value="false">off</option><option value="true">on</option></select></label></div><div class="cru-actions"><button class="cru-button" id="launch" type="button">Launch</button></div></section>`;
     }
     function renderCompareTab(spec) {
       const rows = runsForSpec(spec);
@@ -2787,7 +2805,7 @@ fn render_index() -> String {
     }
     function renderLive() {
       const active = state.activeRun;
-      if (!active) return `<div class="ae-empty"><p class="ae-item"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg> No active run</p><p class="ae-dim">Launch from this tab to watch it execute here.</p><p><button class="cru-button" id="live-empty-cta" type="button">Focus runner settings</button></p></div>`;
+      if (!active) return `<div class="ae-empty"><p class="ae-item"><svg class="ae-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg> No active run</p><p class="ae-dim">Launch from this tab to watch it execute here.</p><p><button class="cru-button secondary" id="live-empty-cta" type="button">Focus runner settings</button></p></div>`;
       const done = active.status === 'complete';
       const failed = active.status === 'failed';
       return `<section class="cru-card ${failed ? 'warning' : ''}"><p>${statusGlyph(failed ? 'err' : done ? 'ok' : 'progress')}${failed ? 'failed' : done ? 'complete' : 'running'}</span> ${failed ? esc(active.error) : done ? 'Run stored.' : 'Crucible is executing the runner bundle now.'}</p></section><div class="cru-progress" style="margin-top: var(--ae-space-4)"><div class="cru-label cru-progress-head">task</div>${active.runners.map(runner => `<div class="cru-label cru-progress-head">${esc(runner.id || runner.model)}</div>`).join('')}${active.tasks.map(task => `<div class="cru-code">${esc(task)}</div>${active.runners.map(runner => taskCell(active, runner, task)).join('')}`).join('')}</div>`;
@@ -2806,7 +2824,7 @@ fn render_index() -> String {
       if (!detail) { view.innerHTML = '<div class="cru-empty">Run not found.</div>'; return; }
       const run = detail.run;
       const totals = tokenTotals(detail);
-      view.innerHTML = `<div class="cru-toolbar"><div class="cru-hub-head"><h1 class="cru-h1">${esc(shortModel(run.model || run.config_id))}</h1><p class="cru-code">${esc(run.config_id)} <button class="cru-back" data-copy-config type="button">copy</button></p><p class="cru-kicker">${esc(relativeTime(run.created_at_unix_ms))} / ${scoreText(run)} / ${run.trusted ? 'trusted' : 'untrusted'}${run.response_model ? ' / response_model ' + esc(run.response_model) : ''}${totals ? ' / ' + esc(totals) : ''}</p></div></div><section class="cru-section"><label class="cru-field"><span class="cru-label">compare across runs</span><select class="cru-select" id="compare-across-runs"><option value="false">off</option><option value="true" ${state.compareAcross ? 'selected' : ''}>on</option></select></label>${renderRunTasks(detail)}</section>`;
+      view.innerHTML = `<div class="cru-toolbar"><div class="cru-hub-head"><h1 class="cru-h1">${esc(shortModel(run.model || run.config_id))}</h1><p class="cru-code">${esc(run.config_id)} <button class="cru-back" data-copy-config type="button">copy</button></p><p class="cru-kicker">${esc(relativeTime(run.created_at_unix_ms))} · ${scoreText(run)} · ${run.trusted ? 'trusted' : 'untrusted'}${run.response_model ? ' · ' + esc(run.response_model) : ''}${totals ? ' · ' + esc(totals) : ''}</p></div></div><section class="cru-section"><label class="cru-inline-field"><span class="cru-label">compare across runs</span><select class="cru-select compact" id="compare-across-runs"><option value="false">off</option><option value="true" ${state.compareAcross ? 'selected' : ''}>on</option></select></label>${renderRunTasks(detail)}</section>`;
       document.querySelector('#compare-across-runs').onchange = event => { state.compareAcross = event.target.value === 'true'; renderRunView(); };
       document.querySelector('[data-copy-config]')?.addEventListener('click', () => navigator.clipboard?.writeText(run.config_id));
       document.querySelectorAll('[data-run-task-row]').forEach(row => row.onclick = () => { state.expandedRunTaskId = state.expandedRunTaskId === row.dataset.runTaskRow ? null : row.dataset.runTaskRow; renderRunView(); });
