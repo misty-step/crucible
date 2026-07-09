@@ -1,0 +1,15 @@
+fix: quiet box setup process env races (#11)
+
+Suppress vanished-process /proc/environ read races while scanning Fly process environments for bootstrap settings and secrets.
+
+Verification:
+
+- bash -n platform/box-dev-setup.sh
+
+- BASTION_RUNTIME_SECRET_DIR=/data/foo bash platform/box-dev-setup.sh --secrets-only exits 2 with the /data refusal
+
+- bash scripts/publicable-scan.sh
+
+- cargo clippy --all-targets --all-features -- -D warnings
+
+- cargo test

@@ -1,0 +1,7 @@
+docs(README): ratify tailnet-only unauthenticated-read posture (powder-931) (#75)
+
+Operator ratified 2026-07-06: keep api-key mode's unauthenticated read
+routes as-is, since the deployed instance is reachable only via the
+tailnet (bastion.tail5f5eb4.ts.net:10001), never a public listener. This
+was a deliberate review, not an oversight -- document it explicitly so a
+future audit doesn't reopen the question from scratch.

@@ -1,0 +1,10 @@
+feat(artifacts): expose live stars via GET /stars (#49)
+
+The shelf index (artifact_create.py registry) and the bridge deck's
+Fresh Off the Shelf band both need to pin starred artifacts first, but
+neither had a way to read the live stars store — only the dynamic "/"
+index page (already starred-aware since bastion-912) had access to it.
+
+Add a small read-only endpoint so remote consumers can stamp `starred`
+onto their own copy of the registry without reimplementing the stars
+file's on-disk format.

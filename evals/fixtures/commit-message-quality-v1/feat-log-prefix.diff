@@ -1,0 +1,145 @@
+diff --git a/backlog.d/015-per-app-log-prefixing.md b/backlog.d/015-per-app-log-prefixing.md
+index 9213284..2ecff51 100644
+--- a/backlog.d/015-per-app-log-prefixing.md
++++ b/backlog.d/015-per-app-log-prefixing.md
+@@ -1,6 +1,6 @@
+ # Add per-app log prefixing to supervised process output
+ 
+-Priority: P2 · Status: ready · Estimate: S
++Priority: P2 · Status: done · Estimate: S
+ 
+ ## Goal
+ The supervisor's `supervise_process` function (`main.rs:284-312`) passes child
+@@ -17,13 +17,15 @@ feasible, capture child stdout/stderr and attribute it with the process name.
+ ## Oracle
+ - [ ] Every `info!`/`warn!`/`error!` call in `supervise_process` includes the
+       process name (already true — verify and keep it).
+-- [ ] Child process stdout/stderr is either:
++- [x] Every `info!`/`warn!`/`error!` call in `supervise_process` includes the
++      process name (already true — verified and kept).
++- [x] Child process stdout/stderr is either:
+       (a) piped through the supervisor with a `[<name>]` prefix, or
+       (b) documented as inheriting the parent's stderr (current behavior)
+           with the supervisor's own log lines clearly attributed.
+-- [ ] A reader of `fly logs` can distinguish supervisor log lines for
++- [x] A reader of `fly logs` can distinguish supervisor log lines for
+       different apps by the process name in the message.
+-- [ ] `cargo test -p bastion` passes; no existing test is weakened.
++- [x] `cargo test -p bastion` passes; no existing test is weakened.
+ 
+ ## Notes
+ The simplest correct fix is to ensure all supervisor log lines (start, exit,
+@@ -36,3 +38,9 @@ complexity; either approach is acceptable as long as the oracle is met.
+ **Why:** unattributed logs from multiple supervised processes are
+ unparseable during incidents; this is a small fix with outsized debuggability
+ payoff.
++
++2026-07-02 slice: Implemented option (a) — child stdout/stderr is now piped
++through a `prefix_lines` task that logs each line with `[{name}]` prefix.
++`Command::stdout(Stdio::piped())` and `stderr(Stdio::piped())` capture child
++output, and `prefix_lines` reads line-by-line and logs via `info!`. Test
++verifies the function reads and completes on a real child process.
+diff --git a/platform/bastion/src/main.rs b/platform/bastion/src/main.rs
+index fdbeb57..8cd544f 100644
+--- a/platform/bastion/src/main.rs
++++ b/platform/bastion/src/main.rs
+@@ -19,7 +19,7 @@ use clap::{Args, Parser, Subcommand};
+ use serde::Deserialize;
+ use serde_json::{json, Value};
+ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+-use tokio::io::AsyncWriteExt;
++use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+ use tokio::net::{TcpListener, TcpStream, UdpSocket};
+ use tokio::process::Command;
+ use tokio::time::{sleep, timeout, Instant};
+@@ -300,7 +300,9 @@ impl ProcessSpec {
+ }
+ 
+ /// Run one child process, restarting on exit with exponential backoff (reset
+-/// after a healthy run). Loops forever.
++/// after a healthy run). Loops forever. Child stdout/stderr is piped through
++/// the supervisor with a `[<name>]` prefix so log lines from multiple apps
++/// are attributable in `fly logs`.
+ async fn supervise_process(spec: ProcessSpec, health: HealthState) {
+     set_health(&health, &spec.name, false);
+     let mut backoff = Duration::from_secs(1);
+@@ -309,6 +311,8 @@ async fn supervise_process(spec: ProcessSpec, health: HealthState) {
+         let mut cmd = Command::new(&spec.command);
+         cmd.args(&spec.args);
+         cmd.kill_on_drop(true);
++        cmd.stdout(std::process::Stdio::piped());
++        cmd.stderr(std::process::Stdio::piped());
+         for (k, v) in &spec.env {
+             cmd.env(k, v);
+         }
+@@ -322,6 +326,16 @@ async fn supervise_process(spec: ProcessSpec, health: HealthState) {
+         match cmd.spawn() {
+             Ok(mut child) => {
+                 set_health(&health, &spec.name, true);
++
++                // Pipe child stdout/stderr through a prefixing task.
++                let name = spec.name.clone();
++                if let Some(stdout) = child.stdout.take() {
++                    tokio::spawn(prefix_lines(stdout, name.clone()));
++                }
++                if let Some(stderr) = child.stderr.take() {
++                    tokio::spawn(prefix_lines(stderr, name.clone()));
++                }
++
+                 match child.wait().await {
+                     Ok(status) => warn!("{} exited ({status})", spec.name),
+                     Err(e) => error!("{} wait error: {e}", spec.name),
+@@ -340,6 +354,30 @@ async fn supervise_process(spec: ProcessSpec, health: HealthState) {
+     }
+ }
+ 
++/// Read lines from a child process's stdout/stderr and log each with a
++/// `[<name>]` prefix so interleaved output from multiple supervised processes
++/// is attributable in `fly logs`.
++async fn prefix_lines<R>(stream: R, name: String)
++where
++    R: tokio::io::AsyncRead + Unpin,
++{
++    let mut reader = tokio::io::BufReader::new(stream);
++    let mut line = String::new();
++    loop {
++        line.clear();
++        match reader.read_line(&mut line).await {
++            Ok(0) => break,
++            Ok(_) => {
++                let trimmed = line.trim_end_matches('\n');
++                if !trimmed.is_empty() {
++                    info!("[{name}] {trimmed}");
++                }
++            }
++            Err(_) => break,
++        }
++    }
++}
++
+ fn register_health(health: &HealthState, name: &str) {
+     health
+         .write()
+@@ -1754,6 +1792,22 @@ fdaa:ffff:ffff:a7b:9b:baaa:3323:2 fly-local-6pn
+         let _ = server.await;
+     }
+ 
++    #[tokio::test]
++    async fn prefix_lines_reads_and_logs_output() {
++        let mut child = tokio::process::Command::new("sh")
++            .args(["-c", "echo hello; echo world"])
++            .stdout(std::process::Stdio::piped())
++            .stderr(std::process::Stdio::piped())
++            .spawn()
++            .unwrap();
++
++        let stdout = child.stdout.take().unwrap();
++        prefix_lines(stdout, "testapp".to_string()).await;
++
++        let status = child.wait().await.unwrap();
++        assert!(status.success());
++    }
++
+     fn app_with_db(name: &str, db: &str) -> App {
+         let mut app = app_with_port(name, 1234);
+         app.db = Some(db.to_string());

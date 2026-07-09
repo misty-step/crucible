@@ -1,0 +1,5 @@
+docs(readme): document canary self-report env-name contract (#36)
+
+Powder had no canary secrets set at all despite a "wired yesterday" framing.
+Document the exact env names (CANARY_ENDPOINT, CANARY_INGEST_KEY) and the
+required matching monitor name so the next wiring pass is copy-paste.

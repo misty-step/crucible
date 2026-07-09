@@ -1,0 +1,28 @@
+diff --git a/crates/powder-server/src/tests.rs b/crates/powder-server/src/tests.rs
+index b924e30..71e0a82 100644
+--- a/crates/powder-server/src/tests.rs
++++ b/crates/powder-server/src/tests.rs
+@@ -355,6 +355,8 @@ async fn board_assets_are_served_with_specific_content_types() {
+     assert!(css.contains(
+         "grid-template-columns: minmax(0, var(--pw-rail-share)) minmax(0, calc(100% - var(--pw-rail-share)));"
+     ));
++    assert!(css.contains(".pw-auth[hidden]"));
++    assert!(css.contains("display: none;"));
+ }
+ 
+ #[tokio::test]
+diff --git a/crates/powder-server/static/assets/powder-board.css b/crates/powder-server/static/assets/powder-board.css
+index 2e65d17..2a48fc6 100644
+--- a/crates/powder-server/static/assets/powder-board.css
++++ b/crates/powder-server/static/assets/powder-board.css
+@@ -138,6 +138,10 @@ body {
+   background: var(--ae-wash);
+ }
+ 
++.pw-auth[hidden] {
++  display: none;
++}
++
+ .pw-auth code {
+   display: inline-block;
+   max-width: 100%;

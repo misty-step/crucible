@@ -1,0 +1,16 @@
+--- a/src/store.rs
++++ b/src/store.rs
+@@ -101,14 +101,14 @@
+-pub fn lookup_config_id(db: &Db, run: &str) -> Result<String> {
++pub fn config_id_for_run(db: &Db, run: &str) -> Result<String> {
+     let record = show_run(db, run)?;
+     Ok(record.run.config_id)
+ }
+--- a/src/compare.rs
++++ b/src/compare.rs
+@@ -55,8 +55,8 @@
+-    let left_id = lookup_config_id(db, &args.left)?;
+-    let right_id = lookup_config_id(db, &args.right)?;
++    let left_id = config_id_for_run(db, &args.left)?;
++    let right_id = config_id_for_run(db, &args.right)?;
+     render_comparison(&left_id, &right_id)

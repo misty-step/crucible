@@ -1,0 +1,105 @@
+diff --git a/primitives/mcps/factory-mcps.yaml b/primitives/mcps/factory-mcps.yaml
+index 1f46c39..d61bd7f 100644
+--- a/primitives/mcps/factory-mcps.yaml
++++ b/primitives/mcps/factory-mcps.yaml
+@@ -118,6 +118,32 @@ servers:
+       - design law gates
+       - tokens and static registry
+ 
++  # mint's MCP face is READ-ONLY inspection (aliases/policy/audit + a usage
++  # doc). It deliberately exposes NO tool that resolves a secret — agents make
++  # credentialed calls through mint's HTTP proxy (see the misty-mint skill),
++  # never through this server.
++  - id: mint
++    app: mint
++    source_repo: misty-step/mint
++    product_skill: misty-mint
++    status: available
++    capabilities:
++      - alias inspection (read-only)
++      - policy validation (read-only)
++      - audit tail (read-only)
++      - proxy-contract usage docs
++    scope:
++      default_profiles: [factory-ops]
++      include_repo_globs: ["/Users/phaedrus/Development/**"]
++      exclude_repo_globs: []
++    codex:
++      server_name: mint
++      command: bash
++      args:
++        - -lc
++        - cd /Users/phaedrus/Development/mint && exec cargo run --locked -q -p mint-mcp
++      env_policy: local_only
++
+ profiles:
+   - id: global
+     description: Every project should use Canary for observability and production debugging.
+@@ -129,4 +155,4 @@ profiles:
+ 
+   - id: factory-ops
+     description: Factory agent operations, dispatch, reflex, and supervised workflow inspection.
+-    servers: [canary, powder, bitterblossom]
++    servers: [canary, powder, bitterblossom, mint]
+diff --git a/primitives/skills/misty-mint/SKILL.md b/primitives/skills/misty-mint/SKILL.md
+index 9e4443a..a3ea571 100644
+--- a/primitives/skills/misty-mint/SKILL.md
++++ b/primitives/skills/misty-mint/SKILL.md
+@@ -110,7 +110,7 @@ JSON fields (`access_token`, `refresh_token`, `private_key`, `client_secret`,
+   response back, ever — it comes back as a `403`.
+ - No hot reload — policy and capability changes require restarting `mint
+   serve`.
+-- No MCP server or SDK face yet (see below).
++- No SDK face yet (the MCP face shipped — see below).
+ 
+ ## Operator CLI (not the agent path)
+ 
+@@ -127,37 +127,17 @@ mint alias list            # list declared aliases and descriptions — never va
+ An agent making a vendor call always goes through the HTTP proxy above, not
+ this CLI.
+ 
+-## MCP (declared, not yet built)
+-
+-mint has no MCP server today. The declared shape is a stdio server
+-(`mint-mcp`) exposing **read-only verbs mirroring the CLI** — alias list,
+-policy check, audit tail — for operator-facing inspection only. It will
+-**not** expose a tool that resolves or returns a secret value; that would
+-defeat the broker's entire premise. Do not expect an MCP tool that hands you
+-a credential, now or later. Until `mint-mcp` ships, use the HTTP proxy
+-contract above for agent calls and the CLI for operator inspection.
+-
+-When `mint-mcp` ships, its `primitives/mcps/factory-mcps.yaml` entry should
+-follow the file's existing `not_applicable` → `available` pattern (compare
+-the `landmark` and `aesthetic` entries, both `not_applicable` until their own
+-MCP servers exist):
+-
+-```yaml
+-  - id: mint
+-    app: mint
+-    source_repo: misty-step/mint
+-    product_skill: misty-mint
+-    status: not_applicable   # flip to `available` once mint-mcp ships
+-    reason: mint has no MCP server yet; use the HTTP proxy contract (agents) or the CLI (operators).
+-    capabilities:
+-      - alias list (read-only)
+-      - policy check (read-only)
+-      - audit tail (read-only)
+-```
+-
+-This is documentation only, showing the shape to add later —
+-`primitives/mcps/factory-mcps.yaml` lives outside this skill's directory and
+-has not been edited as part of authoring this skill.
++## MCP (shipped — read-only inspection only)
++
++`mint-mcp` is a stdio MCP server exposing **read-only** verbs for
++operator-facing inspection: `alias_list`, `policy_check`, `audit_tail`, and
++`mint_usage` (returns this same proxy contract, so the server is
++self-documenting). It **never** exposes a tool that resolves or returns a
++secret value — that would defeat the broker's premise. Do not expect an MCP
++tool that hands you a credential; agents making vendor calls always use the
++HTTP proxy above. Registered in `primitives/mcps/factory-mcps.yaml`
++(`status: available`, `factory-ops` profile); run locally with
++`cargo run -q -p mint-mcp` in the mint repo.
+ 
+ ## Red lines
+ 

@@ -1,0 +1,45 @@
+diff --git a/Dockerfile b/Dockerfile
+index 2e7820f..e6ea9bc 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -21,6 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
+         ca-certificates curl tini \
+     && rm -rf /var/lib/apt/lists/*
+ 
++# Litestream: continuous SQLite replication to S3-compatible storage.
++RUN curl -fsSL https://github.com/benbjohnson/litestream/releases/download/v0.3.13/litestream-v0.3.13-linux-amd64.tar.gz \
++      | tar -xz -C /usr/local/bin litestream
++
+ # Tailscale binaries straight from the official image.
+ COPY --from=tailscale/tailscale:stable /usr/local/bin/tailscaled /usr/local/bin/tailscaled
+ COPY --from=tailscale/tailscale:stable /usr/local/bin/tailscale  /usr/local/bin/tailscale
+diff --git a/platform/bastion/src/main.rs b/platform/bastion/src/main.rs
+index 70574d1..f728790 100644
+--- a/platform/bastion/src/main.rs
++++ b/platform/bastion/src/main.rs
+@@ -305,15 +305,24 @@ async fn start_litestream(apps: &[App]) -> Result<()> {
+         return Ok(());
+     };
+ 
++    // Provider-flexible: "auto" region + path-style suits R2; DO Spaces wants a
++    // real region. Litestream reads the access keys from its own env vars.
++    let region = std::env::var("LITESTREAM_REGION").unwrap_or_else(|_| "auto".into());
++    let path_style = std::env::var("LITESTREAM_FORCE_PATH_STYLE")
++        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
++        .unwrap_or(true);
++
+     let mut dbs = String::new();
+     for app in apps {
+         if let Some(db) = &app.db {
+             dbs.push_str(&format!(
+-                "  - path: {db}\n    replicas:\n      - type: s3\n        bucket: {bucket}\n        path: {name}\n        endpoint: {endpoint}\n        region: auto\n        force-path-style: true\n",
++                "  - path: {db}\n    replicas:\n      - type: s3\n        bucket: {bucket}\n        path: {name}\n        endpoint: {endpoint}\n        region: {region}\n        force-path-style: {path_style}\n",
+                 db = db,
+                 bucket = bucket,
+                 name = app.name,
+                 endpoint = endpoint,
++                region = region,
++                path_style = path_style,
+             ));
+         }
+     }

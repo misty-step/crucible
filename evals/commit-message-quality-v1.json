@@ -1,0 +1,338 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "commit-message-quality-v1",
+  "task": "commit-message-quality",
+  "inputs": "30 diffs \u2014 23 real commits mined from five fleet repos (curated so the Conventional Commits type is inferable from the diff alone) + 7 synthetic pure-refactor diffs (no real refactor: commits exist in fleet history). Each task's diff is a committed fixture file; a known-good reference message per task lives beside it and is verified against the task's own grader.",
+  "outputs": "One generated Conventional Commits message per diff, graded by a per-task regex that pins the defensible type-set (alternation where two types are expert-defensible), requires a subject, and requires a body.",
+  "graders": {
+    "graders": [
+      {
+        "id": "conventional_commit_shape",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "decision": "Which model/config should fleet agents use to write commit messages -- does it read the diff well enough to choose the right type, and does it keep the structural contract (subject + body)? Feeds routing; the faithfulness/why judge layer is v2 (needs the generate-then-judge runner).",
+  "min_effect_of_interest": 0.3,
+  "runner": {
+    "kind": "prompt_benchmark",
+    "corpus": {
+      "source": "prompt_benchmark",
+      "config": {
+        "provider": "open_router",
+        "model": "deepseek/deepseek-v4-flash",
+        "system_prompt": "You write git commit messages in the Conventional Commits style. Given a unified diff, produce exactly one commit message: a subject line of the form `type(scope): summary` (scope optional) where type is the single most fitting of feat, fix, docs, refactor, perf, test, build, ci, chore; then a blank line; then a body of one or more sentences explaining what changed and why. Respond with ONLY the commit message text -- no code fences, no preamble, no quotes, no trailing commentary.",
+        "credential_env": "OPENROUTER_API_KEY",
+        "max_tokens": 2000,
+        "temperature": 0
+      },
+      "tasks": [
+        {
+          "task_id": "fix-dialog-top-layer",
+          "class": "fix",
+          "context_file": "fixtures/commit-message-quality-v1/fix-dialog-top-layer.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(fix)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "fix-hidden-panel",
+          "class": "fix",
+          "context_file": "fixtures/commit-message-quality-v1/fix-hidden-panel.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(fix)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "fix-route-dns-harden",
+          "class": "fix",
+          "context_file": "fixtures/commit-message-quality-v1/fix-route-dns-harden.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(fix)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "fix-env-scan-races",
+          "class": "fix",
+          "context_file": "fixtures/commit-message-quality-v1/fix-env-scan-races.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(fix)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "fix-sheet-overflow",
+          "class": "fix",
+          "context_file": "fixtures/commit-message-quality-v1/fix-sheet-overflow.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(fix)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "feat-litestream",
+          "class": "feat",
+          "context_file": "fixtures/commit-message-quality-v1/feat-litestream.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "feat-confirm-delete",
+          "class": "feat",
+          "context_file": "fixtures/commit-message-quality-v1/feat-confirm-delete.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "feat-stars-endpoint",
+          "class": "feat",
+          "context_file": "fixtures/commit-message-quality-v1/feat-stars-endpoint.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "feat-calendar-nav",
+          "class": "feat",
+          "context_file": "fixtures/commit-message-quality-v1/feat-calendar-nav.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "feat-shield-mark",
+          "class": "feat",
+          "context_file": "fixtures/commit-message-quality-v1/feat-shield-mark.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "feat-mint-mcp",
+          "class": "feat",
+          "context_file": "fixtures/commit-message-quality-v1/feat-mint-mcp.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat|chore)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "docs-vision-refresh",
+          "class": "docs",
+          "context_file": "fixtures/commit-message-quality-v1/docs-vision-refresh.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(docs)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "docs-stale-claim",
+          "class": "docs",
+          "context_file": "fixtures/commit-message-quality-v1/docs-stale-claim.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(docs)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "docs-secret-command",
+          "class": "docs",
+          "context_file": "fixtures/commit-message-quality-v1/docs-secret-command.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(docs|fix)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "docs-canary-contract",
+          "class": "docs",
+          "context_file": "fixtures/commit-message-quality-v1/docs-canary-contract.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(docs)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "docs-tailnet-posture",
+          "class": "docs",
+          "context_file": "fixtures/commit-message-quality-v1/docs-tailnet-posture.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(docs)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "docs-link-agents",
+          "class": "docs",
+          "context_file": "fixtures/commit-message-quality-v1/docs-link-agents.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(docs)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "refactor-pure-rename",
+          "class": "refactor",
+          "context_file": "fixtures/commit-message-quality-v1/refactor-pure-rename.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(refactor)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "refactor-extract-helper",
+          "class": "refactor",
+          "context_file": "fixtures/commit-message-quality-v1/refactor-extract-helper.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(refactor)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "refactor-dead-code",
+          "class": "refactor",
+          "context_file": "fixtures/commit-message-quality-v1/refactor-dead-code.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(refactor|chore)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "refactor-named-const",
+          "class": "refactor",
+          "context_file": "fixtures/commit-message-quality-v1/refactor-named-const.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(refactor)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "refactor-early-return",
+          "class": "refactor",
+          "context_file": "fixtures/commit-message-quality-v1/refactor-early-return.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(refactor)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "refactor-move-fn",
+          "class": "refactor",
+          "context_file": "fixtures/commit-message-quality-v1/refactor-move-fn.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(refactor)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "fix-mcp-schema-brace",
+          "class": "fix",
+          "context_file": "fixtures/commit-message-quality-v1/fix-mcp-schema-brace.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(fix)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "fix-ready-rederivation",
+          "class": "fix",
+          "context_file": "fixtures/commit-message-quality-v1/fix-ready-rederivation.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(fix)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "feat-box-dev-setup",
+          "class": "feat",
+          "context_file": "fixtures/commit-message-quality-v1/feat-box-dev-setup.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "feat-log-prefix",
+          "class": "feat",
+          "context_file": "fixtures/commit-message-quality-v1/feat-log-prefix.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(feat)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "docs-interval-widen",
+          "class": "docs",
+          "context_file": "fixtures/commit-message-quality-v1/docs-interval-widen.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(docs)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "docs-heartbeat-runbook",
+          "class": "docs",
+          "context_file": "fixtures/commit-message-quality-v1/docs-heartbeat-runbook.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(docs)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        },
+        {
+          "task_id": "refactor-merge-arms",
+          "class": "refactor",
+          "context_file": "fixtures/commit-message-quality-v1/refactor-merge-arms.diff",
+          "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^(refactor)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,6 @@
+feat(sanctum): render shield Lucide mark beside the wordmark in the portal bar
+
+Factory-wide logo+wordmark consistency: Sanctum's bar now uses the shared
+ae-logo treatment (bordered ae-app-mark + letterspaced ae-name), matching
+canary/powder/crucible/bitterblossom/bridge. The shield mark matches the
+existing favicon; ae-logo/ae-app-mark CSS mirrors aesthetic v2.16.0.

@@ -1,0 +1,22 @@
+diff --git a/platform/box-dev-setup.sh b/platform/box-dev-setup.sh
+index 95226e0..b958101 100644
+--- a/platform/box-dev-setup.sh
++++ b/platform/box-dev-setup.sh
+@@ -34,7 +34,7 @@ load_secret_from_process_env() {
+   [ -n "${!name:-}" ] && return 0
+   for p in /proc/[0-9]*/environ; do
+     [ -r "$p" ] || continue
+-    v=$(tr '\0' '\n' < "$p" 2>/dev/null | sed -n "s/^${name}=//p" | head -1)
++    v=$({ tr '\0' '\n' 2>/dev/null < "$p" || true; } | sed -n "s/^${name}=//p" | head -1)
+     [ -n "$v" ] && { export "$name=$v"; return 0; }
+   done
+   return 1
+@@ -192,7 +192,7 @@ load_fly_secret() {
+   [ -n "${!name:-}" ] && return 0
+   for p in /proc/[0-9]*/environ; do
+     [ -r "$p" ] || continue
+-    v=$(tr '\0' '\n' < "$p" 2>/dev/null | sed -n "s/^${name}=//p" | head -1)
++    v=$({ tr '\0' '\n' 2>/dev/null < "$p" || true; } | sed -n "s/^${name}=//p" | head -1)
+     [ -n "$v" ] && { export "$name=$v"; return 0; }
+   done
+   return 1

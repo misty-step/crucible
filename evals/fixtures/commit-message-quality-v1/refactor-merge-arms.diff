@@ -1,0 +1,10 @@
+--- a/src/severity.rs
++++ b/src/severity.rs
+@@ -12,10 +12,8 @@ fn advisory_label(sev: Severity) -> &'static str {
+     match sev {
+         Severity::Blocking => "blocking",
+-        Severity::Serious => "advisory",
+-        Severity::Minor => "advisory",
++        Severity::Serious | Severity::Minor => "advisory",
+     }
+ }

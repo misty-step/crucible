@@ -1,0 +1,28 @@
+--- a/src/validate.rs
++++ b/src/validate.rs
+@@ -20,15 +20,13 @@
+ pub fn check_spec(spec: &Spec) -> Result<(), SpecError> {
+-    if spec.id.is_empty() {
+-        Err(SpecError::EmptyId)
+-    } else {
+-        if spec.tasks.is_empty() {
+-            Err(SpecError::NoTasks)
+-        } else {
+-            if spec.graders.is_empty() {
+-                Err(SpecError::NoGraders)
+-            } else {
+-                Ok(())
+-            }
+-        }
+-    }
++    if spec.id.is_empty() {
++        return Err(SpecError::EmptyId);
++    }
++    if spec.tasks.is_empty() {
++        return Err(SpecError::NoTasks);
++    }
++    if spec.graders.is_empty() {
++        return Err(SpecError::NoGraders);
++    }
++    Ok(())
+ }

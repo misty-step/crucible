@@ -1,0 +1,4 @@
+refactor(grade): merge Serious/Minor into one match arm
+
+Both arms returned the same "advisory" label; collapse them with an
+or-pattern. No behavior change.

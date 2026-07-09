@@ -1,0 +1,9 @@
+feat(bastion): prefix child process logs with app name (#21)
+
+Pipe child stdout/stderr through a prefix_lines task that logs each line
+with [{name}] prefix. With app #2, interleaved log lines in fly logs are
+now attributable to the process that produced them.
+
+Uses tokio::io::BufReader::read_line for line-at-a-time processing. Child
+stdout/stderr are set to Stdio::piped() so the supervisor captures them
+instead of inheriting the parent's stderr.

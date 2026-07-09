@@ -1,0 +1,6 @@
+docs(AGENTS): correct the stale 'roster sync is a P2 stub' claim (roster-926 phase C)
+
+Sync stopped being a stub this phase: skill symlink farm, doctrine links,
+--catalog, --all-agents, and roster-hooks all landed. Point at the real
+module and phase state instead of leaving a false claim in the repo's own
+governance doc.

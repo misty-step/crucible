@@ -1,0 +1,18 @@
+--- a/src/judge.rs
++++ b/src/judge.rs
+@@ -12,6 +12,9 @@
++/// Maximum judge retries before a task is marked UNKNOWN.
++const MAX_JUDGE_RETRIES: usize = 3;
++
+ pub fn run_judge(task: &Task) -> Verdict {
+-    for attempt in 0..3 {
++    for attempt in 0..MAX_JUDGE_RETRIES {
+         if let Some(v) = call_judge(task, attempt) {
+             return v;
+         }
+     }
+@@ -31,7 +34,7 @@
+-    if attempts >= 3 {
++    if attempts >= MAX_JUDGE_RETRIES {
+         return Verdict::Unknown;
+     }

@@ -1,0 +1,24 @@
+--- a/src/report.rs
++++ b/src/report.rs
+@@ -40,18 +40,16 @@
++fn interval_label(lower: f64, upper: f64, confidence: f64) -> String {
++    format!("{:.0}% CI [{:.1}%, {:.1}%]", confidence * 100.0, lower * 100.0, upper * 100.0)
++}
++
+ fn render_summary(score: &Score) -> String {
+-    let label = format!(
+-        "{:.0}% CI [{:.1}%, {:.1}%]",
+-        score.confidence * 100.0, score.lower * 100.0, score.upper * 100.0
+-    );
++    let label = interval_label(score.lower, score.upper, score.confidence);
+     format!("{} {}", score.point, label)
+ }
+
+ fn render_row(score: &Score) -> String {
+-    let label = format!(
+-        "{:.0}% CI [{:.1}%, {:.1}%]",
+-        score.confidence * 100.0, score.lower * 100.0, score.upper * 100.0
+-    );
++    let label = interval_label(score.lower, score.upper, score.confidence);
+     format!("| {} | {} |", score.point, label)
+ }

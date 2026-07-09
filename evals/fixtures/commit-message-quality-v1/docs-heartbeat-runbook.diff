@@ -1,0 +1,126 @@
+diff --git a/backlog.d/003-heartbeat-to-canary.md b/backlog.d/003-heartbeat-to-canary.md
+index baf9e57..67e3002 100644
+--- a/backlog.d/003-heartbeat-to-canary.md
++++ b/backlog.d/003-heartbeat-to-canary.md
+@@ -14,9 +14,15 @@ Make Bastion visible to the fleet watchtower before it becomes the shared privat
+ 1. Define the heartbeat JSON schema and component states.
+ 2. Add a Tokio heartbeat task with timeout, backoff, and explicit disabled-local-mode behavior.
+ 3. Configure a Canary watch for the live instance without relying on Bastion's routed private namespace.
+-4. Document the alert path and circular-dependency caveat.
++4. ✅ Document the alert path and circular-dependency caveat.
+ 
+ ## Notes
+ This dogfoods Canary against the box that may route private apps. Keep the integration deterministic; do not add model calls.
+ 
+ 2026-07-01 hygiene slice: Bastion now has an opt-in Tokio heartbeat task that posts Canary check-ins with supervisor component state. Live proof still requires configuring `BASTION_HEARTBEAT_URL` and `BASTION_HEARTBEAT_TOKEN` on the Fly app and verifying Canary accepts the check-in.
++
++2026-07-02 slice: `docs/runbook.md` now documents the heartbeat env vars,
++disabled/failing/success log shapes, the circular-dependency caveat, and
++the current "no automatic alerting" state. Child 4 is done; child 3
++(configuring the actual Canary watch for the live instance) stays parked as
++operator work.
+diff --git a/backlog.d/013-document-heartbeat-alert-path-and-circular-dependency.md b/backlog.d/013-document-heartbeat-alert-path-and-circular-dependency.md
+index 66f9b35..1f8ae9c 100644
+--- a/backlog.d/013-document-heartbeat-alert-path-and-circular-dependency.md
++++ b/backlog.d/013-document-heartbeat-alert-path-and-circular-dependency.md
+@@ -1,6 +1,6 @@
+ # Document the Canary heartbeat alert path and circular-dependency caveat
+ 
+-Priority: P3 · Status: ready · Estimate: S
++Priority: P3 · Status: done · Estimate: S
+ 
+ ## Goal
+ Backlog 003 ("Send a heartbeat to canary") shipped its code-only children —
+@@ -17,19 +17,19 @@ if Canary alerting were ever routed *through* Bastion's own `.internal` path,
+ a Bastion outage would silently kill its own alarm.
+ 
+ ## Oracle
+-- [ ] `docs/runbook.md` (or a new `docs/heartbeat.md` linked from it) states:
++- [x] `docs/runbook.md` (or a new `docs/heartbeat.md` linked from it) states:
+       what BASTION_HEARTBEAT_URL/TOKEN/MONITOR/INTERVAL/TIMEOUT env vars
+       configure, what "disabled" looks like in the logs
+       (`main.rs:229`'s `"canary heartbeat disabled ..."` message), and what a
+       stopped/rejected/timed-out heartbeat looks like in logs
+       (`heartbeat_loop`'s three `warn!` branches, `main.rs:915-930`).
+-- [ ] The doc explicitly states the circular-dependency caveat: Canary's
++- [x] The doc explicitly states the circular-dependency caveat: Canary's
+       alert path for this heartbeat must not depend on Bastion's own routed
+       `.internal` namespace, or an outage silences its own alarm.
+-- [ ] The doc names what the operator does today when a heartbeat goes stale
++- [x] The doc names what the operator does today when a heartbeat goes stale
+       (currently: nothing automatic — reading the box's own logs is the only
+       signal) so this is an honest state, not an implied guarantee.
+-- [ ] Backlog 003's child 4 checkbox reflects this is done; the ticket's own
++- [x] Backlog 003's child 4 checkbox reflects this is done; the ticket's own
+       remaining-work note is updated to show only the operator-gated Canary
+       watch configuration (child 3) as outstanding.
+ 
+diff --git a/docs/runbook.md b/docs/runbook.md
+index 00ca096..ec33687 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -300,3 +300,64 @@ fly ssh console --app "$BASTION_APP" -C 'curl -fsS http://127.0.0.1:9090/healthz
+ To wire this into a Fly machine check, add a `[[checks]]` block to `fly.toml`
+ pointing at the health port. That is an operator settings change — do not add
+ it without explicit approval.
++
++## Heartbeat to Canary
++
++The supervisor can emit a periodic heartbeat to a Canary watch so the box's
++liveness is visible from outside. This is opt-in and disabled by default.
++
++### Configuration
++
++| Env var | Purpose | Default |
++|---|---|---|
++| `BASTION_HEARTBEAT_URL` | Canary check-ins endpoint URL | (unset = disabled) |
++| `BASTION_HEARTBEAT_TOKEN` | Bearer token for Canary ingest | (unset = disabled) |
++| `BASTION_HEARTBEAT_MONITOR` | Monitor name in Canary | `bastion-router` |
++| `BASTION_HEARTBEAT_INTERVAL_SECS` | How often to POST | `60` |
++| `BASTION_HEARTBEAT_TIMEOUT_SECS` | Request timeout | `10` |
++| `BASTION_HEARTBEAT_TTL_MS` | TTL passed to Canary | `interval × 3 × 1000` |
++
++The URL is normalized to end with `/api/v1/check-ins` if it does not already.
++The legacy env names `CANARY_CHECK_INS_URL` / `CANARY_INGEST_KEY` are also
++accepted as fallbacks.
++
++### What "disabled" looks like
++
++When neither URL nor token is set, the supervisor logs:
++
++```
++canary heartbeat disabled (BASTION_HEARTBEAT_URL and token unset)
++```
++
++### What a failing heartbeat looks like
++
++The heartbeat loop has three failure branches, all logged at `warn`:
++
++- **Rejected**: Canary returned a non-2xx status:
++  `canary heartbeat for <monitor> rejected with <status>`
++- **Network error**: request failed (DNS, connection refused, etc.):
++  `canary heartbeat for <monitor> failed: <error>`
++- **Timeout**: request exceeded `BASTION_HEARTBEAT_TIMEOUT_SECS`:
++  `canary heartbeat for <monitor> timed out`
++
++On success, a single `info` line is logged once (`canary heartbeat accepted
++for <monitor>`) and suppressed on subsequent beats. If the heartbeat later
++fails and then recovers, the success line is logged again.
++
++### Circular-dependency caveat
++
++Canary's alert path for this heartbeat **must not** depend on Bastion's own
++routed `.internal` namespace. If Canary alerting were routed through
++Bastion's subnet route or DNS proxy, a Bastion outage would silently kill
++its own alarm — the exact failure mode the heartbeat is meant to detect.
++
++Canary must reach the operator through an independent path: a public Fly
++endpoint, a direct tailnet path that does not traverse Bastion's route, or
++a separate notification channel (Slack, email, etc.).
++
++### Current state
++
++There is no automatic alerting when a heartbeat goes stale. Today the only
++signal is reading the box's own logs. Configuring a Canary watch that
++expects the heartbeat at its declared TTL interval — and alerts on missed
++beats — is an operator task and has not been done yet for the live instance.

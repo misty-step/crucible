@@ -1,0 +1,3 @@
+feat(bastion): box dev environment — Node/Rust/Claude Code/omp on /data, 2cpu/2GB
+
+Image gains the dev toolchain (git/tmux/build-essential/node 22). A box-dev-setup bootstrap installs Rust + Claude Code + omp onto the /data volume (state persists across restarts), clones the repo for live editing, and wires OPENROUTER_API_KEY. Machine bumped to 2cpu/2GB for on-box cargo/node.

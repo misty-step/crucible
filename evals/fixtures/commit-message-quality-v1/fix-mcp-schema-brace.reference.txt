@@ -1,0 +1,18 @@
+fix(mcp): close a missing brace in complete_card's schema that panicked tools/list
+
+Found while smoke-testing the freshly reinstalled powder-mcp binary after
+PR #71: complete_card's hand-written input_schema string was missing a
+closing brace, nesting actor/admin one level too deep inside
+criterion_proofs instead of as sibling card properties. tool_defs_json()
+panics on any malformed schema, so every tools/list call -- the first
+request any MCP client makes -- crashed the server. No test caught this
+because every prior test called specific tools by name; none exercised
+tools/list or tool_defs_json() directly.
+
+Add every_tool_schema_is_valid_json_and_tools_list_does_not_panic, which
+parses every tool's schema the way a real tools/list response would and
+locks complete_card's corrected shape so a future hand-edit can't quietly
+regress it.
+
+Gate: cargo fmt --all -- --check, cargo clippy --workspace --all-targets
+-- -D warnings, cargo test --workspace all green (192 tests).

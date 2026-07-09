@@ -1,0 +1,101 @@
+diff --git a/src/web.rs b/src/web.rs
+index aee497f..6b93fb1 100644
+--- a/src/web.rs
++++ b/src/web.rs
+@@ -232,5 +232,22 @@ fn modals() -> Markup {
+                 div #ov-body {}
+             }
+         }
++        div.modal #confirm-modal hidden {
++            div.sheet #confirm-sheet {
++                div.sheet-head {
++                    h2 { "DELETE HABIT?" }
++                    button.x #confirm-close type="button" aria-label="Close" { (icon("x")) }
++                }
++                p.confirm-msg {
++                    "This will permanently delete "
++                    strong #confirm-name {}
++                    ". This cannot be undone."
++                }
++                div.confirm-actions {
++                    button.secondary #confirm-cancel type="button" { "CANCEL" }
++                    button.danger.danger-solid #confirm-ok type="button" { "DELETE FOREVER" }
++                }
++            }
++        }
+     }
+ }
+diff --git a/static/app.css b/static/app.css
+index 32da336..72734f1 100644
+--- a/static/app.css
++++ b/static/app.css
+@@ -155,8 +155,10 @@ body {
+   box-shadow: 4px 4px 0 var(--ink); transition: transform 0.12s var(--spring), box-shadow 0.12s;
+ }
+ .primary { background: var(--c-yellow); color: var(--ink); }
+-.danger { background: var(--surface); color: var(--c-red); }
+-.primary:active, .danger:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--ink); }
++.danger { background: var(--surface); color: var(--c-red); border-color: var(--c-red); box-shadow: 4px 4px 0 var(--c-red); }
++.danger-solid { background: var(--c-red); color: #fff; border-color: var(--ink); box-shadow: 4px 4px 0 var(--ink); }
++.secondary { background: var(--surface); color: var(--ink); }
++.primary:active, .danger:active, .danger-solid:active, .secondary:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--ink); }
+ 
+ /* ---- dialog ---- */
+ dialog { border: 0; padding: 0; background: transparent; max-width: 100vw; margin: auto; }
+@@ -184,6 +186,11 @@ dialog[open] #habit-form { animation: pop 0.3s var(--spring); }
+ .dlg-actions { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+ .dlg-actions .sp { flex: 1; }
+ 
++/* ---- confirm modal ---- */
++.confirm-msg { font-family: "Helvetica Neue", Arial, sans-serif; font-weight: 700; font-size: 0.95rem; line-height: 1.5; margin-bottom: 20px; color: var(--ink); }
++.confirm-msg strong { text-decoration: underline; text-underline-offset: 2px; }
++.confirm-actions { display: flex; gap: 10px; justify-content: flex-end; }
++
+ /* ---- modals (calendar / overview) ---- */
+ .modal { position: fixed; inset: 0; z-index: 60; background: rgba(21, 17, 10, 0.5); display: grid; place-items: end center; padding: 0; }
+ .modal[hidden] { display: none; }
+diff --git a/static/app.js b/static/app.js
+index cc98608..655a70b 100644
+--- a/static/app.js
++++ b/static/app.js
+@@ -156,6 +156,24 @@
+     catch { toast('Could not save'); }
+   });
+ 
++  // ---------- delete-confirm modal ----------
++  let pendingDeleteId = null;
++
++  function openConfirm(id, name) {
++    pendingDeleteId = id;
++    $('#confirm-name').textContent = name.toUpperCase();
++    show('#confirm-modal');
++  }
++
++  async function doDelete() {
++    const id = pendingDeleteId;
++    if (!id) return;
++    pendingDeleteId = null;
++    hide('#confirm-modal');
++    try { await api('DELETE', `/api/habits/${id}`); dialog.close(); location.reload(); }
++    catch { toast('Could not delete'); }
++  }
++
+   // ---------- wiring ----------
+   document.addEventListener('click', (e) => {
+     const iconOpt = e.target.closest('.icon-opt'); if (iconOpt) { selectIcon(iconOpt.dataset.icon); return; }
+@@ -168,9 +186,14 @@
+     if (e.target.closest('#cancel-x')) return dialog.close();
+     if (e.target.closest('#cal-close') || (e.target.id === 'cal-modal')) return hide('#cal-modal');
+     if (e.target.closest('#ov-close') || (e.target.id === 'ov-modal')) return hide('#ov-modal');
++    if (e.target.closest('#confirm-close') || e.target.closest('#confirm-cancel') || (e.target.id === 'confirm-modal')) {
++      pendingDeleteId = null; hide('#confirm-modal'); return;
++    }
++    if (e.target.closest('#confirm-ok')) { doDelete(); return; }
+     if (e.target.closest('#delete-btn')) {
+       const id = form.id.value; if (!id) return;
+-      api('DELETE', `/api/habits/${id}`).then(() => { dialog.close(); location.reload(); }).catch(() => toast('Could not delete'));
++      const name = form.name.value || 'this habit';
++      openConfirm(id, name);
+     }
+   });
+ 

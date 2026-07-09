@@ -1,0 +1,5 @@
+fix(bastion): harden route parsing and DNS forwarding
+
+Trim quoted or whitespace-padded Fly private IP strings before deriving the advertised route. Connect the upstream UDP socket before forwarding DNS queries so replies are constrained to Fly DNS.
+
+Verification: cargo fmt --check; cargo test.

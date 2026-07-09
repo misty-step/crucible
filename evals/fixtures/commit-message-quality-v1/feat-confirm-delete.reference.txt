@@ -1,0 +1,5 @@
+feat(cairn): confirm before deleting a habit in the web UI
+
+Replaces the instant one-tap delete with an in-page confirmation modal
+("DELETE HABIT?" showing the habit name -> CANCEL / DELETE FOREVER).
+Pop-Art styling consistent with the existing modals; no backend changes.

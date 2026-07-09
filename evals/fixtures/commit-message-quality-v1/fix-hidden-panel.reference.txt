@@ -1,0 +1,9 @@
+fix(ui): keep board settings panel hidden by default
+
+Follow-up for powder-902: keep the settings/key panel hidden by default by preserving the hidden attribute against the auth panel grid display rule.
+
+Verification:
+- cargo fmt --all -- --check
+- cargo clippy --workspace --all-targets -- -D warnings
+- cargo test --workspace
+- GitHub Actions Rust CI / fmt-clippy-test

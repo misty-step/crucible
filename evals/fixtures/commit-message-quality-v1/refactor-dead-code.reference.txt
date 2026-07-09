@@ -1,0 +1,4 @@
+refactor(lib): drop the unused legacy_score path
+
+The v1 scoring function was kept only for the v1->v2 migration and has had no
+caller since #114. Delete it; score() is the single scoring entry point.

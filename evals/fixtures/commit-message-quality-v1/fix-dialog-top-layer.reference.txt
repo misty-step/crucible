@@ -1,0 +1,5 @@
+fix(cairn): close the edit dialog before showing the delete confirm
+
+The habit editor is a native <dialog> (showModal → top layer), so the
+confirm modal's plain z-index left it rendering behind the still-open
+dialog and unreachable. Close the dialog first. Shapes omp's draft (939656e).

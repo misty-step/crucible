@@ -1,0 +1,112 @@
+diff --git a/Dockerfile b/Dockerfile
+index e6ea9bc..5716a60 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -19,6 +19,10 @@ RUN cargo build --release -p cairn -p bastion
+ FROM debian:bookworm-slim
+ RUN apt-get update && apt-get install -y --no-install-recommends \
+         ca-certificates curl tini \
++        git tmux less procps openssh-client xz-utils \
++        build-essential pkg-config libssl-dev \
++    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
++    && apt-get install -y --no-install-recommends nodejs \
+     && rm -rf /var/lib/apt/lists/*
+ 
+ # Litestream: continuous SQLite replication to S3-compatible storage.
+@@ -33,7 +37,8 @@ COPY --from=tailscale/tailscale:stable /usr/local/bin/tailscale  /usr/local/bin/
+ COPY --from=builder /src/target/release/cairn   /usr/local/bin/cairn
+ COPY --from=builder /src/target/release/bastion /usr/local/bin/bastion
+ COPY platform/bastion.toml /etc/bastion/bastion.toml
+-RUN mkdir -p /data /var/run/tailscale
++COPY platform/box-dev-setup.sh /usr/local/bin/box-dev-setup
++RUN chmod +x /usr/local/bin/box-dev-setup && mkdir -p /data /var/run/tailscale
+ 
+ # tini reaps the children bastion spawns (apps, tailscaled).
+ ENTRYPOINT ["/usr/bin/tini", "--"]
+diff --git a/fly.toml b/fly.toml
+index a4d194a..f350c8d 100644
+--- a/fly.toml
++++ b/fly.toml
+@@ -13,8 +13,8 @@ primary_region = "iad"
+ 
+ [[vm]]
+   cpu_kind = "shared"
+-  cpus = 1
+-  memory = "1gb"
++  cpus = 2
++  memory = "2gb"
+ 
+ # Headroom so on-box `cargo build` / Claude Code never trips an OOM kill on a
+ # small machine (the research's #1 failure mode for a 1–4 GB agent box).
+diff --git a/platform/box-dev-setup.sh b/platform/box-dev-setup.sh
+new file mode 100644
+index 0000000..404e9f0
+--- /dev/null
++++ b/platform/box-dev-setup.sh
+@@ -0,0 +1,66 @@
++#!/usr/bin/env bash
++# One-time, idempotent dev-environment bootstrap for the bastion box.
++#
++# Installs Rust, Claude Code, and omp onto the persistent /data volume so the
++# agent can *live on the box* (state survives machine restarts), clones the repo
++# for live editing, and writes /data/devrc for interactive sessions.
++#
++# Run it with the needed secrets in the env, e.g.:
++#   fly ssh console -C "env OPENROUTER_API_KEY=… GITHUB_TOKEN=… /usr/local/bin/box-dev-setup"
++set -uo pipefail
++export HOME=/data/home
++export CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup"
++mkdir -p "$HOME" /data/src "$HOME/.npm-global"
++log() { echo "[box-dev-setup] $*"; }
++
++# ---- Rust (build Rust apps live on the box) ----
++if [ ! -x "$CARGO_HOME/bin/cargo" ]; then
++  log "installing rust…"
++  curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
++fi
++
++# ---- Claude Code (auth = your Max account, done interactively after) ----
++if [ ! -x "$HOME/.local/bin/claude" ]; then
++  log "installing claude code…"
++  curl -fsSL https://claude.ai/install.sh | bash \
++    || curl -fsSL https://claude.com/install.sh | bash \
++    || log "claude install failed — will retry by hand"
++fi
++
++# ---- omp (oh-my-pi coding agent; routes through OPENROUTER_API_KEY) ----
++npm config set prefix "$HOME/.npm-global" >/dev/null 2>&1 || true
++if [ ! -x "$HOME/.npm-global/bin/omp" ]; then
++  log "installing omp…"
++  npm i -g @oh-my-pi/pi-coding-agent || log "omp install failed — will retry by hand"
++fi
++
++# ---- the repo, on the volume, for live editing ----
++if [ ! -d /data/src/bastion/.git ] && [ -n "${GITHUB_TOKEN:-}" ]; then
++  log "cloning repo…"
++  git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/misty-step/bastion.git" /data/src/bastion \
++    && git -C /data/src/bastion remote set-url origin https://github.com/misty-step/bastion.git
++fi
++git config --global user.name "phrazzld" 2>/dev/null || true
++git config --global user.email "phrazzld@pm.me" 2>/dev/null || true
++
++# ---- secrets for interactive sessions (0600) ----
++umask 077
++: > /data/secrets.env
++[ -n "${OPENROUTER_API_KEY:-}" ] && echo "export OPENROUTER_API_KEY='${OPENROUTER_API_KEY}'" >> /data/secrets.env
++[ -n "${GITHUB_TOKEN:-}" ]       && echo "export GITHUB_TOKEN='${GITHUB_TOKEN}'"             >> /data/secrets.env
++
++# ---- shell profile: `source /data/devrc` (or it's sourced by ssh login) ----
++cat > /data/devrc <<'RC'
++export HOME=/data/home
++export CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup"
++export CLAUDE_CONFIG_DIR="$HOME/.claude"
++export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin"
++[ -f /data/secrets.env ] && set -a && . /data/secrets.env && set +a
++cd /data/src/bastion 2>/dev/null || cd /data
++RC
++
++log "done. versions:"
++"$CARGO_HOME/bin/cargo" --version 2>&1 | sed 's/^/  cargo: /'
++"$HOME/.local/bin/claude" --version 2>&1 | sed 's/^/  claude: /'
++"$HOME/.npm-global/bin/omp" --version 2>&1 | sed 's/^/  omp: /'
++log "next: 'fly ssh console' then 'source /data/devrc && claude' to log in to your Max account."

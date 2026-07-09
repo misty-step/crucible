@@ -1,0 +1,143 @@
+diff --git a/apps/cairn/static/app.css b/apps/cairn/static/app.css
+index 72734f1..fac057b 100644
+--- a/apps/cairn/static/app.css
++++ b/apps/cairn/static/app.css
+@@ -210,6 +210,18 @@ dialog[open] #habit-form { animation: pop 0.3s var(--spring); }
+ .cal-cell.off { opacity: 0.3; border-style: dashed; }
+ .cal-cell.today { box-shadow: 0 0 0 3px var(--c-yellow); }
+ .cal-cell.blank { border: 0; background: transparent; }
++/* cal month nav */
++.cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
++.cal-month-lbl { font-family: "Helvetica Neue", Arial, sans-serif; font-weight: 900; font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink); }
++.cal-nav-spacer { width: 30px; }
++.cal-nav-btn { width: 30px; height: 30px; border: 2.5px solid var(--ink); background: var(--surface); display: grid; place-items: center; cursor: pointer; flex: none; }
++.cal-nav-btn .ic { width: 16px; height: 16px; stroke-width: 2.8; }
++.cal-nav-btn:active { transform: translate(1px,1px); box-shadow: 1px 1px 0 var(--ink); }
++/* button reset for tappable cal cells */
++button.cal-cell { cursor: pointer; border: 2.5px solid var(--ink); padding: 0; font: inherit; color: inherit; }
++button.cal-cell:not(.off):hover { outline: 2px solid var(--accent); outline-offset: 1px; }
++button.cal-cell:active { transform: scale(0.88); }
++.cal-cell.future { cursor: default; }
+ 
+ .ov-row { display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 9px; padding: 9px 0; border-bottom: 2px dotted var(--ink); }
+ .ov-row .ic { width: 18px; height: 18px; color: var(--accent); }
+diff --git a/apps/cairn/static/app.js b/apps/cairn/static/app.js
+index 8d32989..e525335 100644
+--- a/apps/cairn/static/app.js
++++ b/apps/cairn/static/app.js
+@@ -81,29 +81,78 @@
+ 
+   // ---------- calendar modal ----------
+   let calPanel = null;
++  let calData = null;   // last fetched calendar response
++  let calChanged = false; // any toggle happened this session
++
++  async function fetchCalMonth(monthStr) {
++    const id = calPanel.dataset.id;
++    const qs = monthStr ? `?month=${monthStr}` : '';
++    $('#cal-body').innerHTML = '<p style="font-family:Helvetica;font-weight:700">Loading…</p>';
++    try {
++      const c = await api('GET', `/api/habits/${id}/calendar${qs}`);
++      calData = c;
++      renderCalendar(c);
++    } catch { $('#cal-body').innerHTML = '<p>Could not load.</p>'; }
++  }
++
+   async function openCalendar(panel) {
+     calPanel = panel;
+-    const id = panel.dataset.id;
+     $('#cal-modal').style.setProperty('--accent', `var(--c-${panel.dataset.color})`);
+     $('#cal-title').textContent = panel.dataset.name.toUpperCase();
+-    $('#cal-body').innerHTML = '<p style="font-family:Helvetica;font-weight:700">Loading…</p>';
+     show('#cal-modal');
++    await fetchCalMonth(null);
++  }
++
++  async function toggleCalDay(day, wasDone) {
++    const id = calPanel.dataset.id;
++    const target = +calPanel.dataset.target || 1;
+     try {
+-      const c = await api('GET', `/api/habits/${id}/calendar`);
+-      renderCalendar(c);
+-    } catch { $('#cal-body').innerHTML = '<p>Could not load.</p>'; }
++      if (wasDone) {
++        await api('DELETE', `/api/habits/${id}/check?day=${day}`);
++      } else {
++        await api('POST', `/api/habits/${id}/check?day=${day}&amount=${target}`);
++      }
++      calChanged = true;
++      haptic(12);
++      await fetchCalMonth(`${calData.year}-${String(calData.month).padStart(2,'0')}`);
++    } catch { toast('Could not update'); }
+   }
++
+   function renderCalendar(c) {
++    // Month nav: compute prev/next YYYY-MM strings
++    const yr = c.year, mo = c.month;
++    const prevD = new Date(yr, mo - 1, 0); // last day of previous month
++    const prevStr = `${prevD.getFullYear()}-${String(prevD.getMonth()+1).padStart(2,'0')}`;
++    const nextD = new Date(yr, mo, 1);      // first day of next month
++    const nextStr = `${nextD.getFullYear()}-${String(nextD.getMonth()+1).padStart(2,'0')}`;
++    // Current month YYYY-MM derived from TODAY meta
++    const [todayY, todayM] = TODAY.split('-').map(Number);
++    const isCurrentMonth = (yr === todayY && mo === todayM);
++    const monthLabel = new Date(yr, mo - 1, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' }).toUpperCase();
++
+     const wd = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+-    let h = `<div class="cal-stats"><div><b>${c.streak}</b><span>Streak</span></div><div><b>${c.best_streak}</b><span>Best</span></div><div><b>${c.percent}%</b><span>This month</span></div></div>`;
++    let h = `<div class="cal-nav">`;
++    h += `<button class="cal-nav-btn" data-month="${prevStr}" aria-label="Previous month"><svg class="ic" style="transform:scaleX(-1)"><use href="#i-chevron-right"/></svg></button>`;
++    h += `<span class="cal-month-lbl">${monthLabel}</span>`;
++    if (!isCurrentMonth) {
++      h += `<button class="cal-nav-btn" data-month="${nextStr}" aria-label="Next month"><svg class="ic"><use href="#i-chevron-right"/></svg></button>`;
++    } else {
++      h += `<span class="cal-nav-spacer"></span>`;
++    }
++    h += '</div>';
++    h += `<div class="cal-stats"><div><b>${c.streak}</b><span>Streak</span></div><div><b>${c.best_streak}</b><span>Best</span></div><div><b>${c.percent}%</b><span>This month</span></div></div>`;
+     h += '<div class="cal-grid">' + wd.map((d) => `<span class="wd">${d}</span>`).join('');
+     const offset = (c.days[0]?.weekday || 1) - 1;
+     for (let i = 0; i < offset; i++) h += '<i class="cal-cell blank"></i>';
+     for (const d of c.days) {
+       let cls = 'cal-cell';
+-      if (d.done) cls += ' done'; else if (d.future) cls += ' off'; else if (d.due) cls += ' miss'; else cls += ' off';
++      if (d.done) cls += ' done'; else if (d.future) cls += ' off future'; else if (d.due) cls += ' miss'; else cls += ' off';
+       if (d.day === TODAY) cls += ' today';
+-      h += `<i class="${cls}">${d.dom}</i>`;
++      if (!d.future) {
++        h += `<button class="${cls}" type="button" data-day="${d.day}" data-done="${d.done}" aria-label="${d.day} ${d.done?'done':'not done'}">${d.dom}</button>`;
++      } else {
++        h += `<i class="${cls}">${d.dom}</i>`;
++      }
+     }
+     h += '</div><button class="primary cal-edit" type="button" style="margin-top:16px;width:100%">EDIT HABIT</button>';
+     $('#cal-body').innerHTML = h;
+@@ -121,6 +170,11 @@
+     } catch { $('#ov-body').innerHTML = '<p>Could not load.</p>'; }
+   }
+ 
++  function closeCalModal() {
++    hide('#cal-modal');
++    if (calChanged) { calChanged = false; location.reload(); }
++  }
++
+   function show(sel) { const m = $(sel); m.hidden = false; }
+   function hide(sel) { const m = $(sel); m.hidden = true; }
+ 
+@@ -182,12 +236,14 @@
+     const iconOpt = e.target.closest('.icon-opt'); if (iconOpt) { selectIcon(iconOpt.dataset.icon); return; }
+     const sw = e.target.closest('.swatch'); if (sw) { selectColor(sw.dataset.color); return; }
+     const check = e.target.closest('.check'); if (check) { onCheck(check.closest('.panel')); return; }
++    const navBtn = e.target.closest('.cal-nav-btn'); if (navBtn) { fetchCalMonth(navBtn.dataset.month); return; }
++    const calCell = e.target.closest('button.cal-cell'); if (calCell && calCell.dataset.day) { toggleCalDay(calCell.dataset.day, calCell.dataset.done === 'true'); return; }
+     const face = e.target.closest('.face'); if (face) { openCalendar(face.closest('.panel')); return; }
+     if (e.target.closest('#overview-btn')) return openOverview();
+     if (e.target.closest('#add-btn') || e.target.closest('#empty-add')) return openDialog(null);
+-    if (e.target.closest('.cal-edit')) { hide('#cal-modal'); openDialog(calPanel); return; }
++    if (e.target.closest('.cal-edit')) { hide('#cal-modal'); calChanged = false; openDialog(calPanel); return; }
+     if (e.target.closest('#cancel-x')) return dialog.close();
+-    if (e.target.closest('#cal-close') || (e.target.id === 'cal-modal')) return hide('#cal-modal');
++    if (e.target.closest('#cal-close') || (e.target.id === 'cal-modal')) { closeCalModal(); return; }
+     if (e.target.closest('#ov-close') || (e.target.id === 'ov-modal')) return hide('#ov-modal');
+     if (e.target.closest('#confirm-close') || e.target.closest('#confirm-cancel') || (e.target.id === 'confirm-modal')) {
+       pendingDeleteId = null; hide('#confirm-modal'); return;

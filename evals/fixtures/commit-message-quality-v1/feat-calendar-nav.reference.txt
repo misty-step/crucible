@@ -1,0 +1,12 @@
+feat(cairn): interactive calendar — tappable past days + month navigation
+
+- Month nav: prev/next chevron buttons above the calendar grid, rear-gated
+  at current month (no forward travel allowed).
+- Tappable cells: non-future day cells are now <button> elements; tapping
+  toggles done ↔ not-done via DELETE/POST check API and re-renders in place.
+- Future cells remain static <i> elements (visually inert, not focusable).
+- Main-list reload: closeCalModal() triggers location.reload() if any toggle
+  happened during the session so streak/today-status stay consistent.
+- Pop-Art aesthetic: cal-nav buttons follow existing icon-btn style; cell
+  hover/active affordances via outline + scale, cursor:pointer.
+- No backend changes; no new dependencies.

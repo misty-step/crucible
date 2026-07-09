@@ -1,0 +1,80 @@
+diff --git a/apps/artifacts/src/main.rs b/apps/artifacts/src/main.rs
+index 58020e1..01e0e92 100644
+--- a/apps/artifacts/src/main.rs
++++ b/apps/artifacts/src/main.rs
+@@ -149,6 +149,7 @@ fn router(cfg: &Config) -> Router {
+     }
+     router
+         .route(&format!("{p}/healthz"), get(|| async { "ok\n" }))
++        .route(&format!("{p}/stars"), get(list_stars))
+         .route(
+             &format!("{p}/stars/{{slug}}"),
+             post(star_artifact).delete(unstar_artifact),
+@@ -252,6 +253,20 @@ async fn set_star(state: AppState, slug: String, starred: bool) -> Response {
+     }
+ }
+ 
++/// Machine-readable read of the live stars store, so a remote publisher
++/// (`artifact_create.py`, the deck) can stamp `starred` onto its own copy of
++/// the registry without duplicating the stars file's on-disk format.
++async fn list_stars(State(state): State<AppState>) -> Response {
++    let starred = load_starred(&state.stars_path).await;
++    let body = serde_json::json!({ "starred": starred }).to_string();
++    (
++        StatusCode::OK,
++        [(header::CONTENT_TYPE, "application/json")],
++        body,
++    )
++        .into_response()
++}
++
+ async fn star_artifact(State(state): State<AppState>, UrlPath(slug): UrlPath<String>) -> Response {
+     set_star(state, slug, true).await
+ }
+@@ -1020,6 +1035,46 @@ mod tests {
+         assert!(body.contains(r#"aria-pressed="true""#), "{body}");
+     }
+ 
++    #[tokio::test]
++    async fn stars_endpoint_lists_currently_starred_slugs() {
++        let dir = tempfile::tempdir().unwrap();
++        let cfg = test_cfg(dir.path(), "secret");
++        let a = dir.path().join("a").join("alpha");
++        let b = dir.path().join("a").join("bravo");
++        std::fs::create_dir_all(&a).unwrap();
++        std::fs::create_dir_all(&b).unwrap();
++
++        // Nothing starred yet.
++        let resp = router(&cfg)
++            .oneshot(Request::get("/stars").body(Body::empty()).unwrap())
++            .await
++            .unwrap();
++        assert_eq!(resp.status(), StatusCode::OK);
++        let body = body_string(resp).await;
++        assert_eq!(body, r#"{"starred":[]}"#);
++
++        router(&cfg)
++            .oneshot(Request::post("/stars/alpha").body(Body::empty()).unwrap())
++            .await
++            .unwrap();
++
++        let resp = router(&cfg)
++            .oneshot(Request::get("/stars").body(Body::empty()).unwrap())
++            .await
++            .unwrap();
++        assert_eq!(resp.status(), StatusCode::OK);
++        let ct = resp
++            .headers()
++            .get(header::CONTENT_TYPE)
++            .unwrap()
++            .to_str()
++            .unwrap()
++            .to_string();
++        assert!(ct.starts_with("application/json"), "content-type was {ct}");
++        let body = body_string(resp).await;
++        assert_eq!(body, r#"{"starred":["alpha"]}"#);
++    }
++
+     #[tokio::test]
+     async fn shelf_indexes_and_html_artifacts_include_home_affordance() {
+         let dir = tempfile::tempdir().unwrap();

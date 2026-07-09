@@ -1,0 +1,37 @@
+diff --git a/platform/bastion/src/main.rs b/platform/bastion/src/main.rs
+index b1c9f47..d58206e 100644
+--- a/platform/bastion/src/main.rs
++++ b/platform/bastion/src/main.rs
+@@ -325,7 +325,7 @@ fn fly_private_route_from_hosts(hosts: &str) -> Option<String> {
+ }
+ 
+ fn fly_private_route_from_ip(ip: &str) -> Option<String> {
+-    let ip: Ipv6Addr = ip.trim_matches('"').parse().ok()?;
++    let ip: Ipv6Addr = ip.trim().trim_matches('"').trim().parse().ok()?;
+     let segments = ip.segments();
+     if segments[0] != 0xfdaa {
+         return None;
+@@ -374,9 +374,10 @@ async fn start_fly_dns_proxy() -> Result<()> {
+ 
+ async fn forward_dns_query(client: Arc<UdpSocket>, query: Vec<u8>, src: SocketAddr) -> Result<()> {
+     let upstream = UdpSocket::bind("[::]:0").await?;
+-    upstream.send_to(&query, FLY_DNS).await?;
++    upstream.connect(FLY_DNS).await?;
++    upstream.send(&query).await?;
+     let mut response = [0_u8; 4096];
+-    let (len, _) = timeout(Duration::from_secs(5), upstream.recv_from(&mut response))
++    let len = timeout(Duration::from_secs(5), upstream.recv(&mut response))
+         .await
+         .context("timeout waiting for Fly DNS")??;
+     client.send_to(&response[..len], src).await?;
+@@ -517,6 +518,10 @@ mod tests {
+             fly_private_route_from_ip("fdaa:45:6cb6:a7b:9b:baaa:3323:2"),
+             Some("fdaa:45:6cb6::/48".to_string())
+         );
++        assert_eq!(
++            fly_private_route_from_ip(" \"fdaa:45:6cb6:a7b:9b:baaa:3323:2\" "),
++            Some("fdaa:45:6cb6::/48".to_string())
++        );
+     }
+ 
+     #[test]

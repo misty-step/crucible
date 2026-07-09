@@ -1,0 +1,33 @@
+diff --git a/static/app.css b/static/app.css
+index 6b1f7e7..836147d 100644
+--- a/static/app.css
++++ b/static/app.css
+@@ -16,8 +16,9 @@ body {
+ }
+ 
+ /* every glyph is a hairline line-icon: the sprite paths carry no fill/stroke
+-   of their own, so the pen-and-ink look is drawn here. */
+-.ic { fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
++   of their own, so the pen-and-ink look is drawn here. Default to 1.15em; the
++   sized contexts below override it. */
++.ic { fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; width: 1.15em; height: 1.15em; display: inline-block; vertical-align: -0.15em; }
+ 
+ /* the stage: one calm mobile column that never fights the viewport */
+ .app { max-width: 460px; margin: 0 auto; padding: 0 var(--ae-space-5) calc(var(--ae-space-8) + env(safe-area-inset-bottom)); }
+@@ -164,7 +165,7 @@ dialog::backdrop { background: color-mix(in srgb, var(--ae-ink) 45%, transparent
+ .modal[hidden] { display: none; }
+ .sheet {
+   background: var(--ae-surface); border: 1px solid var(--ae-line); width: min(460px, 100vw);
+-  max-height: 90vh; overflow-y: auto; padding: var(--ae-space-6);
++  max-height: 90vh; overflow-y: auto; overflow-x: hidden; box-sizing: border-box; padding: var(--ae-space-6);
+   padding-bottom: calc(var(--ae-space-6) + env(safe-area-inset-bottom));
+ }
+ @media (min-width: 520px) { .modal { place-items: center; } .sheet { border: 1px solid var(--ae-line); } }
+@@ -182,6 +183,7 @@ dialog::backdrop { background: color-mix(in srgb, var(--ae-ink) 45%, transparent
+ .cal-navbtn { width: 32px; height: 32px; display: grid; place-items: center; background: transparent; border: 1px solid var(--ae-line); border-radius: 0; color: var(--ae-ink-muted); cursor: pointer; font-family: var(--ae-font-mono); }
+ .cal-navbtn:hover { color: var(--ae-ink); border-color: var(--ae-ink-muted); }
+ .cal-navbtn[disabled] { opacity: 0.3; cursor: default; }
++.cal-navbtn .ic { width: 15px; height: 15px; }
+ .cal-stats { display: flex; gap: var(--ae-space-6); margin: var(--ae-space-4) 0; font-family: var(--ae-font-mono); }
+ .cal-stats .k { display: block; font-size: 10px; letter-spacing: 0.14em; color: var(--ae-ink-faint); }
+ .cal-stats .v { font-weight: 800; font-size: 16px; }

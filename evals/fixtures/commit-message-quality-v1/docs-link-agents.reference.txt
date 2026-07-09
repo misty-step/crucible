@@ -1,0 +1,4 @@
+docs(readme): link AGENTS.md alongside VISION.md (#31)
+
+The repo contract (architecture boundaries, gates, red lines) wasn't
+discoverable from the README's entry point.

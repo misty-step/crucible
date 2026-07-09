@@ -1,0 +1,14 @@
+diff --git a/static/app.js b/static/app.js
+index 655a70b..8d32989 100644
+--- a/static/app.js
++++ b/static/app.js
+@@ -162,6 +162,9 @@
+   function openConfirm(id, name) {
+     pendingDeleteId = id;
+     $('#confirm-name').textContent = name.toUpperCase();
++    // Close the native <dialog> first: it renders in the top layer, so the
++    // confirm modal (plain z-index) would otherwise be hidden behind it.
++    dialog.close();
+     show('#confirm-modal');
+   }
+ 

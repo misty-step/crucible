@@ -1,0 +1,12 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -88,12 +88,6 @@
+-// Legacy path kept during the v1->v2 migration; no caller since #114.
+-pub fn legacy_score(trials: &[Trial]) -> f64 {
+-    trials.iter().filter(|t| t.passed).count() as f64 / trials.len() as f64
+-}
+-
+ pub fn score(trials: &[Trial]) -> Estimate {
+     let successes = trials.iter().filter(|t| t.passed).count();
+     wilson(successes, trials.len())
+ }

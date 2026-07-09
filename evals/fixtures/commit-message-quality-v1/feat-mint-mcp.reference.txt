@@ -1,0 +1,6 @@
+feat(mcps): register mint MCP face (mint-mcp shipped) + update skill
+
+mint now ships a read-only stdio MCP server (alias/policy/audit inspection +
+a usage doc; never resolves secrets). Register it in factory-mcps.yaml as
+available on the factory-ops profile, and update the misty-mint skill's MCP
+section from "not yet built" to shipped.

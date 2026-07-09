@@ -1,0 +1,4 @@
+refactor(judge): name the retry cap MAX_JUDGE_RETRIES
+
+The literal 3 appeared at both retry sites with nothing tying them together.
+Name it once so the cap changes in one place. No behavior change.

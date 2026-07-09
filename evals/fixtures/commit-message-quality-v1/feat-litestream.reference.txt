@@ -1,0 +1,3 @@
+feat(bastion): Litestream backups, provider-flexible region/path-style
+
+Litestream binary baked into the image; backup config reads region + force-path-style from env so it works for both R2 (auto) and DO Spaces (nyc3). Access keys come from Litestream's own env vars.

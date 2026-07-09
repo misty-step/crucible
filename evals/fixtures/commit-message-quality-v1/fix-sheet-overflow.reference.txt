@@ -1,0 +1,4 @@
+fix(cairn): size the calendar chevrons + guard sheet overflow
+
+Give .ic a default 1.15em box (unsized icons like the month-nav chevrons were
+rendering huge), pin the chevrons to 15px, and clip horizontal sheet overflow.

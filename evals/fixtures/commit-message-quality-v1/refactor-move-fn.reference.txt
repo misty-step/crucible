@@ -1,0 +1,4 @@
+refactor(paths): move spec_stem beside the other path helpers
+
+spec_stem lived in main.rs next to the CLI entry point; every other path
+helper lives in paths.rs. Move it verbatim — no callers change behavior.

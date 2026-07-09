@@ -1,0 +1,12 @@
+docs(bastion): document heartbeat alert path and circular dependency (#19)
+
+Backlog 003 ("Send a heartbeat to canary") shipped its code-only children --
+docs/runbook.md now documents the BASTION_HEARTBEAT_* env vars, what
+"disabled" looks like in the logs, and the three heartbeat_loop failure
+branches (rejected, network error, timeout).
+
+The doc states the circular-dependency caveat explicitly: Canary's alert
+path for this heartbeat must not depend on Bastion's own routed .internal
+namespace, or an outage silences its own alarm. It also names today's honest
+state -- there is no automatic alerting yet, reading the box's own logs is
+the only signal -- rather than implying a guarantee that doesn't exist.

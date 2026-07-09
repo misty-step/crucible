@@ -1,0 +1,21 @@
+fix(core): scope the Ready re-derivation to cards that were already Ready
+
+A second fresh-context critic caught a further edge in the previous
+commit's fix: gating the Backlog->Ready re-derivation on the merged
+status alone (`merged.status == Backlog`) is a false positive for a
+Blocked card -- Blocked isn't lifecycle-protected either, so it would
+land unprotected at Backlog on a malformed reimport and then get
+silently promoted straight to Ready, which it never was.
+
+Gate on `self.status == CardStatus::Ready` (the card's actual stored
+status before this reimport) instead of the merged/incoming value: this
+re-derivation now only fires for the one regression it exists to fix --
+a Ready card losing its acceptance to a malformed parse and needing it
+restored -- and never touches any other status, including Blocked.
+
+A third fresh-context critic pass confirms no further gap: traced
+merge_reimport's field ordering, both call sites in the store (each
+loads a fresh `current` from the open transaction, never double-merges),
+the event-emission comparison (previous vs. merged status), and every
+test's dependence on the actual gate condition (each would fail if
+reverted to either prior version of this fix).

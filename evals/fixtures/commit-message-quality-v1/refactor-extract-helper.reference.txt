@@ -1,0 +1,4 @@
+refactor(report): extract interval_label helper
+
+The same CI-label format string was built in render_summary and render_row.
+Extract one helper so the format lives in a single place. No behavior change.

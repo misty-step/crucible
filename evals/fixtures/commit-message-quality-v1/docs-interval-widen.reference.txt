@@ -1,0 +1,8 @@
+docs(backlog): 036 — interval should widen for measurement error, not just N
+
+Capture the operator's insight that a Wilson binomial CI models only sampling
+variability and is blind to redundancy (design effect), label/grader error,
+discrimination, and over-dispersion -- so 100 sloppy tests can report a tighter
+interval than 30 sharp ones. Directions: effective-sample-size adjustment,
+CalibrationRecord reliability propagation, IRT/coverage companion signals,
+Beta-Binomial. Marked someday.

@@ -1,0 +1,33 @@
+diff --git a/platform/bastion/src/main.rs b/platform/bastion/src/main.rs
+index 0b29f0f..b8a9806 100644
+--- a/platform/bastion/src/main.rs
++++ b/platform/bastion/src/main.rs
+@@ -984,6 +984,19 @@ fn render_portal(ctx: &PortalContext, _health: &HealthState, _link_health: &Link
+     }}
+     .ae-stage > * {{ margin-block: 0; padding-block: var(--ae-space-6); }}
+     .ae-name {{ font-weight: var(--ae-w-black); letter-spacing: 0.38em; }}
++    /* app identity: Lucide mark + wordmark, the shared factory treatment */
++    .ae-logo {{ display: inline-flex; align-items: center; gap: var(--ae-space-3, 0.6em); color: inherit; }}
++    .ae-app-mark {{
++      width: 2em;
++      height: 2em;
++      border: 1px solid var(--ae-line);
++      color: var(--ae-ink);
++      display: inline-flex;
++      align-items: center;
++      justify-content: center;
++      flex: none;
++    }}
++    .ae-app-mark .ae-icon {{ width: 1.2em; height: 1.2em; vertical-align: 0; }}
+     .ae-mode {{
+       position: relative;
+       display: inline-flex;
+@@ -1126,7 +1139,7 @@ fn render_portal(ctx: &PortalContext, _health: &HealthState, _link_health: &Link
+ <body>
+   <div class="ae-screen ae-wide">
+     <div class="ae-bar">
+-      <span class="ae-name">{title_upper}</span>
++      <span class="ae-logo"><span class="ae-app-mark"><svg class="ae-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg></span><span class="ae-name">{title_upper}</span></span>
+       <button class="ae-mode" aria-label="Toggle color mode"><svg class="ae-icon ae-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg><svg class="ae-icon ae-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg></button>
+     </div>
+     <div class="ae-stage ae-stage-scroll">

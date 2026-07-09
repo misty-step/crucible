@@ -1,0 +1,4 @@
+refactor(store): rename lookup_config_id to config_id_for_run
+
+The old name suggested a search; the function resolves one run's config id
+directly. Rename it and update both call sites. No behavior change.

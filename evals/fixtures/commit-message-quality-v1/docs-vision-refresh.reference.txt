@@ -1,0 +1,3 @@
+docs: refresh Crucible vision
+
+Update the project vision and first-read agent surface with the latest operator direction from the multi-repo VISION.md pass.

@@ -1,0 +1,4 @@
+refactor(validate): flatten check_spec into guard clauses
+
+Replace the three-deep else-nesting with early returns. Same checks, same
+errors, same order — just readable now.
