@@ -2336,6 +2336,40 @@ fn render_index() -> String {
     .cru-subtle { color: var(--ae-ink-muted); }
     .cru-breadcrumbs { font-family: var(--ae-font-mono); font-size: 13px; color: var(--ae-ink-muted); display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
     .cru-breadcrumbs a { color: var(--ae-ink); text-decoration: none; border-bottom: 1px solid var(--ae-line); }
+    .cru-breadcrumbs:empty { display: none; }
+    /* Evals home: one compact head row (title + inline filters), then a
+       fixed-layout table that NEVER scrolls sideways — the eval summary and
+       score metadata truncate instead of forcing width. */
+    .cru-page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--ae-space-4); flex-wrap: wrap; margin: var(--ae-space-2) 0 var(--ae-space-4); }
+    .cru-page-title { display: flex; align-items: baseline; gap: .6em; }
+    .cru-count { font-family: var(--ae-font-mono); font-size: 13px; color: var(--ae-ink-faint); }
+    .cru-filters { display: flex; gap: var(--ae-space-2); flex-wrap: wrap; align-items: stretch; }
+    .cru-filters .cru-input, .cru-filters .cru-select { min-height: 42px; box-sizing: border-box; }
+    .cru-filters .cru-input { width: 230px; }
+    .cru-filters .cru-select { width: auto; }
+    .cru-evals { table-layout: fixed; width: 100%; }
+    .cru-evals th:nth-child(2) { width: 118px; }
+    .cru-evals th:nth-child(3) { width: 168px; }
+    .cru-evals th:nth-child(4), .cru-evals th:nth-child(5) { width: 60px; }
+    .cru-evals th:nth-child(6) { width: 250px; }
+    .cru-evals td { vertical-align: top; overflow: hidden; }
+    .cru-evals .cru-chip { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+    .cru-evals td.cell-eval { white-space: normal; }
+    .cru-evals .eval-id { display: block; font-weight: var(--ae-w-medium); font-size: 13.5px; color: var(--ae-ink); overflow: hidden; text-overflow: ellipsis; }
+    .cru-evals .eval-summary { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--ae-ink-faint); margin-top: 2px; }
+    .cru-evals td.cell-num { font-variant-numeric: tabular-nums; }
+    .cru-evals .score-line { display: block; font-weight: var(--ae-w-medium); font-variant-numeric: tabular-nums; }
+    .cru-evals .score-meta { display: block; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+    @media (max-width: 720px) {
+      .cru-evals th:nth-child(2), .cru-evals th:nth-child(4), .cru-evals th:nth-child(5), .cru-evals td.cell-context, .cru-evals td.cell-num { display: none; }
+      .cru-evals th:nth-child(3) { width: 104px; }
+      .cru-evals th:nth-child(6) { width: 96px; }
+      .cru-evals th, .cru-evals td { padding-left: .5em; padding-right: .5em; }
+      .cru-evals .score-meta { display: none; }
+      .cru-filters { width: 100%; }
+      .cru-filters .cru-input { flex: 1 1 100%; min-width: 0; width: auto; }
+      .cru-filters .cru-select { flex: 1; min-width: 0; }
+    }
     .cru-h1 { font-size: clamp(1.45rem, 2.2vw, 2.1rem); line-height: 1.1; margin: 0; letter-spacing: 0; }
     .cru-kicker { font-family: var(--ae-font-mono); font-size: 13px; color: var(--ae-ink-muted); }
     .cru-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ae-space-4); }
@@ -2586,7 +2620,7 @@ fn render_index() -> String {
     }
     function renderBreadcrumbs() {
       const route = state.route;
-      if (route.view === 'evals') { crumbs.innerHTML = '<span>evals</span>'; return; }
+      if (route.view === 'evals') { crumbs.innerHTML = ''; return; }
       if (route.view === 'eval') { crumbs.innerHTML = `<a href="#/evals">evals</a><span>/</span><span>${esc(route.evalId)}</span>`; return; }
       crumbs.innerHTML = `<a href="#/evals">evals</a><span>/</span><a href="${evalPath(route.evalId)}">${esc(route.evalId)}</a><span>/</span><span>runs</span><span>/</span><span>${esc(shortRunId(route.runId))}</span>`;
     }
@@ -2595,19 +2629,22 @@ fn render_index() -> String {
       const rows = sortedSpecs(filteredSpecs());
       const runnerOptions = unique(specs().map(spec => spec.runner_kind).filter(Boolean));
       const contextOptions = unique(specs().map(spec => spec.context).filter(Boolean));
-      view.innerHTML = `<div class="cru-toolbar"><div><h1 class="cru-h1">evals</h1></div></div>
-      <div class="cru-grid">
-        <label class="cru-field"><span class="cru-label">filter</span><input class="cru-input" id="eval-filter" value="${esc(state.filters.text)}" placeholder="id or summary"></label>
-        <label class="cru-field"><span class="cru-label">runner</span><select class="cru-select" id="runner-filter"><option value="">all</option>${runnerOptions.map(kind => `<option value="${esc(kind)}" ${state.filters.runner === kind ? 'selected' : ''}>${esc(kind)}</option>`).join('')}</select></label>
-        <label class="cru-field"><span class="cru-label">context</span><select class="cru-select" id="context-filter"><option value="">all</option>${contextOptions.map(ctx => `<option value="${esc(ctx)}" ${state.filters.context === ctx ? 'selected' : ''}>${esc(ctx)}</option>`).join('')}</select></label>
+      view.innerHTML = `<div class="cru-page-head">
+        <div class="cru-page-title"><h1 class="cru-h1">Evals</h1><span class="cru-count">${rows.length}</span></div>
+        <div class="cru-filters">
+          <input class="cru-input" id="eval-filter" value="${esc(state.filters.text)}" placeholder="Filter evals…" aria-label="Filter by id or summary">
+          <select class="cru-select" id="runner-filter" aria-label="Filter by runner"><option value="">runner: all</option>${runnerOptions.map(kind => `<option value="${esc(kind)}" ${state.filters.runner === kind ? 'selected' : ''}>${esc(kind)}</option>`).join('')}</select>
+          <select class="cru-select" id="context-filter" aria-label="Filter by context"><option value="">context: all</option>${contextOptions.map(ctx => `<option value="${esc(ctx)}" ${state.filters.context === ctx ? 'selected' : ''}>${esc(ctx)}</option>`).join('')}</select>
+        </div>
       </div>
-      <div class="cru-table-wrap"><table class="ae-table" data-evals-table><thead><tr>${sortHeader('eval', 'eval')}${sortHeader('context', 'context')}<th><button class="cru-sort" data-toggle-legend type="button">runner</button></th>${sortHeader('tasks', 'tasks')}${sortHeader('runs', 'runs')}${sortHeader('last_score', 'last score')}${sortHeader('last_run', 'last run')}</tr></thead><tbody>
+      <div class="cru-table-wrap"><table class="ae-table cru-evals" data-evals-table><thead><tr>${sortHeader('eval', 'eval')}${sortHeader('context', 'context')}<th><button class="cru-sort" data-toggle-legend type="button">runner ⓘ</button></th>${sortHeader('tasks', 'tasks')}${sortHeader('runs', 'runs')}${sortHeader('last_score', 'last score')}</tr></thead><tbody>
         ${rows.map(spec => {
           const last = lastRunFor(spec);
           const runCount = runsForSpec(spec).length;
-          return `<tr class="cru-click" data-eval-id="${esc(spec.id)}"><td class="summary"><span class="cru-code"><strong>${esc(spec.id)}</strong></span><br><span class="cru-subtle cru-truncate">${esc(spec.plain_summary)}</span></td><td>${contextChip(spec.context)}</td><td>${kindChip(spec.runner_kind)}</td><td>${esc(spec.task_count_label)}</td><td>${runCount}</td><td>${last ? `${scoreCi(last)}<br><span class="cru-subtle">${esc(shortModel(last.model || last.provider))}</span>` : '<span class="cru-subtle">not yet run</span>'}</td><td>${last ? esc(relativeTime(last.created_at_unix_ms)) : '<span class="cru-subtle">never</span>'}</td></tr>`;
+          const meta = last ? [uncertaintyText(last), shortModel(last.model || last.provider), relativeTime(last.created_at_unix_ms)].filter(Boolean).join(' · ') : '';
+          return `<tr class="cru-click" data-eval-id="${esc(spec.id)}"><td class="cell-eval"><span class="cru-code eval-id">${esc(spec.id)}</span><span class="eval-summary">${esc(spec.plain_summary)}</span></td><td class="cell-context">${contextChip(spec.context)}</td><td class="cell-runner">${kindChip(spec.runner_kind)}</td><td class="cell-num">${spec.task_count || 0}</td><td class="cell-num">${runCount}</td><td class="cell-score">${last ? `<span class="score-line">${esc(scoreText(last))}</span><span class="cru-subtle score-meta">${esc(meta)}</span>` : '<span class="cru-subtle">&mdash;</span>'}</td></tr>`;
         }).join('')}
-      </tbody><tfoot ${state.legendOpen ? '' : 'hidden'} data-runner-legend><tr><td colspan="7">${runnerLegend()}</td></tr></tfoot></table></div>
+      </tbody><tfoot ${state.legendOpen ? '' : 'hidden'} data-runner-legend><tr><td colspan="6">${runnerLegend()}</td></tr></tfoot></table></div>
       ${state.specs?.load_errors?.length ? `<div class="cru-empty">${state.specs.load_errors.map(err => esc(err.path + ': ' + err.error)).join('<br>')}</div>` : ''}`;
       document.querySelector('#eval-filter').oninput = event => { state.filters.text = event.target.value; renderEvals(); };
       document.querySelector('#runner-filter').onchange = event => { state.filters.runner = event.target.value; renderEvals(); };
