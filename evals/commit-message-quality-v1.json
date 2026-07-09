@@ -309,7 +309,7 @@
           "prompt": "The unified diff above is the complete change. Write exactly one Conventional Commits message for it.",
           "expectation": {
             "kind": "regex",
-            "pattern": "^(docs)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
+            "pattern": "^(docs|chore)(\\([A-Za-z0-9._ -]+\\))?!?: .{3,}\\n\\n.+"
           }
         },
         {
