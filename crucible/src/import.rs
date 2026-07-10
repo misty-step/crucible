@@ -249,6 +249,7 @@ fn import_promptfoo(args: &PromptfooImportArgs) -> anyhow::Result<ImportReport> 
                     temperature: None,
                     harness: None,
                     tool_allowlist: Vec::new(),
+                    request_timeout_seconds: None,
                 },
                 tasks: projection.imported,
             },

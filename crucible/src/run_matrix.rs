@@ -356,6 +356,7 @@ mod tests {
                         temperature: Some(0),
                         harness: None,
                         tool_allowlist: Vec::new(),
+                        request_timeout_seconds: None,
                     },
                     tasks: vec![PromptBenchmarkTask {
                         task_id: "t".to_string(),

@@ -660,6 +660,7 @@ mod tests {
                     temperature: None,
                     harness: None,
                     tool_allowlist: Vec::new(),
+                    request_timeout_seconds: None,
                 },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "broken".to_string(),
@@ -710,6 +711,7 @@ mod tests {
                     temperature: None,
                     harness: None,
                     tool_allowlist: Vec::new(),
+                    request_timeout_seconds: None,
                 },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "tracked-task".to_string(),
