@@ -83,6 +83,17 @@
 //!   then separately reports whether `OPENROUTER_API_KEY` is configured
 //!   (`Warn`, never `Fail`, when absent; the value is never printed). See
 //!   `doctor.rs` for the exact checks.
+//! - `crucible publish --run <RUN_ID> [--db <PATH>] --out <DIR>`
+//!   (crucible-publish-packet) is the ONLY door between the private run
+//!   ledger and a public benchmark site: a read-only export of one stored
+//!   `prompt_benchmark` run (the only publishable runner kind in v1) as a
+//!   self-contained `crucible.bench_packet.v1` JSON file. It refuses — never
+//!   emits a partial packet — on an unknown run id, any other runner kind, a
+//!   missing/unreadable evidence file, an evidence benchmark/model that
+//!   disagrees with the run record, or an evidence/spec task-id mismatch. A
+//!   missing spec file is tolerated (spec-derived fields go `null`, noted on
+//!   stderr) since the evidence alone already carries every ledger-owned
+//!   fact. See `publish.rs`.
 //!
 //! `--json` emits a stable serde object (`adapt`/`grade`/`adjudicate`); the
 //! default is a human-readable table. `dashboard` instead writes files under
@@ -123,6 +134,7 @@ mod findings_journal;
 mod harbor_import;
 mod import;
 mod mcp;
+mod publish;
 mod run_fanout;
 mod run_matrix;
 mod run_store;
@@ -403,6 +415,22 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Export one stored run as a self-contained public benchmark packet
+    /// (`crucible.bench_packet.v1`, crucible-publish-packet) — read-only
+    /// against the ledger, refusing rather than emitting a partial packet.
+    /// See `publish.rs`.
+    Publish {
+        /// Stored run id from `crucible runs list`/`show`.
+        #[arg(long, value_name = "RUN_ID")]
+        run: String,
+        /// SQLite run ledger path. Defaults to CRUCIBLE_DB when set and
+        /// non-empty, else the local gitignored run store.
+        #[arg(long, value_name = "PATH")]
+        db: Option<PathBuf>,
+        /// Output directory for the emitted packet JSON file.
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -672,6 +700,9 @@ fn main() -> ExitCode {
             ImportAdapter::Harbor(args) => harbor_import::run(args),
         },
         Command::Doctor { json } => run_doctor(json),
+        Command::Publish { run, db, out } => {
+            run_publish(&run, &db.unwrap_or_else(run_store::default_db_path), &out)
+        }
     };
     let exit = match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -831,6 +862,17 @@ fn run_doctor(json: bool) -> anyhow::Result<()> {
         plural(failed.len()),
         failed.join(", ")
     );
+}
+
+/// `crucible publish`: export one stored run as a `crucible.bench_packet.v1`
+/// JSON file. See `publish.rs` for the refusal contract.
+fn run_publish(run_id: &str, db: &Path, out: &Path) -> anyhow::Result<()> {
+    let packet_path = publish::publish(run_id, db, out)?;
+    println!("crucible publish");
+    println!("  run       {run_id}");
+    println!("  db        {}", db.display());
+    println!("  wrote     {}", packet_path.display());
+    Ok(())
 }
 
 fn print_doctor_report(report: &doctor::DoctorReport) {
