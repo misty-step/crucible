@@ -327,6 +327,7 @@ mod tests {
         EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "demo-v0".to_string(),
+            title: None,
             context: None,
             task: "demo".to_string(),
             inputs: String::new(),
@@ -359,6 +360,7 @@ mod tests {
                     tasks: vec![PromptBenchmarkTask {
                         task_id: "t".to_string(),
                         class: None,
+                        summary: None,
                         context_file: None,
                         prompt: "p".to_string(),
                         expectation: PromptExpectation::Contains {

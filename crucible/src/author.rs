@@ -96,6 +96,11 @@ pub struct AuthorArgs {
     #[arg(long)]
     pub id: Option<String>,
 
+    /// Human display name shown in place of the raw id/task-family slug
+    /// wherever the UI leads with a title, e.g. "Long-context key recall".
+    #[arg(long)]
+    pub title: Option<String>,
+
     /// Optional project/workflow grouping for UI sort and filter, e.g.
     /// `agentic-swe` or `fleet-routing`.
     #[arg(long)]
@@ -183,6 +188,10 @@ pub struct AuthorArgs {
     /// `prompt_benchmark`: optional reporting class, e.g. `format_adherence`.
     #[arg(long = "prompt-task-class", value_name = "CLASS")]
     pub prompt_task_class: Option<String>,
+    /// `prompt_benchmark`: optional one-line description of what the task
+    /// tests, shown in the serve UI's task drill-down.
+    #[arg(long = "prompt-task-summary", value_name = "TEXT")]
+    pub prompt_task_summary: Option<String>,
     /// `prompt_benchmark`: optional prompt-context file, absolute or
     /// relative to the eventual spec file.
     #[arg(long = "prompt-task-context-file", value_name = "PATH")]
@@ -302,6 +311,7 @@ struct ResolvedRunner {
 #[derive(Debug)]
 struct AuthorInputs {
     id: Option<String>,
+    title: Option<String>,
     context: Option<String>,
     task: String,
     inputs: String,
@@ -330,6 +340,7 @@ impl AuthorInputs {
 
         Ok(Self {
             id: non_empty(&args.id),
+            title: non_empty(&args.title),
             context: non_empty(&args.context),
             task,
             inputs: args.inputs.clone().unwrap_or_default(),
@@ -356,6 +367,7 @@ impl AuthorInputs {
         )?;
 
         let id = prompt_optional(reader, writer, "Eval id (blank = derived from --out)")?;
+        let title = prompt_optional(reader, writer, "Display title (blank = none)")?;
         let context = prompt_optional(reader, writer, "Context/project (blank = none)")?;
         let task = prompt_required(reader, writer, "Task family (e.g. code-review)")?;
         let inputs = prompt_optional(reader, writer, "Inputs description")?.unwrap_or_default();
@@ -379,6 +391,7 @@ impl AuthorInputs {
 
         Ok(Self {
             id,
+            title,
             context,
             task,
             inputs,
@@ -406,6 +419,7 @@ impl AuthorInputs {
         EvalSpec {
             schema_version: EVAL_SPEC_SCHEMA.to_string(),
             id: self.id.unwrap_or_default(),
+            title: self.title,
             context: self.context,
             task: self.task,
             inputs: self.inputs,
@@ -527,6 +541,7 @@ fn prompt_task_from_flags(args: &AuthorArgs) -> anyhow::Result<PromptBenchmarkTa
     Ok(PromptBenchmarkTask {
         task_id,
         class: non_empty(&args.prompt_task_class),
+        summary: non_empty(&args.prompt_task_summary),
         context_file: non_empty(&args.prompt_task_context_file),
         prompt,
         expectation,
@@ -548,6 +563,11 @@ fn prompt_benchmark_from_interactive<R: BufRead, W: Write>(
     let task_id = prompt_required(reader, writer, "Task id")?;
     let prompt_text = prompt_required(reader, writer, "Task prompt")?;
     let class = prompt_optional(reader, writer, "Task class (blank = none)")?;
+    let summary = prompt_optional(
+        reader,
+        writer,
+        "One-line task summary, e.g. what this task tests (blank = none)",
+    )?;
     let kind = prompt_expectation_kind(reader, writer)?;
     let value = prompt_required(
         reader,
@@ -572,6 +592,7 @@ fn prompt_benchmark_from_interactive<R: BufRead, W: Write>(
             tasks: vec![PromptBenchmarkTask {
                 task_id,
                 class,
+                summary,
                 context_file: None,
                 prompt: prompt_text,
                 expectation,
@@ -797,6 +818,7 @@ mod tests {
             force: false,
             json: false,
             id: None,
+            title: None,
             context: None,
             task_family: None,
             inputs: None,
@@ -819,6 +841,7 @@ mod tests {
             prompt_task_id: None,
             prompt_task_prompt: None,
             prompt_task_class: None,
+            prompt_task_summary: None,
             prompt_task_context_file: None,
             prompt_expectation_kind: None,
             prompt_expectation_value: None,
@@ -929,6 +952,7 @@ mod tests {
     fn from_interactive_drives_a_full_prompt_benchmark_answer_set() {
         let script = "\n\
             \n\
+            \n\
             code-review\n\
             \n\
             \n\
@@ -942,6 +966,7 @@ mod tests {
             \n\
             marker-echo\n\
             Reply with crucible-smoke\n\
+            \n\
             \n\
             contains\n\
             crucible-smoke\n\
@@ -960,6 +985,7 @@ mod tests {
     #[test]
     fn from_interactive_reprompts_on_unknown_runner_kind_then_accepts() {
         let script = "\n\
+            \n\
             \n\
             code-review\n\
             \n\

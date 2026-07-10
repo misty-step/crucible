@@ -788,6 +788,9 @@ fn run_validate(spec: &Path, json: bool) -> anyhow::Result<()> {
 
 fn print_validation_report(report: &validate::ValidationReport) {
     println!("crucible validate");
+    if let Some(title) = &report.title {
+        println!("  title     {title}");
+    }
     println!("  spec      {}", report.spec);
     println!("  valid     {}", report.valid);
     println!("  runnable  {}", report.runnable);

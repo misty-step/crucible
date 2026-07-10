@@ -256,6 +256,12 @@ pub struct PromptBenchmarkTask {
     /// this empty and still deserialize normally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
+    /// One-line human description of what this task tests, e.g. "model must
+    /// recall the exact API key from a long context window". Purely
+    /// presentational — surfaced by `serve`'s task drill-down and never read
+    /// by grading or identity. `None` for a task authored before this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// Optional prompt context file, absolute or relative to the spec file. The
     /// runner prepends its content to `prompt` before the model call. This keeps
     /// long-context fixtures committed as readable files instead of huge escaped
@@ -575,6 +581,14 @@ pub struct EvalSpec {
     /// Stable eval id, e.g. `pr-review-key-recall-v0`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
+    /// Human display name, distinct from `id` — operator feedback (2026-07-09)
+    /// was that a raw slug id makes a poor UI heading. Purely presentational:
+    /// `None` for a spec that predates this field, and never read by identity,
+    /// scoring, or `config_id` derivation. Serve/CLI surfaces prefer this over
+    /// `id`/`task` wherever a human-facing title is shown; the slug remains
+    /// the identity everywhere else (run rows, config comparisons).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Optional project/workflow grouping for UI sorting and filtering. Older
     /// specs leave this absent and still deserialize normally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -724,6 +738,7 @@ mod tests {
         let spec = EvalSpec {
             schema_version: EVAL_SPEC_SCHEMA.to_string(),
             id: String::new(),
+            title: None,
             context: None,
             task: "code-review".to_string(),
             inputs: String::new(),
@@ -770,6 +785,7 @@ mod tests {
         let spec = EvalSpec {
             schema_version: EVAL_SPEC_SCHEMA.to_string(),
             id: "code-review-calibration-v0".to_string(),
+            title: Some("Code review calibration".to_string()),
             context: Some("code-review".to_string()),
             task: "code-review".to_string(),
             inputs: "Cerberus ReviewArtifact over a diff".to_string(),
@@ -816,6 +832,7 @@ mod tests {
         let back: EvalSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(spec, back);
         assert_eq!(back.graders.graders.len(), 3);
+        assert_eq!(back.title.as_deref(), Some("Code review calibration"));
         assert_eq!(back.context.as_deref(), Some("code-review"));
         assert_eq!(back.graders.graders[1].kind, GraderKind::Agentic);
         assert_eq!(back.runner.unwrap().kind, RunnerKind::KeyRecall);
@@ -839,6 +856,31 @@ mod tests {
         assert!(
             !json.contains("context"),
             "absent context must be omitted, not serialized as null: {json}"
+        );
+    }
+
+    #[test]
+    fn eval_spec_title_is_additive_and_skipped_when_absent() {
+        // An old spec that predates `title` must still parse identically —
+        // display-only fields cannot break existing fixtures.
+        let old: EvalSpec = serde_json::from_str(
+            r#"{"schema_version":"crucible.eval_spec.v1","task":"prompt-smoke"}"#,
+        )
+        .unwrap();
+        assert!(old.title.is_none());
+
+        let mut with_title = old;
+        with_title.title = Some("Prompt smoke test".to_string());
+        let json = serde_json::to_string(&with_title).unwrap();
+        assert!(json.contains(r#""title":"Prompt smoke test""#), "{json}");
+        let back: EvalSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.title.as_deref(), Some("Prompt smoke test"));
+
+        with_title.title = None;
+        let json = serde_json::to_string(&with_title).unwrap();
+        assert!(
+            !json.contains("title"),
+            "absent title must be omitted, not serialized as null: {json}"
         );
     }
 
@@ -880,6 +922,7 @@ mod tests {
             tasks: vec![PromptBenchmarkTask {
                 task_id: "exact-word".to_string(),
                 class: Some("format_adherence".to_string()),
+                summary: None,
                 context_file: None,
                 prompt: "Reply with exactly: crucible-smoke".to_string(),
                 expectation: PromptExpectation::Exact {
@@ -896,8 +939,9 @@ mod tests {
         assert!(
             !json.contains("harness")
                 && !json.contains("tool_allowlist")
-                && !json.contains("tracked"),
-            "absent harness/tool_allowlist/tracked are omitted, not written as null/empty: {json}"
+                && !json.contains("tracked")
+                && !json.contains("summary"),
+            "absent harness/tool_allowlist/tracked/summary are omitted, not written as null/empty: {json}"
         );
         let back: CorpusSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(back, corpus);
@@ -929,6 +973,42 @@ mod tests {
         };
         assert_eq!(tasks[0].tracked.len(), 1);
         assert_eq!(tasks[0].tracked[0].id, "mentions-smoke");
+    }
+
+    #[test]
+    fn prompt_benchmark_task_summary_is_additive_and_skipped_when_absent() {
+        // A task authored before `summary` existed must still parse.
+        let json = r#"{
+            "source": "prompt_benchmark",
+            "config": {
+                "provider": "open_router",
+                "model": "openai/gpt-4o-mini",
+                "system_prompt": "Answer exactly.",
+                "credential_env": "OPENROUTER_API_KEY"
+            },
+            "tasks": [{
+                "task_id": "exact-word",
+                "prompt": "Reply with exactly: crucible-smoke",
+                "expectation": { "kind": "exact", "value": "crucible-smoke" }
+            }]
+        }"#;
+        let corpus: CorpusSpec = serde_json::from_str(json).unwrap();
+        let CorpusSpec::PromptBenchmark { mut tasks, .. } = corpus else {
+            panic!("expected prompt_benchmark corpus");
+        };
+        assert!(tasks[0].summary.is_none());
+
+        tasks[0].summary = Some("Model must reply with the exact smoke token.".to_string());
+        let json = serde_json::to_string(&tasks[0]).unwrap();
+        assert!(
+            json.contains(r#""summary":"Model must reply with the exact smoke token.""#),
+            "{json}"
+        );
+        let back: PromptBenchmarkTask = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.summary.as_deref(),
+            Some("Model must reply with the exact smoke token.")
+        );
     }
 
     #[test]

@@ -121,6 +121,10 @@ fn crucible_author_tool_def() -> Value {
                     "type": "string",
                     "description": "Stable eval id, e.g. my-eval-v0. Defaults to the output file stem."
                 },
+                "title": {
+                    "type": "string",
+                    "description": "Human display name shown in place of the raw id/task-family slug wherever the UI leads with a title, e.g. 'Long-context key recall'."
+                },
                 "context": {
                     "type": "string",
                     "description": "Optional project/workflow grouping for UI sort and filter, e.g. agentic-swe."
@@ -213,6 +217,10 @@ fn crucible_author_tool_def() -> Value {
                 "prompt_task_class": {
                     "type": "string",
                     "description": "prompt_benchmark: optional reporting class, e.g. format_adherence."
+                },
+                "prompt_task_summary": {
+                    "type": "string",
+                    "description": "prompt_benchmark: optional one-line description of what the task tests, shown in the serve UI's task drill-down."
                 },
                 "prompt_task_context_file": {
                     "type": "string",
@@ -603,6 +611,7 @@ struct CrucibleAuthorArgs {
     #[serde(default)]
     force: bool,
     id: Option<String>,
+    title: Option<String>,
     context: Option<String>,
     task_family: Option<String>,
     inputs: Option<String>,
@@ -629,6 +638,7 @@ struct CrucibleAuthorArgs {
     prompt_task_id: Option<String>,
     prompt_task_prompt: Option<String>,
     prompt_task_class: Option<String>,
+    prompt_task_summary: Option<String>,
     prompt_task_context_file: Option<String>,
     prompt_expectation_kind: Option<String>,
     prompt_expectation_value: Option<String>,
@@ -667,6 +677,7 @@ impl CrucibleAuthorArgs {
             force: self.force,
             json: false,
             id: self.id,
+            title: self.title,
             context: self.context,
             task_family: self.task_family,
             inputs: self.inputs,
@@ -689,6 +700,7 @@ impl CrucibleAuthorArgs {
             prompt_task_id: self.prompt_task_id,
             prompt_task_prompt: self.prompt_task_prompt,
             prompt_task_class: self.prompt_task_class,
+            prompt_task_summary: self.prompt_task_summary,
             prompt_task_context_file: self.prompt_task_context_file,
             prompt_expectation_kind,
             prompt_expectation_value: self.prompt_expectation_value,
