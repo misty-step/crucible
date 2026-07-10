@@ -667,6 +667,13 @@ struct SpecsResponse {
 struct SpecSummary {
     path: String,
     id: String,
+    /// The spec's declared display `title` (operator UX ruling 2026-07-09),
+    /// verbatim and `None` when absent — distinct from `benchmark_title`,
+    /// which falls back to `task`/`id` for the (currently unused) legacy
+    /// summary line. The eval-detail header prefers this over `id` for its
+    /// `<h1>`; every other surface that leads with the raw slug is untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
     context: Option<String>,
     object_label: &'static str,
     benchmark_title: String,
@@ -766,6 +773,7 @@ fn load_error_spec_summary(error: &SpecLoadError) -> SpecSummary {
     SpecSummary {
         path: error.path.clone(),
         id,
+        title: None,
         context: None,
         object_label: "benchmark",
         benchmark_title: "Unloaded benchmark".to_string(),
@@ -794,6 +802,7 @@ fn load_error_spec_summary(error: &SpecLoadError) -> SpecSummary {
         validation: validate::ValidationReport {
             schema_version: validate::VALIDATE_REPORT_SCHEMA,
             spec: error.path.clone(),
+            title: None,
             valid: false,
             runnable: false,
             errors: vec![validate::ValidationIssue {
@@ -848,6 +857,7 @@ fn spec_summary(
     SpecSummary {
         path: display_path(&path),
         id: spec.id,
+        title: spec.title,
         context: spec.context,
         object_label: "benchmark",
         benchmark_title,
@@ -941,6 +951,8 @@ struct SpecTaskDetail {
     task_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
     prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context_file: Option<String>,
@@ -1001,6 +1013,7 @@ fn spec_task_details(spec_path: &Path, spec: &EvalSpec) -> Vec<SpecTaskDetail> {
             SpecTaskDetail {
                 task_id: task.task_id.clone(),
                 class: task.class.clone(),
+                summary: task.summary.clone(),
                 prompt: task.prompt.clone(),
                 context_file: task.context_file.clone(),
                 context_content,
@@ -2705,7 +2718,9 @@ fn render_index() -> String {
     }
     function renderEvalHeader(spec) {
       const valid = spec.validation?.valid && spec.validation?.runnable;
-      return `<div class="cru-toolbar"><div class="cru-hub-head"><h1 class="cru-h1">${esc(spec.id)}</h1><p class="cru-lede">${esc(spec.plain_summary)}</p><p class="cru-decision"><span class="cru-label">decision</span> ${esc(spec.decision || 'not declared')}</p><div class="cru-hub-meta"><span class="cru-chip ${valid ? 'ok' : 'err'}">${valid ? 'ready' : 'needs work'}</span>${kindChip(spec.runner_kind)}${contextChip(spec.context)}${(spec.graders || []).map(grader => `<span class="cru-chip">${esc(grader.kind)}:${esc(grader.id)}</span>`).join('')}</div></div><div class="cru-actions"><button class="cru-button" id="run-this-eval" type="button">Run this eval</button></div></div>`;
+      const heading = spec.title ? esc(spec.title) : esc(spec.id);
+      const slugLine = spec.title ? `<p class="cru-code cru-subtle">${esc(spec.id)}</p>` : '';
+      return `<div class="cru-toolbar"><div class="cru-hub-head"><h1 class="cru-h1">${heading}</h1>${slugLine}<p class="cru-lede">${esc(spec.plain_summary)}</p><p class="cru-decision"><span class="cru-label">decision</span> ${esc(spec.decision || 'not declared')}</p><div class="cru-hub-meta"><span class="cru-chip ${valid ? 'ok' : 'err'}">${valid ? 'ready' : 'needs work'}</span>${kindChip(spec.runner_kind)}${contextChip(spec.context)}${(spec.graders || []).map(grader => `<span class="cru-chip">${esc(grader.kind)}:${esc(grader.id)}</span>`).join('')}</div></div><div class="cru-actions"><button class="cru-button" id="run-this-eval" type="button">Run this eval</button></div></div>`;
     }
     function renderOverviewTab(spec) { const rows = runsForSpec(spec); return `<div class="cru-grid">${infoCard(spec)}${topConfigsCard(spec)}${latestVerdictCard(spec)}</div><section class="cru-section"><p class="cru-section-title">Recent runs</p>${recentRunsList(spec, rows.slice(0, 3))}</section>`; }
     function infoCard(spec) {
@@ -2734,13 +2749,48 @@ fn render_index() -> String {
       return `<div class="cru-table-wrap"><table class="ae-table"><tbody>${rows.map(run => `<tr class="cru-click" data-run-id="${esc(run.run_id)}"><td class="cru-code">${esc(shortRunId(run.run_id))}</td><td>${scoreCi(run)}</td><td>${esc(shortModel(run.model || run.config_id))}</td><td>${esc(relativeTime(run.created_at_unix_ms))}</td></tr>`).join('')}</tbody></table></div>`;
     }
 
+    // Task drill-down is an inline accordion row directly under the clicked
+    // row (mirrors runTaskRows' data-run-task-row pattern) — never a panel
+    // rendered below the whole table, which is invisible for a row the
+    // operator has scrolled past (operator walkthrough, 2026-07-09).
     function renderTasksTab(spec) {
       const tasks = state.specDetail?.prompt_tasks || [];
       if (!tasks.length) return `<section class="cru-section"><div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>id</th><th>class</th><th>expectation</th><th>tracked</th></tr></thead><tbody>${(spec.task_ids || []).map(id => `<tr><td class="cru-code">${esc(id)}</td><td><span class="cru-subtle">&mdash;</span></td><td>definition unavailable</td><td>0</td></tr>`).join('')}</tbody></table></div></section>`;
-      const selected = state.selectedTaskId ? tasks.find(task => task.task_id === state.selectedTaskId) : null;
-      return `<section class="cru-section"><div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>id</th><th>class</th><th>expectation kind</th><th>tracked-check count</th></tr></thead><tbody>${tasks.map(task => `<tr class="cru-click" data-task-definition="${esc(task.task_id)}"><td class="cru-code">${esc(task.task_id)}</td><td>${task.class ? `<span class="cru-chip">${esc(task.class)}</span>` : '<span class="cru-subtle">&mdash;</span>'}</td><td>${esc(task.expectation_kind)}</td><td data-tracked-check-count>${task.tracked?.length || 0}</td></tr>`).join('')}</tbody></table></div>${selected ? taskPanel(selected) : ''}</section>`;
+      return `<section class="cru-section"><div class="cru-table-wrap"><table class="ae-table"><thead><tr><th>id</th><th>class</th><th>expectation kind</th><th>tracked-check count</th></tr></thead><tbody>${tasks.map(task => taskRows(task)).join('')}</tbody></table></div></section>`;
     }
-    function taskPanel(task) { return `<section class="cru-card" style="margin-top: var(--ae-space-4)"><div class="cru-toolbar"><p class="cru-title">${esc(task.task_id)}</p><button class="cru-back" id="close-task-panel" type="button">close</button></div><p><strong>prompt</strong></p><pre class="cru-pre">${esc(task.prompt)}</pre>${task.context_content ? `<p><strong>context file: ${esc(task.context_file)}</strong></p><pre class="cru-pre">${esc(task.context_content)}</pre>` : ''}<p><strong>expectation</strong> ${esc(task.expectation_kind)} <span class="cru-code">${esc(JSON.stringify(task.expectation_value))}</span></p><p><strong>tracked checks</strong></p>${task.tracked?.length ? `<div class="cru-chipline">${task.tracked.map(check => `<span class="cru-chip">${esc(check.id)}:${esc(check.expectation_kind)}</span>`).join('')}</div>` : '<p class="cru-subtle">none</p>'}</section>`; }
+    function taskRows(task) {
+      const expanded = state.selectedTaskId === task.task_id;
+      const idCell = `${esc(task.task_id)}${task.summary ? `<br><span class="cru-subtle">${esc(firstLine(task.summary))}</span>` : ''}`;
+      const main = `<tr class="cru-click" data-task-definition="${esc(task.task_id)}" aria-expanded="${expanded}"><td class="cru-code">${idCell}</td><td>${task.class ? `<span class="cru-chip">${esc(task.class)}</span>` : '<span class="cru-subtle">&mdash;</span>'}</td><td>${esc(task.expectation_kind)}</td><td data-tracked-check-count>${task.tracked?.length || 0}</td></tr>`;
+      if (!expanded) return main;
+      return main + `<tr class="cru-run-expand"><td colspan="4">${taskDetail(task)}</td></tr>`;
+    }
+    function firstLine(text) { return (text || '').split('\n')[0]; }
+    // Every expectation kind mapped to a plain-language sentence — never
+    // lead with a raw regex; a regex pattern is tucked behind a collapsed
+    // <details> instead ("I don't know what the expectation regex means.").
+    function expectationPlainLanguage(kind, value) {
+      switch (kind) {
+        case 'exact': return { text: `output must be exactly "${value}"` };
+        case 'contains': return { text: `output must contain "${value}"` };
+        case 'case_insensitive_contains': return { text: `output must contain "${value}" (case-insensitive)` };
+        case 'regex': return { text: 'output must match a pattern', raw: value };
+        case 'strict_json': return { text: `output must parse as JSON exactly equal to ${JSON.stringify(value)}` };
+        case 'python_unit_test': return { text: 'output is graded by running a committed Python test' };
+        default: return { text: `${kind}: ${JSON.stringify(value)}` };
+      }
+    }
+    function taskDetail(task) {
+      const grading = expectationPlainLanguage(task.expectation_kind, task.expectation_value);
+      const rawPattern = grading.raw == null ? '' : `<details class="cru-details"><summary class="cru-subtle">raw pattern</summary><code class="cru-code">${esc(String(grading.raw))}</code></details>`;
+      // Tracked (soft) checks render only when the task actually declares
+      // some — an empty list means nothing, not a labeled zero-count section
+      // ("I don't know what the fact that it has none means.").
+      const trackedSection = task.tracked?.length
+        ? `<p><strong>tracked (soft) checks</strong> <span class="cru-subtle">— recorded, not scored</span></p><div class="cru-chipline">${task.tracked.map(check => `<span class="cru-chip">${esc(check.id)}: ${esc(expectationPlainLanguage(check.expectation_kind, check.expectation_value).text)}</span>`).join('')}</div>`
+        : '';
+      return `${task.summary ? `<p>${esc(firstLine(task.summary))}</p>` : ''}${task.class ? `<p><span class="cru-chip">${esc(task.class)}</span></p>` : ''}<p><strong>prompt</strong></p><pre class="cru-pre">${esc(task.prompt)}</pre>${task.context_file ? `<p class="cru-code cru-subtle">${esc(task.context_file)}</p>` : ''}<p><strong>grading</strong> ${esc(grading.text)}</p>${rawPattern}${trackedSection}`;
+    }
 
     function renderRunsTab(spec) {
       const rows = runsForSpec(spec);
@@ -2772,8 +2822,11 @@ fn render_index() -> String {
       document.querySelector('#run-this-eval')?.addEventListener('click', () => go(evalPath(spec.id, 'runs')));
       document.querySelector('[data-open-compare]')?.addEventListener('click', () => go(evalPath(spec.id, 'compare')));
       document.querySelectorAll('[data-run-id]').forEach(row => row.onclick = () => go(runPath(spec.id, row.dataset.runId)));
-      document.querySelectorAll('[data-task-definition]').forEach(row => row.onclick = () => { state.selectedTaskId = row.dataset.taskDefinition; renderEvalDetail(); });
-      document.querySelector('#close-task-panel')?.addEventListener('click', () => { state.selectedTaskId = null; renderEvalDetail(); });
+      document.querySelectorAll('[data-task-definition]').forEach(row => row.onclick = () => {
+        const id = row.dataset.taskDefinition;
+        state.selectedTaskId = state.selectedTaskId === id ? null : id;
+        renderEvalDetail();
+      });
       const leftSelect = document.querySelector('#compare-left');
       const rightSelect = document.querySelector('#compare-right');
       if (leftSelect && rightSelect) {
@@ -3272,16 +3325,71 @@ mod tests {
         assert!(html.contains("#/evals"));
     }
 
+    /// crucible-run-space-workbench: a clicked task row must expand an
+    /// inline accordion row directly under itself (mirroring
+    /// `data-run-task-row`'s `cru-run-expand` pattern) — never a panel
+    /// rendered below the whole table, which is invisible for a row the
+    /// operator has scrolled past. Clicking the same row again must collapse
+    /// it (a toggle, not a one-way select), and grading must resolve through
+    /// a plain-language helper rather than leading with the raw expectation
+    /// kind/regex.
     #[test]
-    fn tasks_tab_has_definition_panel_contract() {
+    fn tasks_tab_has_inline_accordion_drill_down_contract() {
         let html = render_index();
         assert!(html.contains("function renderTasksTab"));
         assert!(html.contains("data-task-definition"));
         assert!(html.contains("data-tracked-check-count"));
-        assert!(html.contains("function taskPanel"));
-        assert!(html.contains("context_content"));
+        assert!(
+            html.contains("cru-run-expand"),
+            "the task detail row must reuse the same inline-accordion row class as the run-tasks drill-down: {html}"
+        );
+        assert!(
+            !html.contains("function taskPanel"),
+            "the old below-the-table detail panel must be gone, replaced by an inline accordion row"
+        );
+        assert!(
+            html.contains("state.selectedTaskId === id ? null : id"),
+            "clicking an expanded task row again must collapse it (toggle, not one-way select)"
+        );
+        assert!(html.contains("function expectationPlainLanguage"));
+        assert!(html.contains("output must match a pattern"));
+        assert!(
+            html.contains("raw pattern"),
+            "a regex pattern must be tucked behind a collapsed <details> labeled raw pattern, never led with"
+        );
+        assert!(html.contains("tracked (soft) checks"));
+        assert!(html.contains("recorded, not scored"));
         assert!(html.contains("expectation_value"));
-        assert!(html.contains("tracked checks"));
+    }
+
+    /// crucible-run-space-workbench: the operator's declared `title` must
+    /// lead the eval detail page's `<h1>`, with the raw slug `id` demoted to
+    /// a mono meta line beside/below it — the slug remains the identity
+    /// everywhere a raw id already led (run rows, config comparisons).
+    #[test]
+    fn eval_header_prefers_declared_title_over_raw_slug_id() {
+        let html = render_index();
+        assert!(html.contains("function renderEvalHeader"));
+        assert!(
+            html.contains("spec.title ? esc(spec.title) : esc(spec.id)"),
+            "the h1 must prefer spec.title, falling back to spec.id: {html}"
+        );
+        assert!(
+            html.contains("spec.title ? `<p class=\"cru-code cru-subtle\">"),
+            "the raw id must render in the existing mono meta style beside a declared title: {html}"
+        );
+    }
+
+    /// crucible-run-space-workbench: the tasks table's id column shows a
+    /// second muted line from the task's declared `summary` when present.
+    #[test]
+    fn tasks_table_shows_summary_as_a_second_muted_line() {
+        let html = render_index();
+        assert!(html.contains("function taskRows"));
+        assert!(
+            html.contains("task.summary ? `<br><span class=\"cru-subtle\">${esc(firstLine(task.summary))}</span>` : ''"),
+            "the id cell must show a truncated-to-first-line summary under the task id: {html}"
+        );
     }
 
     #[test]

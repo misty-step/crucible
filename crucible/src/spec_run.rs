@@ -427,11 +427,7 @@ fn run_key_recall_daedalus(
 
     Ok(EvalReport {
         id: spec_id(spec, spec_path),
-        title: if spec.task.is_empty() {
-            "Declared eval spec".to_string()
-        } else {
-            spec.task.clone()
-        },
+        title: eval_report_title(spec, "Declared eval spec"),
         score,
         artifacts: vec![
             spec_path.display().to_string(),
@@ -560,11 +556,7 @@ fn run_key_recall_cerberus_receipts(
 
     Ok(EvalReport {
         id: spec_id(spec, spec_path),
-        title: if spec.task.is_empty() {
-            "Declared eval spec".to_string()
-        } else {
-            spec.task.clone()
-        },
+        title: eval_report_title(spec, "Declared eval spec"),
         score,
         artifacts: vec![spec_path.display().to_string(), evidence_path.display().to_string()],
         notes: vec![
@@ -631,11 +623,7 @@ fn run_harbor_task(
 
     Ok(EvalReport {
         id: spec_id(spec, spec_path),
-        title: if spec.task.is_empty() {
-            "Harbor task benchmark".to_string()
-        } else {
-            spec.task.clone()
-        },
+        title: eval_report_title(spec, "Harbor task benchmark"),
         score,
         artifacts: vec![spec_path.display().to_string(), evidence_path.display().to_string()],
         notes: vec![
@@ -1195,11 +1183,7 @@ fn run_prompt_benchmark_with_client(
 
     Ok(EvalReport {
         id: spec_id(spec, spec_path),
-        title: if spec.task.is_empty() {
-            "Prompt benchmark".to_string()
-        } else {
-            spec.task.clone()
-        },
+        title: eval_report_title(spec, "Prompt benchmark"),
         score,
         artifacts: vec![spec_path.display().to_string(), evidence_path.display().to_string()],
         notes: vec![
@@ -1852,11 +1836,7 @@ fn run_agentic_judge_with_client(
 
     Ok(EvalReport {
         id: spec_id(spec, spec_path),
-        title: if spec.task.is_empty() {
-            "Agentic judge".to_string()
-        } else {
-            spec.task.clone()
-        },
+        title: eval_report_title(spec, "Agentic judge"),
         score,
         artifacts: vec![
             spec_path.display().to_string(),
@@ -2100,6 +2080,24 @@ fn spec_id(spec: &EvalSpec, spec_path: &Path) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("declared-eval")
         .to_string()
+}
+
+/// The [`EvalReport`] title for a declared-spec run: the spec's declared
+/// display `title` when present (operator UX ruling 2026-07-09 — "that name
+/// is bad"), falling back to `task` and then to `fallback` exactly as before
+/// `title` existed. Display-only — never affects `spec_id`/hashing/identity.
+fn eval_report_title(spec: &EvalSpec, fallback: &str) -> String {
+    if let Some(title) = spec.title.as_deref() {
+        let trimmed = title.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if spec.task.is_empty() {
+        fallback.to_string()
+    } else {
+        spec.task.clone()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3070,6 +3068,53 @@ fn is_zero_usize(value: &usize) -> bool {
 mod tests {
     use super::*;
 
+    fn minimal_spec(title: Option<&str>, task: &str) -> EvalSpec {
+        EvalSpec {
+            schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
+            id: String::new(),
+            title: title.map(str::to_string),
+            context: None,
+            task: task.to_string(),
+            inputs: String::new(),
+            outputs: String::new(),
+            fixtures: Vec::new(),
+            graders: crucible_core::GraderManifest::default(),
+            baselines: Vec::new(),
+            aggregation: AggregationMethod::Proportion,
+            uncertainty: crucible_core::UncertaintyRule::default(),
+            decision: String::new(),
+            min_effect_of_interest: None,
+            runner: None,
+        }
+    }
+
+    #[test]
+    fn eval_report_title_prefers_the_declared_title_over_task() {
+        let spec = minimal_spec(Some("Human display name"), "code-review");
+        assert_eq!(eval_report_title(&spec, "fallback"), "Human display name");
+    }
+
+    #[test]
+    fn eval_report_title_falls_back_to_task_when_no_title_is_declared() {
+        let spec = minimal_spec(None, "code-review");
+        assert_eq!(eval_report_title(&spec, "fallback"), "code-review");
+    }
+
+    #[test]
+    fn eval_report_title_falls_back_to_the_named_default_when_neither_is_set() {
+        let spec = minimal_spec(None, "");
+        assert_eq!(
+            eval_report_title(&spec, "Declared eval spec"),
+            "Declared eval spec"
+        );
+    }
+
+    #[test]
+    fn eval_report_title_ignores_a_blank_declared_title() {
+        let spec = minimal_spec(Some("   "), "code-review");
+        assert_eq!(eval_report_title(&spec, "fallback"), "code-review");
+    }
+
     #[test]
     fn truncate_for_summary_leaves_short_text_untouched() {
         assert_eq!(truncate_for_summary("hello harbor", 2000), "hello harbor");
@@ -3361,6 +3406,7 @@ mod tests {
         EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "agentic-judge-smoke".to_string(),
+            title: None,
             context: None,
             task: "agentic-judge-smoke".to_string(),
             inputs: String::new(),
@@ -3459,6 +3505,7 @@ mod tests {
         let spec = EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "key-recall".to_string(),
+            title: None,
             context: None,
             task: "key-recall".to_string(),
             inputs: String::new(),
@@ -3553,6 +3600,7 @@ mod tests {
         let spec = EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "prompt-smoke".to_string(),
+            title: None,
             context: None,
             task: "prompt-smoke".to_string(),
             inputs: String::new(),
@@ -3582,6 +3630,7 @@ mod tests {
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "exact".to_string(),
                     class: Some("format_adherence".to_string()),
+                    summary: None,
                     context_file: None,
                     prompt: "Reply with exactly: crucible-smoke".to_string(),
                     expectation: PromptExpectation::Exact {
@@ -3703,6 +3752,7 @@ mod tests {
         PromptBenchmarkTask {
             task_id: task_id.to_string(),
             class: None,
+            summary: None,
             context_file: None,
             prompt: format!("Reply with exactly: probe-ok ({task_id})"),
             expectation: PromptExpectation::Exact {
@@ -3726,6 +3776,7 @@ mod tests {
         let spec = EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "prompt-concurrency".to_string(),
+            title: None,
             context: None,
             task: "prompt-concurrency".to_string(),
             inputs: String::new(),
@@ -3814,6 +3865,7 @@ mod tests {
         let task = PromptBenchmarkTask {
             task_id: "ctx".to_string(),
             class: Some("long_context_extraction".to_string()),
+            summary: None,
             context_file: Some("doc.txt".to_string()),
             prompt: "Return the hidden code.".to_string(),
             expectation: PromptExpectation::Exact {
@@ -3938,6 +3990,7 @@ mod tests {
             PromptBenchmarkTask {
                 task_id: "fine".to_string(),
                 class: None,
+                summary: None,
                 context_file: None,
                 prompt: "p".to_string(),
                 expectation: PromptExpectation::Regex {
@@ -3948,6 +4001,7 @@ mod tests {
             PromptBenchmarkTask {
                 task_id: "broken".to_string(),
                 class: None,
+                summary: None,
                 context_file: None,
                 prompt: "p".to_string(),
                 expectation: PromptExpectation::Regex {
@@ -3971,6 +4025,7 @@ mod tests {
         let spec = EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "prompt-bad-regex".to_string(),
+            title: None,
             context: None,
             task: "prompt-bad-regex".to_string(),
             inputs: String::new(),
@@ -4005,6 +4060,7 @@ mod tests {
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "broken".to_string(),
                     class: None,
+                    summary: None,
                     context_file: None,
                     prompt: "irrelevant".to_string(),
                     expectation: PromptExpectation::Regex {

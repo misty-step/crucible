@@ -279,6 +279,7 @@ fn author_interactive_drives_a_prompt_benchmark_spec_via_stdin() {
 
     let script = "\n\
         \n\
+        \n\
         code-review\n\
         \n\
         \n\
@@ -292,6 +293,7 @@ fn author_interactive_drives_a_prompt_benchmark_spec_via_stdin() {
         \n\
         marker-echo\n\
         Reply with crucible-smoke\n\
+        \n\
         \n\
         contains\n\
         crucible-smoke\n\

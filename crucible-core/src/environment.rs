@@ -423,6 +423,7 @@ mod tests {
         EvalSpec {
             schema_version: crate::spec::EVAL_SPEC_SCHEMA.to_string(),
             id: "demo-v0".to_string(),
+            title: None,
             context: None,
             task: "demo".to_string(),
             inputs: String::new(),
@@ -458,6 +459,7 @@ mod tests {
             tasks: vec![PromptBenchmarkTask {
                 task_id: "t1".to_string(),
                 class: None,
+                summary: None,
                 context_file: None,
                 prompt: "hi".to_string(),
                 expectation: PromptExpectation::Contains {

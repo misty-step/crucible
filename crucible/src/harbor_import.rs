@@ -154,6 +154,7 @@ fn import_harbor(args: &HarborImportArgs) -> anyhow::Result<HarborImportReport> 
     let spec = EvalSpec {
         schema_version: EVAL_SPEC_SCHEMA.to_string(),
         id,
+        title: None,
         context: None,
         task,
         inputs: format!(

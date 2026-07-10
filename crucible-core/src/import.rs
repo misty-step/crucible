@@ -395,6 +395,12 @@ fn project_test(
     Ok(PromptBenchmarkTask {
         task_id: task_id_for(index, test.description.as_deref()),
         class: None,
+        summary: test
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(str::to_string),
         context_file: None,
         prompt,
         expectation,

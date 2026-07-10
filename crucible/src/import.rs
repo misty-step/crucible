@@ -220,6 +220,7 @@ fn import_promptfoo(args: &PromptfooImportArgs) -> anyhow::Result<ImportReport> 
     let spec = EvalSpec {
         schema_version: EVAL_SPEC_SCHEMA.to_string(),
         id,
+        title: None,
         context: None,
         task,
         inputs,

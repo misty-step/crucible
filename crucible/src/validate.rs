@@ -29,6 +29,13 @@ pub const VALIDATE_REPORT_SCHEMA: &str = "crucible.validate_report.v1";
 pub struct ValidationReport {
     pub schema_version: &'static str,
     pub spec: String,
+    /// The spec's declared display `title` (operator UX ruling 2026-07-09),
+    /// `None` when the spec predates the field or never set one. Purely
+    /// presentational — carried through so a cold agent or the serve UI
+    /// never has to re-parse the spec file just to show a human name
+    /// alongside its validation result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// `true` iff `errors` is empty. A spec can be `valid` and still be
     /// definition-only (no `runner`) — validity is about the declared fields
     /// being honest, not about being executable.
@@ -104,9 +111,11 @@ pub fn validate(spec_path: &Path) -> anyhow::Result<ValidationReport> {
     check_portability(spec_path, &spec, &mut warnings);
     check_power(&spec, &mut warnings);
 
+    let title = spec.title.clone();
     Ok(ValidationReport {
         schema_version: VALIDATE_REPORT_SCHEMA,
         spec: spec_path.display().to_string(),
+        title,
         valid: errors.is_empty(),
         runnable,
         errors,
@@ -278,6 +287,7 @@ mod tests {
         EvalSpec {
             schema_version: crucible_core::EVAL_SPEC_SCHEMA.to_string(),
             id: "test".to_string(),
+            title: None,
             context: None,
             task: "test".to_string(),
             inputs: String::new(),
@@ -291,6 +301,24 @@ mod tests {
             min_effect_of_interest: None,
             runner: None,
         }
+    }
+
+    #[test]
+    fn validate_report_carries_the_spec_declared_title_when_present() {
+        let dir = temp_dir("titled");
+        let mut spec = base_spec();
+        spec.title = Some("Test eval, human name".to_string());
+        let path = write_spec(&dir, "spec.json", &spec);
+        let report = validate(&path).unwrap();
+        assert_eq!(report.title.as_deref(), Some("Test eval, human name"));
+    }
+
+    #[test]
+    fn validate_report_title_is_none_when_the_spec_declares_none() {
+        let dir = temp_dir("untitled");
+        let path = write_spec(&dir, "spec.json", &base_spec());
+        let report = validate(&path).unwrap();
+        assert!(report.title.is_none());
     }
 
     #[test]
@@ -636,6 +664,7 @@ mod tests {
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "broken".to_string(),
                     class: None,
+                    summary: None,
                     context_file: None,
                     prompt: "irrelevant".to_string(),
                     expectation: PromptExpectation::Regex {
@@ -685,6 +714,7 @@ mod tests {
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "tracked-task".to_string(),
                     class: None,
+                    summary: None,
                     context_file: None,
                     prompt: "Say crucible-smoke.".to_string(),
                     expectation: PromptExpectation::Contains {
