@@ -240,6 +240,18 @@ pub struct PromptModelConfig {
     /// for a spec that predates this field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_allowlist: Vec<String>,
+    /// Per-request HTTP timeout override, in seconds, for this benchmark's
+    /// live model calls (crucible-http-timeout-config: kimi-k2.6's long
+    /// reasoning traces exceeded the runner's old fixed 60s timeout 8
+    /// straight times, reading as absent through pure client infrastructure).
+    /// Optional and defaults to absent so a spec that predates this field
+    /// still loads; the runner's resolution order is this field, then
+    /// `CRUCIBLE_REQUEST_TIMEOUT_SECS`, then a generous built-in default.
+    /// This is measurement infrastructure, not model configuration — it is
+    /// never read into `config_id`/scoring identity (see
+    /// `merge_prompt_metadata` in `crucible::run_store`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_timeout_seconds: Option<u64>,
 }
 
 fn default_openrouter_credential_env() -> String {
@@ -918,6 +930,7 @@ mod tests {
                 temperature: Some(0),
                 harness: None,
                 tool_allowlist: Vec::new(),
+                request_timeout_seconds: None,
             },
             tasks: vec![PromptBenchmarkTask {
                 task_id: "exact-word".to_string(),
@@ -1022,6 +1035,7 @@ mod tests {
             temperature: Some(0),
             harness: Some("claude-code".to_string()),
             tool_allowlist: vec!["bash".to_string(), "web_search".to_string()],
+            request_timeout_seconds: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains(r#""harness":"claude-code""#), "{json}");
@@ -1047,6 +1061,45 @@ mod tests {
         let config: PromptModelConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.harness, None);
         assert!(config.tool_allowlist.is_empty());
+    }
+
+    #[test]
+    fn prompt_model_config_round_trips_request_timeout_seconds() {
+        let config = PromptModelConfig {
+            provider: ModelProvider::OpenRouter,
+            model: "openai/gpt-4o-mini".to_string(),
+            system_prompt: "Answer exactly.".to_string(),
+            credential_env: "OPENROUTER_API_KEY".to_string(),
+            max_output_units: Some(8),
+            temperature: Some(0),
+            harness: None,
+            tool_allowlist: Vec::new(),
+            request_timeout_seconds: Some(900),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains(r#""request_timeout_seconds":900"#), "{json}");
+        let back: PromptModelConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, config);
+    }
+
+    #[test]
+    fn prompt_model_config_without_request_timeout_seconds_deserializes_with_default() {
+        // A spec authored before crucible-http-timeout-config has no field at
+        // all; it must still load, leaving the runner's own env/default
+        // resolution to pick the timeout.
+        let json = r#"{
+            "provider": "open_router",
+            "model": "openai/gpt-4o-mini",
+            "system_prompt": "Answer exactly.",
+            "credential_env": "OPENROUTER_API_KEY"
+        }"#;
+        let config: PromptModelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.request_timeout_seconds, None);
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(
+            !json.contains("request_timeout_seconds"),
+            "absent request_timeout_seconds is omitted, not written as null: {json}"
+        );
     }
 
     #[test]

@@ -2194,19 +2194,49 @@ struct OpenRouterClient {
 
 impl OpenRouterClient {
     fn from_config(config: &PromptModelConfig) -> anyhow::Result<Self> {
-        Self::from_credential_env(&config.credential_env)
+        Self::with_timeout(
+            &config.credential_env,
+            resolve_request_timeout(config.request_timeout_seconds),
+        )
     }
 
     fn from_credential_env(credential_env: &str) -> anyhow::Result<Self> {
+        Self::with_timeout(credential_env, resolve_request_timeout(None))
+    }
+
+    fn with_timeout(credential_env: &str, timeout: Duration) -> anyhow::Result<Self> {
         let api_key = std::env::var(credential_env).with_context(|| {
             format!("{credential_env} is not set; this runner requires a BYOK OpenRouter key")
         })?;
         let http = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(timeout)
             .build()
             .context("building OpenRouter HTTP client")?;
         Ok(Self { api_key, http })
     }
+}
+
+/// Default per-request HTTP timeout. Deliberately generous (operator ruling
+/// 2026-07-10: "make our timeouts much much longer — it's interesting to know
+/// how long a model or agent will go"): a slow reasoning trace is data worth
+/// waiting for, and per-task wall time is captured as `latency_ms` either way.
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 900;
+
+/// Resolution order: explicit spec field, then `CRUCIBLE_REQUEST_TIMEOUT_SECS`
+/// (set, non-empty, parseable), then the built-in default. Measurement
+/// infrastructure only — never part of config identity.
+fn resolve_request_timeout(spec_seconds: Option<u64>) -> Duration {
+    if let Some(secs) = spec_seconds {
+        return Duration::from_secs(secs);
+    }
+    if let Ok(raw) = std::env::var("CRUCIBLE_REQUEST_TIMEOUT_SECS") {
+        if let Ok(secs) = raw.trim().parse::<u64>() {
+            if !raw.trim().is_empty() && secs > 0 {
+                return Duration::from_secs(secs);
+            }
+        }
+    }
+    Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS)
 }
 
 impl ModelClient for OpenRouterClient {
@@ -3066,6 +3096,44 @@ fn is_zero_usize(value: &usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn request_timeout_resolution_spec_beats_env_beats_default() {
+        // Env-mutating: serialized by taking a process-wide lock name unique
+        // to this test's env var usage.
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap();
+
+        std::env::remove_var("CRUCIBLE_REQUEST_TIMEOUT_SECS");
+        assert_eq!(
+            super::resolve_request_timeout(None),
+            std::time::Duration::from_secs(super::DEFAULT_REQUEST_TIMEOUT_SECS)
+        );
+
+        std::env::set_var("CRUCIBLE_REQUEST_TIMEOUT_SECS", "120");
+        assert_eq!(
+            super::resolve_request_timeout(None),
+            std::time::Duration::from_secs(120)
+        );
+        // Explicit spec field beats the env.
+        assert_eq!(
+            super::resolve_request_timeout(Some(33)),
+            std::time::Duration::from_secs(33)
+        );
+
+        // Set-but-empty and garbage fall through to the default.
+        std::env::set_var("CRUCIBLE_REQUEST_TIMEOUT_SECS", "");
+        assert_eq!(
+            super::resolve_request_timeout(None),
+            std::time::Duration::from_secs(super::DEFAULT_REQUEST_TIMEOUT_SECS)
+        );
+        std::env::set_var("CRUCIBLE_REQUEST_TIMEOUT_SECS", "soon");
+        assert_eq!(
+            super::resolve_request_timeout(None),
+            std::time::Duration::from_secs(super::DEFAULT_REQUEST_TIMEOUT_SECS)
+        );
+        std::env::remove_var("CRUCIBLE_REQUEST_TIMEOUT_SECS");
+    }
+
     use super::*;
 
     fn minimal_spec(title: Option<&str>, task: &str) -> EvalSpec {
@@ -3484,6 +3552,7 @@ mod tests {
             temperature: Some(0),
             harness: None,
             tool_allowlist: Vec::new(),
+            request_timeout_seconds: None,
         };
 
         let effective =
@@ -3626,6 +3695,7 @@ mod tests {
                     temperature: Some(0),
                     harness: Some("claude-code".to_string()),
                     tool_allowlist: vec!["bash".to_string(), "web_search".to_string()],
+                    request_timeout_seconds: None,
                 },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "exact".to_string(),
@@ -3804,6 +3874,7 @@ mod tests {
             temperature: Some(0),
             harness: None,
             tool_allowlist: Vec::new(),
+            request_timeout_seconds: None,
         };
         let runner = RunnerSpec {
             kind: RunnerKind::PromptBenchmark,
@@ -3891,6 +3962,7 @@ mod tests {
             temperature: Some(0),
             harness: Some("claude-code".to_string()),
             tool_allowlist: vec!["bash".to_string()],
+            request_timeout_seconds: None,
         };
         let options = RunOptions {
             prompt_model: Some("test/model-b".to_string()),
@@ -4056,6 +4128,7 @@ mod tests {
                     temperature: None,
                     harness: None,
                     tool_allowlist: Vec::new(),
+                    request_timeout_seconds: None,
                 },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "broken".to_string(),

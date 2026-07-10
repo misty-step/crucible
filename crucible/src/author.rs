@@ -521,6 +521,7 @@ fn prompt_benchmark_from_flags(args: &AuthorArgs) -> anyhow::Result<ResolvedRunn
                 temperature: args.prompt_temperature,
                 harness: non_empty(&args.prompt_harness),
                 tool_allowlist: args.prompt_tools.clone(),
+                request_timeout_seconds: None,
             },
             tasks: vec![task],
         },
@@ -588,6 +589,7 @@ fn prompt_benchmark_from_interactive<R: BufRead, W: Write>(
                 temperature,
                 harness: None,
                 tool_allowlist: Vec::new(),
+                request_timeout_seconds: None,
             },
             tasks: vec![PromptBenchmarkTask {
                 task_id,
