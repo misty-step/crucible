@@ -1025,7 +1025,12 @@ fn spec_task_details(spec_path: &Path, spec: &EvalSpec) -> Vec<SpecTaskDetail> {
         .collect()
 }
 
-fn expectation_kind_and_value(expectation: &crucible_core::PromptExpectation) -> (String, Value) {
+/// `pub(crate)`: also reused by `crate::publish` (crucible-publish-packet) to
+/// normalize a joined spec task's expectation into the same `{kind, value}`
+/// shape for a public bench packet — one projection, not two.
+pub(crate) fn expectation_kind_and_value(
+    expectation: &crucible_core::PromptExpectation,
+) -> (String, Value) {
     use crucible_core::PromptExpectation::*;
     match expectation {
         Exact { value } => ("exact".to_string(), json!(value)),
