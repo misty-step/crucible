@@ -1,16 +1,15 @@
 # Crucible
 
-Crucible is the eval and benchmark workbench for Misty Step's AI and agent
-work. It designs, runs, judges, calibrates, reports, and exports evals that
-survive contact with real agent behavior.
-
+Crucible is an open-source evaluation engine and workbench for language models
+and agents. It designs, runs, judges, calibrates, reports, and exports evals
+that survive contact with real behavior—locally, with your own keys.
 Its one principle: **refuse to report a delta it cannot defend**. Every rate
 carries an interval, every judge needs calibration before it is trusted, and
 rank gaps inside the noise floor are reported as inconclusive.
 
-For the project north star and the boundary with Threshold and Harness Kit, read
-[`VISION.md`](VISION.md). For the cold-agent command contract, read
-[`SKILL.md`](SKILL.md).
+For the project north star and the strict boundary with the public
+[Bench](https://github.com/misty-step/bench) consumer, read
+[`VISION.md`](VISION.md). For the cold-agent command contract, read [`SKILL.md`](SKILL.md).
 
 If you are trying to understand Crucible as an operator, start with
 [`docs/operator-walkthrough.md`](docs/operator-walkthrough.md): it defines a
