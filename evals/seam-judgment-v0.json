@@ -1,0 +1,183 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "seam-judgment-v0",
+  "context": "model-native-first",
+  "task": "implementation-seam-placement",
+  "inputs": "24 real fleet-inspired software design seams, balanced between semantic judgment and deterministic policy/persistence/parser work",
+  "outputs": "Exactly two lines naming MODEL or DETERMINISTIC placement and the governing MEANING, TRUST, or CONSUMER placement-test rule",
+  "graders": {
+    "graders": [
+      {
+        "id": "deterministic_prompt_rubric",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "min_effect_of_interest": 0.3,
+  "decision": "Which models may propose fleet implementation boundaries without mandatory seam-placement review?",
+  "runner": {
+    "kind": "prompt_benchmark",
+    "corpus": {
+      "source": "prompt_benchmark",
+      "config": {
+        "provider": "open_router",
+        "model": "deepseek/deepseek-v4-flash",
+        "system_prompt": "Apply this placement test in order: (1) if deterministic code consumes the output, use deterministic machinery; (2) if it is must-fire policy at a trust boundary, use deterministic machinery; (3) if correctness requires reading meaning, use a model. Answer exactly as requested.",
+        "credential_env": "OPENROUTER_API_KEY",
+        "max_tokens": 1000,
+        "temperature": 0
+      },
+      "tasks": [
+        {
+          "task_id": "gazette-event-classification",
+          "class": "model_meaning",
+          "prompt": "Gazette must decide whether a free-form deployment update describes a launch, incident, recovery, or routine maintenance. Authors use novel wording and no declared event-type field exists. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*MODEL\\s*\\nRULE:\\s*MEANING\\s*$" }
+        },
+        {
+          "task_id": "powder-dispatchability-triage",
+          "class": "model_meaning",
+          "prompt": "Powder has a card body, acceptance criteria, proof plan, and relations. The system must judge whether the card is semantically executable or still needs shaping; syntactically complete cards can still be incoherent. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*MODEL\\s*\\nRULE:\\s*MEANING\\s*$" }
+        },
+        {
+          "task_id": "canary-incident-grouping",
+          "class": "model_meaning",
+          "prompt": "Canary receives differently worded error reports and must decide which describe the same underlying operator incident despite different services, stacks, and symptoms. Exact fingerprints have already failed to join them. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*MODEL\\s*\\nRULE:\\s*MEANING\\s*$" }
+        },
+        {
+          "task_id": "landmark-release-synthesis",
+          "class": "model_meaning",
+          "prompt": "Landmark must turn commits, issue titles, and PR descriptions into a concise user-facing explanation of what changed and why it matters. The inputs have inconsistent vocabulary and significance. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*MODEL\\s*\\nRULE:\\s*MEANING\\s*$" }
+        },
+        {
+          "task_id": "glass-report-synthesis",
+          "class": "model_meaning",
+          "prompt": "Glass must synthesize a narrative report from heterogeneous evidence packets and explain the most important pattern to a human operator. No downstream parser branches on the prose. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*MODEL\\s*\\nRULE:\\s*MEANING\\s*$" }
+        },
+        {
+          "task_id": "aesthetic-visual-quality",
+          "class": "model_meaning",
+          "prompt": "Aesthetic must review rendered screenshots for hierarchy, polish, awkward density, and whether the interface feels coherent. Pixel dimensions and contrast checks run separately. Choose the implementation placement for this qualitative review. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*MODEL\\s*\\nRULE:\\s*MEANING\\s*$" }
+        },
+        {
+          "task_id": "cerberus-semantic-review",
+          "class": "model_meaning",
+          "prompt": "Cerberus must inspect a code diff and decide whether a changed abstraction violates the module's intent even though compilation, tests, and linters pass. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*MODEL\\s*\\nRULE:\\s*MEANING\\s*$" }
+        },
+        {
+          "task_id": "memory-engine-memory-extraction",
+          "class": "model_meaning",
+          "prompt": "Memory Engine must read a conversation and identify which statements are durable preferences or decisions rather than jokes, hypotheticals, or transient details. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*MODEL\\s*\\nRULE:\\s*MEANING\\s*$" }
+        },
+        {
+          "task_id": "roster-capability-routing",
+          "class": "model_meaning",
+          "prompt": "Roster must choose a model and harness for a novel lane by reading the task, past capability evidence, cost constraints, and failure modes. No declared exact match exists for the task. Choose the implementation placement for the routing judgment. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*MODEL\\s*\\nRULE:\\s*MEANING\\s*$" }
+        },
+        {
+          "task_id": "crucible-construct-validity",
+          "class": "model_meaning",
+          "prompt": "Crucible must assess whether a proposed corpus and rubric actually measure the named capability rather than a proxy. Mechanical schema validation is already separate. Choose the implementation placement for this assessment. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*MODEL\\s*\\nRULE:\\s*MEANING\\s*$" }
+        },
+        {
+          "task_id": "doomscrum-humor-verdict",
+          "class": "model_meaning",
+          "prompt": "Doomscrum must judge whether a generated script's central joke lands for its intended audience; duration, profanity, and required phrases are checked elsewhere. Choose the implementation placement for whether the joke lands. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*MODEL\\s*\\nRULE:\\s*MEANING\\s*$" }
+        },
+        {
+          "task_id": "todoist-priority-judgment",
+          "class": "model_meaning",
+          "prompt": "A Todoist assistant must read stale tasks, project context, deadlines, and dependencies and recommend which one deserves the operator's attention next. Exact due-date sorting is already available but is insufficient. Choose the implementation placement for the recommendation. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*MODEL\\s*\\nRULE:\\s*MEANING\\s*$" }
+        },
+        {
+          "task_id": "powder-claim-lease",
+          "class": "deterministic_trust",
+          "prompt": "Powder must ensure that only the current claim holder can renew a lease and that the lease expires at an exact timestamp even if an agent argues otherwise. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*DETERMINISTIC\\s*\\nRULE:\\s*TRUST\\s*$" }
+        },
+        {
+          "task_id": "publication-secret-scan",
+          "class": "deterministic_trust",
+          "prompt": "Before a Crucible packet is published, known credential shapes and fields lacking an explicit disclosure decision must always be refused. A model may advise, but cannot waive the rule. Choose the enforcing implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*DETERMINISTIC\\s*\\nRULE:\\s*TRUST\\s*$" }
+        },
+        {
+          "task_id": "path-root-confinement",
+          "class": "deterministic_trust",
+          "prompt": "Crucible must reject absolute paths, parent traversal, and symlink escapes outside an allowed root before reading a spec or artifact. The refusal must fire every time. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*DETERMINISTIC\\s*\\nRULE:\\s*TRUST\\s*$" }
+        },
+        {
+          "task_id": "mint-authorization",
+          "class": "deterministic_trust",
+          "prompt": "Mint must allow or deny a vendor API request from declared actor, capability, scope, quota, and revocation state. A denial cannot become approval because natural-language context sounds persuasive. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*DETERMINISTIC\\s*\\nRULE:\\s*TRUST\\s*$" }
+        },
+        {
+          "task_id": "provider-spend-cap",
+          "class": "deterministic_trust",
+          "prompt": "An eval runner must stop issuing provider requests when the declared dollar budget is exhausted. The cap is an approval boundary and must not depend on a model's judgment of task importance. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*DETERMINISTIC\\s*\\nRULE:\\s*TRUST\\s*$" }
+        },
+        {
+          "task_id": "ci-required-gate",
+          "class": "deterministic_trust",
+          "prompt": "A pull request may merge only when every declared required check has a successful status for the current commit SHA. A reviewer model's confidence cannot substitute for a missing check. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*DETERMINISTIC\\s*\\nRULE:\\s*TRUST\\s*$" }
+        },
+        {
+          "task_id": "canary-health-deadline",
+          "class": "deterministic_consumer",
+          "prompt": "Canary must mark a check timed out when the monotonic deadline is exceeded and persist the exact status code consumed by alerting logic. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*DETERMINISTIC\\s*\\nRULE:\\s*CONSUMER\\s*$" }
+        },
+        {
+          "task_id": "crucible-run-persistence",
+          "class": "deterministic_consumer",
+          "prompt": "Crucible must atomically persist each run and task result into SQLite with stable identifiers so later queries and comparisons can join exact rows. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*DETERMINISTIC\\s*\\nRULE:\\s*CONSUMER\\s*$" }
+        },
+        {
+          "task_id": "atomic-packet-write",
+          "class": "deterministic_consumer",
+          "prompt": "A publication command must write a packet to a temporary file, fsync it, and rename it so consumers see either the complete old packet or complete new packet, never a partial document. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*DETERMINISTIC\\s*\\nRULE:\\s*CONSUMER\\s*$" }
+        },
+        {
+          "task_id": "artifact-schema-version",
+          "class": "deterministic_consumer",
+          "prompt": "A loader must accept exactly the supported artifact schema versions, deserialize required fields, and return a structured error for an unknown version. Downstream code branches on that exact result. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*DETERMINISTIC\\s*\\nRULE:\\s*CONSUMER\\s*$" }
+        },
+        {
+          "task_id": "backup-integrity",
+          "class": "deterministic_consumer",
+          "prompt": "A restore drill must compare cryptographic checksums and open the restored SQLite database successfully before recording the backup as verified. Monitoring code consumes the boolean result. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*DETERMINISTIC\\s*\\nRULE:\\s*CONSUMER\\s*$" }
+        },
+        {
+          "task_id": "comparison-axis-identity",
+          "class": "deterministic_consumer",
+          "prompt": "Crucible must compare two stored config identities field by field and label the result model_delta only when model is the sole changed axis; finding generation branches on that label. Choose the implementation placement. Reply with exactly two lines: PLACEMENT: MODEL or DETERMINISTIC; RULE: MEANING, TRUST, or CONSUMER.",
+          "expectation": { "kind": "regex", "pattern": "(?s-u)^\\s*PLACEMENT:\\s*DETERMINISTIC\\s*\\nRULE:\\s*CONSUMER\\s*$" }
+        }
+      ]
+    }
+  }
+}
