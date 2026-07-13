@@ -150,3 +150,10 @@ Existing Powder ownership:
 - `crucible-safe-publication-contract` and `bench-packet-acceptance-gate`:
   fail-closed publication; and
 - `crucible-seam-agency-consumer-proof`: the end-to-end Bench consumer proof.
+
+The first child of `crucible-runner-artifact-protocol` is now the core-only
+[Runner Exchange v1](runner-exchange-v1.md) request/result contract. It defines
+the identity, authority, limits, evidence, usage/cost, trust, and structured
+error waist, but does not yet adapt or replace the existing Harbor execution
+path. A Harbor coding-agent result becomes evidence under that contract only
+after the bounded process driver and real adapter land.

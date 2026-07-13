@@ -1,0 +1,61 @@
+{
+  "schema_version": "crucible.runner_exchange_request.v1",
+  "exchange_id": "exchange-harbor-001",
+  "task_id": "build-publication-assistant",
+  "adapter": {
+    "name": "harbor",
+    "version": "0.13.1",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "candidate": {
+    "kind": "agent",
+    "harness": "codex",
+    "harness_version": "0.144.1",
+    "model": {
+      "provider": "openai",
+      "name": "gpt-5.6-sol"
+    },
+    "prompt_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "reasoning_effort": "high",
+    "toolset_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "capabilities": ["workspace_edit", "transcript", "usage"],
+  "input": {
+    "workspace": "workspace",
+    "instruction": "instruction.md",
+    "context": ["context/product.md"],
+    "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "authority": {
+    "filesystem_roots": ["."],
+    "network": "deny",
+    "allowed_hosts": [],
+    "credential_refs": ["ref:openrouter/default"]
+  },
+  "limits": {
+    "timeout_ms": 180000,
+    "max_output_bytes": 1048576,
+    "cpu_millicores": 1000,
+    "memory_mb": 512,
+    "storage_mb": 1024
+  },
+  "provenance": {
+    "repo": "bench",
+    "git_sha": "36515473b77cbed2a3a8b9ab7a4182f0cc86b4d2",
+    "invocation_id": "run-001"
+  },
+  "trust": {
+    "required_evidence_kinds": ["final_state", "transcript"],
+    "require_transcript": true,
+    "require_usage": true,
+    "require_cost": true,
+    "require_response_model": true
+  },
+  "adapter_payload": {
+    "task_ref": "build-publication-assistant",
+    "agent_import_path": "harbor.agents.codex:Codex"
+  },
+  "future_hint": {
+    "safe_to_ignore": true
+  }
+}
