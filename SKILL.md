@@ -100,7 +100,7 @@ cargo run -p crucible -- author --interactive --out evals/my-eval-v0.json
 Covers `key_recall` (over a Daedalus `trials.jsonl` corpus, `--key-recall-*`
 flags) and `prompt_benchmark` (`--prompt-*` flags, one authored task per
 invocation — hand-edit the `tasks` array or re-run `author` for additional
-tasks). `agentic_judge` authoring is a documented follow-up (backlog.d/):
+tasks). `agentic_judge` authoring is a documented Powder follow-up:
 its judge-gaming canary and calibration-probe shape need a richer prompt
 flow than this pass's flag/stdin surface covers well. When no `--grader` is
 named, one canonical grader of the chosen runner's required kind is added

@@ -90,6 +90,10 @@ known_non_secret_hit() {
 # target, and an empty array here would silently pass the gate.
 tracked_files=()
 while IFS= read -r -d '' f; do
+  # A pending deletion is still present in the index but has no working-tree
+  # content to scan. Skip it; committed-history mode below still covers the
+  # last committed bytes.
+  [[ -f "$f" ]] || continue
   tracked_files+=("$f")
 done < <(git ls-files -z)
 

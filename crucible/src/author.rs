@@ -18,7 +18,7 @@
 //! `pr-review-key-recall-v0.json` uses) and `prompt_benchmark` (one authored
 //! task per invocation; re-run `author` for additional tasks, or hand-edit
 //! the `tasks` array afterward — this stays a single-task wedge on purpose).
-//! `agentic_judge` authoring is a documented follow-up (`backlog.d/`): its
+//! `agentic_judge` authoring is a documented Powder follow-up: its
 //! judge-gaming canary and calibration-probe shape need a richer prompt flow
 //! than this pass's flag/stdin surface covers well.
 

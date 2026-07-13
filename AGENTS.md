@@ -26,7 +26,7 @@
   persists to a SQLite ledger
   (`runs/local/crucible-runs.sqlite`) queryable via `crucible runs
   list/show/compare/history/pivot` (CLI + MCP) — config identity now carries
-  explicit `harness`/`tool_allowlist` fields (`backlog.d/027-*`), `history`
+  explicit `harness`/`tool_allowlist` fields (Powder card `crucible-027`), `history`
   is one config's score trend over time, `pivot` is one benchmark's latest
   run per model narrowable to one harness. **Config-identity axes**
   (`crucible-973`, the complete set, documented once here rather than only
@@ -59,7 +59,7 @@
   runner refuses (not silently ignores) an unsupported `aggregation`,
   `uncertainty.method`/`confidence`, or a missing grader of the kind the
   runner's family actually executes. The agentic judge tier
-  (`backlog.d/012-*`) is real: a live judge call, a `CalibrationRecord`
+  (Powder card `crucible-012`) is real: a live judge call, a `CalibrationRecord`
   measuring judge-vs-deterministic agreement on labeled calibration tasks, and
   a judge-gaming canary that hard-refuses a run (no evidence persisted) if the
   judge rubber-stamps a known-bad candidate. The judge protocol is
@@ -103,13 +103,13 @@
   Feb 2026 infrastructure-noise finding (container CPU/RAM headroom-vs-limit
   alone produced a 6pp swing on Terminal-Bench 2.0) could plausibly explain
   it. The agentic-judge runner also
-  persists a `Trace` (`crucible-core::trace`, `backlog.d/030-*`) — an ordered
+  persists a `Trace` (`crucible-core::trace`, Powder card `crucible-030`) — an ordered
   judge_call/verdict_parsed/calibration_check step sequence pointed to from
   `run_records.trace_path` and surfaced via `runs list/show`/MCP the same way
   `evidence_path`/`spec_path` are, so a failed or UNKNOWN-verdict run is
   inspectable without re-running it; `prompt_benchmark`/`key_recall` are not
   yet wired to emit one. The adjudication panel has a real
-  writeback loop (`adjudication-panel --serve`, `backlog.d/005-*`) — a small
+  writeback loop (`adjudication-panel --serve`, Powder card `crucible-005`) — a small
   local HTTP server that persists Keep/Nit/Wrong/Noise taps as
   `crucible.label.v1` labels through the same `apply_label` path
   `adjudicate --apply` uses. `crucible author` (crucible-942) assembles a
@@ -123,7 +123,7 @@
   projects a Promptfoo-style YAML config onto the `prompt_benchmark` runner,
   reporting (never silently dropping) any test case it cannot map cleanly.
   See `SKILL.md` for the exact commands. Do not invent a broad platform stack
-  ahead of real usage; open work lives in `backlog.d/` (deterministic grader
+  ahead of real usage; open work lives in Powder (deterministic grader
   dispatch beyond the required-kind check, judge-calibration model-family
   separation, baseline comparison wiring, the phone-adjudication epic's
   remaining UI polish, `agentic_judge` authoring in `crucible author`, an MCP
@@ -136,7 +136,7 @@
   selected execution, calibration, run records, judging, reporting, and export.
   Threshold/Daedalus runs Karpathy-style optimization loops that consume
   Crucible's trusted evals and run records. Eval-authoring machinery migrates
-  from Daedalus into Crucible over time (`backlog.d/007-*`).
+  from Daedalus into Crucible over time (Powder card `crucible-007`).
 - Do not reinvent eval infrastructure. Borrow commodity execution and ordinary
   grading where they plug in — the existing Daedalus arenas/corpus/Harbor format
   and Cerberus for the code-review wedge; frameworks like Promptfoo or Inspect AI
@@ -155,8 +155,8 @@
   Execution and commodity grading are borrowed, not rebuilt.
 - Exports align to the consumer's contract (the Daedalus Harbor task-directory
   format for code-review), not a Crucible-invented schema.
-- Backlog: active work lives in `backlog.d/NNN-*.md`; closed work moves to
-  `backlog.d/_done/`.
+- Work ledger: active and completed work lives in deployed Powder under
+  `repo=crucible`; repository-local ticket directories are forbidden.
 - Verification skill: `SKILL.md` is the cold-agent command contract — the
   three built-in eval receipts, declared-spec runs across all three runner
   kinds, `crucible validate`, the SQLite run ledger queries, the headless
@@ -185,7 +185,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 Run it before pushing and wire it into CI unchanged. Do not weaken it to get
 green (no `--no-verify`, no removed `-D warnings`, no skipped tests). As the
 eval surface lands, extend the gate with Harbor export validation and keep this
-section current. See `backlog.d/006-agent-readiness-machine-surface.md`.
+section current. See Powder card `crucible-006`.
 
 ### Content & secret policy
 
