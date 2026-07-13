@@ -151,7 +151,7 @@ fn import_harbor(args: &HarborImportArgs) -> anyhow::Result<HarborImportReport> 
         .clone()
         .unwrap_or_else(|| "harbor-import".to_string());
 
-    let spec = EvalSpec {
+    let mut spec = EvalSpec {
         schema_version: EVAL_SPEC_SCHEMA.to_string(),
         id,
         title: None,
@@ -190,6 +190,7 @@ fn import_harbor(args: &HarborImportArgs) -> anyhow::Result<HarborImportReport> 
     };
 
     let out_path = resolve_out_path(args.out.as_deref(), &spec);
+    rebase_task_dirs(&mut spec, &out_path)?;
     if out_path.exists() && !args.force {
         anyhow::bail!(
             "refusing to overwrite existing spec at {} (pass --force to overwrite)",
@@ -231,6 +232,56 @@ fn default_id(dir: &Path) -> String {
     format!("harbor-{slug}")
 }
 
+fn rebase_task_dirs(spec: &mut EvalSpec, out_path: &Path) -> anyhow::Result<()> {
+    let out_parent = out_path
+        .parent()
+        .context("Harbor import output path has no parent directory")?;
+    let out_parent = std::path::absolute(out_parent)
+        .with_context(|| format!("resolving output directory {}", out_parent.display()))?;
+    let Some(RunnerSpec {
+        corpus: CorpusSpec::HarborTasks { tasks, .. },
+        ..
+    }) = spec.runner.as_mut()
+    else {
+        return Ok(());
+    };
+
+    for task in tasks {
+        let absolute = std::path::absolute(&task.task_dir)
+            .with_context(|| format!("resolving Harbor task path {}", task.task_dir))?;
+        task.task_dir = relative_path(&out_parent, &absolute)
+            .unwrap_or(absolute)
+            .display()
+            .to_string();
+    }
+    Ok(())
+}
+
+fn relative_path(base: &Path, target: &Path) -> Option<PathBuf> {
+    let base_components: Vec<_> = base.components().collect();
+    let target_components: Vec<_> = target.components().collect();
+    let common = base_components
+        .iter()
+        .zip(&target_components)
+        .take_while(|(left, right)| left == right)
+        .count();
+    if common == 0 {
+        return None;
+    }
+
+    let mut relative = PathBuf::new();
+    for _ in &base_components[common..] {
+        relative.push("..");
+    }
+    for component in &target_components[common..] {
+        relative.push(component.as_os_str());
+    }
+    if relative.as_os_str().is_empty() {
+        relative.push(".");
+    }
+    Some(relative)
+}
+
 /// Scan `dir` for Harbor task subdirectories and project each into a
 /// [`HarborTaskSpec`]. Total and honest: every entry in `dir` is either
 /// imported or reported in the returned skip list, with why — never silently
@@ -238,7 +289,10 @@ fn default_id(dir: &Path) -> String {
 /// declares a `[task]` section; this is a lightweight sanity check, not a
 /// full TOML schema validation (Harbor itself validates the file's full
 /// shape at `harbor run` time) — deliberately no new TOML-parsing dependency
-/// for a check this narrow.
+/// for a check this narrow. Harbor 0.13's generated task format has a top-level
+/// `version` plus `[verifier]`, `[agent]`, and `[environment]` sections; older
+/// local tasks used a `[task]` section. Recognize both without pretending this
+/// lightweight importer is Harbor's schema validator.
 fn project_harbor_dir(
     dir: &Path,
 ) -> anyhow::Result<(Vec<HarborTaskSpec>, Vec<SkippedEntry>, usize)> {
@@ -284,10 +338,10 @@ fn project_harbor_dir(
                 continue;
             }
         };
-        if !toml_text.contains("[task]") {
+        if !looks_like_harbor_task_toml(&toml_text) {
             skipped.push(SkippedEntry {
                 locator,
-                reason: "task.toml does not declare a [task] section".to_string(),
+                reason: "task.toml matches neither the legacy [task] shape nor the current version + [verifier]/[agent]/[environment] shape".to_string(),
             });
             continue;
         }
@@ -297,6 +351,34 @@ fn project_harbor_dir(
         });
     }
     Ok((tasks, skipped, declared_entry_count))
+}
+
+fn looks_like_harbor_task_toml(text: &str) -> bool {
+    let mut has_version = false;
+    let mut has_verifier = false;
+    let mut has_agent = false;
+    let mut has_environment = false;
+
+    for raw_line in text.lines() {
+        let line = raw_line.split('#').next().unwrap_or_default().trim();
+        if line == "[task]" {
+            return true;
+        }
+        if line
+            .split_once('=')
+            .is_some_and(|(key, value)| key.trim() == "version" && !value.trim().is_empty())
+        {
+            has_version = true;
+        }
+        match line {
+            "[verifier]" => has_verifier = true,
+            "[agent]" => has_agent = true,
+            "[environment]" => has_environment = true,
+            _ => {}
+        }
+    }
+
+    has_version && has_verifier && has_agent && has_environment
 }
 
 fn print_import_report(report: &HarborImportReport) {
@@ -367,6 +449,34 @@ mod tests {
     }
 
     #[test]
+    fn imports_the_current_harbor_generated_task_shape() {
+        let root = temp_dir("import-current-shape");
+        write_task_dir(
+            &root,
+            "current-task",
+            r#"version = "1.0"
+
+[metadata]
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 900.0
+
+[environment]
+build_timeout_sec = 600.0
+"#,
+        );
+
+        let (tasks, skipped, declared) = project_harbor_dir(&root).unwrap();
+        assert_eq!(declared, 1);
+        assert!(skipped.is_empty());
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].task_id, "current-task");
+    }
+
+    #[test]
     fn skips_a_non_directory_entry() {
         let root = temp_dir("import-file");
         std::fs::write(root.join("README.md"), "not a task").unwrap();
@@ -394,7 +504,22 @@ mod tests {
         let (tasks, skipped, _) = project_harbor_dir(&root).unwrap();
         assert_eq!(tasks.len(), 0);
         assert_eq!(skipped.len(), 1);
-        assert!(skipped[0].reason.contains("[task]"));
+        assert!(skipped[0].reason.contains("current"));
+    }
+
+    #[test]
+    fn current_shape_requires_all_execution_sections() {
+        let root = temp_dir("import-incomplete-current-shape");
+        write_task_dir(
+            &root,
+            "incomplete-task",
+            "version = \"1.0\"\n[verifier]\n[agent]\n",
+        );
+
+        let (tasks, skipped, _) = project_harbor_dir(&root).unwrap();
+        assert!(tasks.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].reason.contains("[environment]"));
     }
 
     #[test]
@@ -448,5 +573,21 @@ mod tests {
         assert_eq!(config.agent, "oracle");
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].task_id, "crucible-smoke");
+        let resolved_task = out_path.parent().unwrap().join(&tasks[0].task_dir);
+        assert!(
+            resolved_task.join("task.toml").is_file(),
+            "imported task path must resolve from the generated spec: {}",
+            resolved_task.display()
+        );
+    }
+
+    #[test]
+    fn relative_path_rebases_a_sibling_tree_without_machine_specific_prefixes() {
+        let base = Path::new("/workspace/bench/evals");
+        let target = Path::new("/workspace/bench/tasks/one");
+        assert_eq!(
+            relative_path(base, target).unwrap(),
+            PathBuf::from("../tasks/one")
+        );
     }
 }
