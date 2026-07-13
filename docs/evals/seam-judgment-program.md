@@ -4,13 +4,19 @@ Status: research and design, 2026-07-13
 
 ## The decision
 
-This program decides when an agent configuration may propose or implement
-software boundaries without mandatory seam-placement review. It measures one
-capability:
+This program decides when an agent configuration may design or implement an
+AI-bearing feature without mandatory seam-placement review. Its primary
+capability is:
 
-> Given a real, imperfect implementation, can the agent put semantic judgment,
-> declared variability, and deterministic enforcement in the right places and
-> leave a working system with no boundary inversion?
+> Given a compact repository and a product-level feature request, can the agent
+> recognize whether and where model-native judgment is necessary, implement it
+> there, keep exact mechanisms deterministic, and leave a working system with
+> no boundary inversion?
+
+Repairing an existing inversion, extending an established architecture, and
+critiquing a proposed patch are related but distinct capabilities. They belong
+in the program as separate task modes and separate rates; none is a proxy for
+greenfield feature construction.
 
 The score must be able to change model routing, prompt choice, harness choice,
 or primitive composition. A broad table that changes several of those axes at
@@ -45,16 +51,59 @@ The productive SCAMPER transformations were:
   from real corrective history.
 - **Eliminate:** remove the doctrine recital, answer labels, project names,
   and clues that name the mutation.
-- **Reverse:** instead of asking “model or deterministic?”, give the agent a
-  plausible wrong-layer implementation and ask it to repair the system.
+- **Reverse:** sometimes give the agent a plausible wrong-layer implementation
+  and ask it to repair the system.
+- **Combine:** cross feature-construction tasks with negative controls where a
+  model would be needless, so “always use AI” and “never use AI” both fail.
 
 This produces two related evals, not one compromised hybrid:
 
 1. **Seam diagnostic:** a cheap prompt benchmark for task bring-up, prompt
    sensitivity, and broad model probing. It never supports agent-routing claims.
-2. **Seam agency:** a sandboxed patch benchmark where agents inspect context,
-   change code, and face executable verification. This is the decision-grade
-   benchmark.
+2. **Seam agency:** sandboxed microrepository benchmarks where agents build,
+   extend, repair, or critique features and face mode-appropriate verification.
+   Greenfield feature construction is the primary decision-grade benchmark;
+   the modes retain separate rates.
+
+## Task modes and claims
+
+Do not blend these modes into one headline percentage:
+
+| Mode | Fresh task | What a pass establishes |
+|---|---|---|
+| **Build** | Implement a new product feature from behavioral requirements in a compact, neutral repository. | The agent can discover whether AI is needed and construct the boundary without being shown the answer. This is the primary benchmark. |
+| **Extend** | Add a case or capability to an existing AI-bearing system whose pattern is visible but incomplete. | The agent can preserve or deepen a sound boundary rather than growing branch mass or bypassing gates. |
+| **Repair** | Correct a plausible implementation that works superficially but places judgment or enforcement in the wrong layer. | The agent can detect and reverse a boundary inversion. |
+| **Critique** | Review a candidate design or patch and produce a structured diagnosis and recommendation. | The agent recognizes seam quality. It does not establish that the agent can implement the feature. |
+
+Start the decision-grade corpus at roughly 50% Build, 20% Extend, 20% Repair,
+and 10% Critique. Report per-mode rates and intervals. Reweight only from an
+explicit target-workload distribution, never to improve a leaderboard result.
+
+### Outcome taxonomy
+
+The benchmark must distinguish more than pass/fail during analysis:
+
+- **well-factored AI feature:** model-native judgment is causally used where
+  semantics require it; declarations carry variability; deterministic code
+  owns exact enforcement;
+- **missing AI:** the feature is omitted, refused, or implemented with keyword,
+  regex, similarity, or branch heuristics where semantic judgment is required;
+- **AI-washed:** a model call exists, but its result is decorative while the
+  real semantic decision remains deterministic or hard-coded;
+- **over-determinized AI:** the model is used, but rich meaning is prematurely
+  collapsed into brittle enums, regexes, exhaustive branches, or hand-built
+  scoring machinery;
+- **under-enforced AI:** raw or weakly parsed model output controls policy,
+  authorization, persistence, filesystem effects, or exact state transitions;
+- **unnecessary AI:** a model is added to a task that is exact and fully
+  deterministic;
+- **functional wrong seam:** visible examples pass, but the architecture fails
+  held-out semantic, safety, or extension mutations;
+- **nonfunctional:** the requested feature or ordinary regressions fail.
+
+These classes explain failures. The implementation headline remains binary and
+requires both product behavior and an acceptable boundary.
 
 ## The three-layer model
 
@@ -69,14 +118,16 @@ therefore scored along three dimensions:
 - **Enforcement:** policy, persistence, approval, parsing, limits, and other
   must-fire behavior remain deterministic around model output.
 
-Headline success is still binary: the repaired system passes every required
-observable invariant. Dimension scores explain why configurations fail; they
-do not average a policy bypass into a partial pass.
+Headline success is still binary: the completed feature passes every required
+observable invariant and does not realize a forbidden seam outcome. Dimension
+scores explain why configurations fail; they do not average a policy bypass or
+fake-AI implementation into a partial pass.
 
 ## Corpus architecture
 
 Build 36–48 decision tasks only after a seven-task development set proves the
-task and verifier shape. Balance by seam conflict, not by a toy output label:
+task and verifier shape. Cross the task modes above with seam conflicts; do not
+pool their rates or balance by a toy output label:
 
 | Family | What it tests |
 |---|---|
@@ -88,15 +139,23 @@ task and verifier shape. Balance by seam conflict, not by a toy output label:
 | Pure deterministic control | Timeout, lease, checksum, authorization, or atomicity; adding a model is the defect. |
 | Mixed decomposition | One requirement needs all three layers. These are the hardest and most decision-relevant tasks. |
 
+At least one quarter of Build and Extend tasks are negative controls that need
+no model. Positive semantic tasks include lexical traps and paraphrases so a
+regex-heavy implementation cannot masquerade as intelligence. Mixed tasks
+require both genuine model-native behavior and deterministic gates, catching
+both AI avoidance and indiscriminate AI use.
+
 An `INSUFFICIENT_INFORMATION` class belongs in the cheap diagnostic set. Patch
 tasks use it only when the environment supports an observable clarification
 outcome; otherwise hidden requirements would make the task broken.
 
 ### Source extraction
 
-1. Deterministically collect the merged corrective diff, parent snapshot,
-   card/issue, review comments, and final tests.
-2. Use a model—not keyword filters—to screen for placement corrections.
+1. Deterministically collect merged AI-feature additions and corrective diffs,
+   their parent snapshots, product requests/cards, review comments, and final
+   tests.
+2. Use a model—not keyword filters—to screen for consequential placement
+   decisions or corrections.
 3. Have a human curator confirm the causal seam and write a private provenance
    receipt.
 4. Slice the smallest 100–300-line buildable module.
@@ -105,6 +164,13 @@ outcome; otherwise hidden requirements would make the task broken.
 6. Remove original history, identifiers, network access, and original tests
    from the agent sandbox.
 7. Keep every variant from one source incident in the same corpus cluster.
+
+Build tasks start from the pre-feature parent and a reconstructed behavioral
+request; they never inherit the eventual implementation or a planted defect.
+Extend tasks start from a sound partial feature. Repair tasks alone start from a
+known wrong-layer candidate. Critique tasks may use blinded real or mutated
+patches. Track source mode so corrective history cannot silently dominate the
+greenfield distribution.
 
 Initial sources should include Gazette semantic heuristics, Crucible
 publication, path confinement, Roster capability routing, Powder
@@ -128,6 +194,8 @@ independent tasks.
 Every task has a private gold packet:
 
 - source receipt and causal summary;
+- task mode and the capability claim that mode supports;
+- AI-necessity ruling: required, unnecessary, or mixed, with expert rationale;
 - observable invariants and forbidden outcomes;
 - reference patch plus one structurally different acceptable patch;
 - hidden verifier and mutation suites;
@@ -143,6 +211,12 @@ plausible wrong-layer implementations. This directly addresses recent coding-
 benchmark audits that found underspecified prompts, overly strict tests, and
 low-coverage graders can dominate the result.
 
+For Build tasks, the visible request states product behavior and supplied
+interfaces, not “use an LLM here” or the preferred architecture. Experts must
+nevertheless agree that the task is solvable from the repository and request.
+The reference set includes at least one credible model-native implementation
+for AI-required tasks and one model-free implementation for negative controls.
+
 ## Verifier ladder
 
 ### 1. Deterministic headline
@@ -154,6 +228,13 @@ low-coverage graders can dominate the result.
 - declaration extension without control-flow edits where applicable;
 - exact operations remain model-independent;
 - bounded time and resources.
+
+For AI-required Build/Extend tasks, instrument the supplied model boundary and
+verify that semantic behavior changes appropriately under controlled model
+responses; a decorative call cannot earn credit. For model-unnecessary tasks,
+assert that the feature succeeds when model access is absent. Do not mandate a
+specific SDK, prompt wording, call count, or internal trajectory unless it is
+itself a stated product constraint.
 
 Grade the final state, not a prescribed tool sequence.
 
@@ -196,26 +277,31 @@ The suite kills applicable mutations that:
 
 Build these before a broad matrix:
 
-1. **Publication boundary — mixed seam.** Starter asks a model whether fields
-   are safe, then writes its approved object. The repair must allow semantic
-   disclosure advice while deterministically refusing credential shapes and
-   undeclared fields, validating the packet, and writing atomically.
-2. **Incident grouping — semantic + exact consumer.** Replace token overlap
-   with meaning-aware comparison; validate stable group IDs, persist
-   idempotently, and refuse malformed output.
-3. **Provider routing — declaration + judgment + gate.** Replace provider-name
-   branches with declared capabilities; let a model rank eligible candidates;
-   enforce budget and required-tool filters before selection.
-4. **Comparison attribution — declaration + deterministic.** Add a new identity
-   axis through declaration and exact comparison without another special-case
-   branch.
-5. **Memory extraction — pure semantic control.** Remove keyword heuristics
-   without inventing a schema or policy engine that destroys context.
-6. **Claim lease — pure deterministic control.** Repair exact lease ownership
-   and expiry without calling a model.
-7. **Operator action router — mixed seam.** Model classifies the requested
-   action and missing context; deterministic approval/persistence boundaries
-   prevent send, publish, buy, or destructive effects without authority.
+1. **Build: publication assistant — mixed seam.** Add a feature that turns a
+   natural-language draft and declared schema into a publishable packet. It
+   needs semantic disclosure judgment, while credential-shape refusal,
+   undeclared-field rejection, validation, and atomic writing remain exact.
+2. **Build: incident grouping — semantic + exact consumer.** Add grouping for
+   paraphrased incident reports, including high-overlap nonmatches and
+   low-overlap matches. Stable group IDs, idempotent persistence, and malformed
+   output handling remain deterministic.
+3. **Build: claim lease — pure deterministic negative control.** Add exact lease
+   ownership, renewal, and expiry behavior. Any model dependency is a defect.
+4. **Extend: provider routing — declaration + judgment + gate.** Add a provider
+   family to a declared capability system, preserve semantic ranking of
+   eligible candidates, and enforce budget and required-tool filters before
+   selection.
+5. **Extend: comparison attribution — declaration + deterministic negative
+   control.** Add a new identity axis through declaration and exact comparison
+   without a special-case branch or model call.
+6. **Repair: memory extraction — pure semantic control.** Replace keyword
+   heuristics with meaning-aware extraction without inventing a schema or
+   policy engine that destroys context.
+7. **Critique: operator action router — mixed seam.** Diagnose candidate
+   implementations in which semantic action interpretation, approval,
+   persistence, and send/publish/buy/destructive boundaries are placed in
+   different layers. Require concrete consequences and a repair sketch, but do
+   not count this rate as implementation ability.
 
 Qualification order: reference patches, acceptable alternatives, named
 mutants, then agent attempts. Do not use agent scores to debug an unqualified
@@ -271,9 +357,11 @@ $10.
 ### Stage E — real harness probe
 
 Hold model, task snapshot, prompt, resource envelope, tools, and budget fixed.
-Begin with 12 diagnostic patch tasks across raw API, Pi bare, Goose minimal,
-and OpenCode pure. Pi is the first primitive-ablation harness because its CLI
-can disable context, extensions, skills, and prompt templates independently.
+Begin with 12 diagnostic microrepository tasks—six Build, two Extend, two
+Repair, and two Critique—across raw API, Pi bare, Goose minimal, and OpenCode
+pure. Report modes separately; this pilot composition is not a population
+weight. Pi is the first primitive-ablation harness because its CLI can disable
+context, extensions, skills, and prompt templates independently.
 Run every harness/task pair three times (`k = 3`), report pass@3 and pass^3,
 and treat the source task—not each trial—as the independent unit. Before
 launch, price the maximum input, output, and supported reasoning allowance for
