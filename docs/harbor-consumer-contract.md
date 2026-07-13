@@ -44,8 +44,10 @@ proportion aggregation, and Wilson 95% uncertainty. Validation does not build
 the container or run the verifier.
 
 At execution, Crucible requires `harbor --version`, a working `docker info`,
-`$HOME`, and task paths under `$HOME`. It invokes one synchronous process per
-task:
+`$HOME`, and both task and run-output paths under `$HOME`. Colima exposes that
+tree to its Docker VM by default; Crucible refuses either path outside it before
+spawning Harbor, rather than persisting a misleading ordinary 0/N run when
+Harbor cannot collect `reward.txt`. It invokes one synchronous process per task:
 
 ```text
 harbor run -p <task_dir> -a <agent> -o <task_jobs_dir> --job-name run -y
