@@ -56,7 +56,7 @@ harbor run -p <task_dir> -a <agent> -o <task_jobs_dir> --job-name run -y
 When declared, `model` adds `-m <model>`. Crucible applies a wall-clock timeout
 to the whole subprocess. Each task gets a cleared, disjoint job directory;
 Harbor and Docker own container teardown and the in-container sandbox. The
-mechanical directory guarantees and their limits are in [AGENTS.md](../AGENTS.md).
+mechanical directory guarantees and their limits are in [docs/AGENTS.md](AGENTS.md).
 
 The `HarborRunConfig` currently applies only `agent`, `model`, and
 `job_timeout_ms`. A declared `resource_envelope` is persisted for comparison
