@@ -61,9 +61,9 @@ the **directory layer** around every `harbor run` invocation:
   clears any stale contents before every run — guarantee 1 and half of
   guarantee 2 (no *own-slot* leftovers survive into the next trial that
   reuses the slot).
-- `require_under_home` refuses a `task_dir` outside `$HOME` before any
-  subprocess spawns, so a misconfigured task can't silently resolve to a
-  path Colima won't even mount.
+- `require_harbor_mount_under_home` refuses either the run output directory or
+  a `task_dir` outside `$HOME` before any subprocess spawns, so a misconfigured
+  path can't silently target a location Colima won't even mount.
 
 Guarantees 3 and 4 (network scope, container lifecycle) are Harbor's/
 Docker's to provide; Crucible's contribution there is `check_harbor_available`

@@ -1,0 +1,55 @@
+{
+  "schema_version": "crucible.runner_exchange_request.v1",
+  "exchange_id": "exchange-generic-001",
+  "task_id": "summarize-contract",
+  "adapter": {
+    "name": "stdio-example",
+    "version": "1.0.0",
+    "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "candidate": {
+    "kind": "model",
+    "harness": "raw-api",
+    "harness_version": "1",
+    "model": {
+      "provider": "example-provider",
+      "name": "example-model"
+    },
+    "prompt_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "capabilities": ["text_output", "usage"],
+  "input": {
+    "workspace": "workspace",
+    "instruction": "task.txt",
+    "context": [],
+    "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "authority": {
+    "filesystem_roots": ["."],
+    "network": "allowlist",
+    "allowed_hosts": ["api.example.invalid"],
+    "credential_refs": ["ref:example/default"]
+  },
+  "limits": {
+    "timeout_ms": 30000,
+    "max_output_bytes": 65536,
+    "cpu_millicores": 500,
+    "memory_mb": 256,
+    "storage_mb": 256
+  },
+  "provenance": {
+    "repo": "public-example",
+    "git_sha": "0123456789abcdef0123456789abcdef01234567",
+    "invocation_id": "example-run-1"
+  },
+  "trust": {
+    "required_evidence_kinds": ["final_state"],
+    "require_transcript": false,
+    "require_usage": true,
+    "require_cost": true,
+    "require_response_model": true
+  },
+  "adapter_payload": {
+    "endpoint_protocol": "openai-compatible"
+  }
+}

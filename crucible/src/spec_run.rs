@@ -590,12 +590,28 @@ fn run_harbor_task(
     if tasks.is_empty() {
         anyhow::bail!("harbor_tasks corpus must declare at least one task");
     }
+    require_harbor_mount_under_home("job output directory", out)?;
+    let prepared_tasks = tasks
+        .iter()
+        .map(|task| {
+            let task_dir = resolve_spec_path(spec_path, &task.task_dir);
+            if !task_dir.exists() {
+                anyhow::bail!(
+                    "harbor task {:?} declares task_dir {} which does not exist",
+                    task.task_id,
+                    task_dir.display()
+                );
+            }
+            require_harbor_mount_under_home("task_dir", &task_dir)?;
+            Ok((task, task_dir))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
     check_harbor_available()?;
 
     let jobs_root = out.join("harbor-jobs");
     let mut task_results = Vec::with_capacity(tasks.len());
-    for task in tasks {
-        task_results.push(run_one_harbor_task(spec_path, config, task, &jobs_root)?);
+    for (task, task_dir) in prepared_tasks {
+        task_results.push(run_one_harbor_task(config, task, &task_dir, &jobs_root)?);
     }
 
     let passed = task_results.iter().filter(|result| result.passed).count() as u64;
@@ -669,19 +685,23 @@ fn check_harbor_available() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Refuse a task directory outside `$HOME`: Colima's default configuration
-/// only bind-mounts `$HOME` into its Docker VM, so a task directory outside it
-/// resolves as empty inside the container and Harbor fails with
-/// `RewardFileNotFoundError` — a confusing failure far from its real cause.
-/// Caught here, before any subprocess spawns.
-fn require_under_home(resolved: &Path) -> anyhow::Result<()> {
+/// Refuse a Harbor bind-mount source outside `$HOME`: Colima's default
+/// configuration only exposes `$HOME` to its Docker VM. A task or job-output
+/// directory elsewhere resolves as empty inside the container and Harbor can
+/// persist an ordinary-looking zero-score `RewardFileNotFoundError` run — a
+/// measurement failure far from its real cause. Caught before any subprocess
+/// spawns.
+fn require_harbor_mount_under_home(kind: &str, resolved: &Path) -> anyhow::Result<()> {
     let home = std::env::var("HOME").context(
         "harbor_task runner requires $HOME to be set (Colima mounts $HOME, not arbitrary paths)",
     )?;
     let home = canonicalize_existing(Path::new(&home));
+    let resolved = std::path::absolute(resolved)
+        .with_context(|| format!("resolving Harbor {kind} {}", resolved.display()))?;
+    let resolved = canonicalize_existing(&resolved);
     if !resolved.starts_with(&home) {
         anyhow::bail!(
-            "harbor task_dir {} resolves outside $HOME ({}); Colima only bind-mounts $HOME into its Docker VM, so a task directory elsewhere fails inside the container with RewardFileNotFoundError — move the task (and this checkout) under $HOME",
+            "harbor {kind} {} resolves outside $HOME ({}); Colima only bind-mounts $HOME into its Docker VM, so this path can fail inside the container with RewardFileNotFoundError — choose a path under $HOME",
             resolved.display(),
             home.display()
         );
@@ -727,21 +747,11 @@ fn prepare_harbor_job_dir(jobs_root: &Path, task_id: &str) -> anyhow::Result<std
 }
 
 fn run_one_harbor_task(
-    spec_path: &Path,
     config: &HarborRunConfig,
     task: &HarborTaskSpec,
+    task_dir: &Path,
     jobs_root: &Path,
 ) -> anyhow::Result<HarborTaskResult> {
-    let task_dir = resolve_spec_path(spec_path, &task.task_dir);
-    if !task_dir.exists() {
-        anyhow::bail!(
-            "harbor task {:?} declares task_dir {} which does not exist",
-            task.task_id,
-            task_dir.display()
-        );
-    }
-    require_under_home(&task_dir)?;
-
     let jobs_dir = jobs_root.join(&task.task_id);
     let job_dir = prepare_harbor_job_dir(jobs_root, &task.task_id)?;
 
@@ -749,7 +759,7 @@ fn run_one_harbor_task(
     command
         .arg("run")
         .arg("-p")
-        .arg(&task_dir)
+        .arg(task_dir)
         .arg("-a")
         .arg(&config.agent)
         .arg("-o")
@@ -3271,18 +3281,60 @@ mod tests {
     }
 
     #[test]
-    fn require_under_home_accepts_a_path_under_home() {
+    fn harbor_mount_preflight_accepts_task_and_output_paths_under_home() {
         let home = std::env::var("HOME").expect("HOME must be set to run this test");
         let under_home = Path::new(&home).join("crucible-harbor-test-marker-that-need-not-exist");
-        // require_under_home only checks path containment via prefix
-        // comparison against the canonicalized $HOME, not existence.
-        assert!(require_under_home(&under_home).is_ok());
+        assert!(require_harbor_mount_under_home("task_dir", &under_home).is_ok());
+        assert!(require_harbor_mount_under_home("job output directory", &under_home).is_ok());
     }
 
     #[test]
-    fn require_under_home_refuses_a_path_outside_home() {
-        let err = require_under_home(Path::new("/etc/definitely-not-under-home")).unwrap_err();
-        assert!(err.to_string().contains("$HOME") || err.to_string().contains("Colima"));
+    fn harbor_mount_preflight_refuses_task_and_output_paths_outside_home() {
+        for kind in ["task_dir", "job output directory"] {
+            let err =
+                require_harbor_mount_under_home(kind, Path::new("/etc/definitely-not-under-home"))
+                    .unwrap_err();
+            assert!(err.to_string().contains(kind));
+            assert!(err.to_string().contains("outside $HOME"));
+            assert!(err.to_string().contains("RewardFileNotFoundError"));
+        }
+    }
+
+    #[test]
+    fn harbor_runner_refuses_an_outside_home_output_before_cli_preflight() {
+        let mut spec = minimal_spec(None, "harbor-mount-preflight");
+        spec.graders = crucible_core::GraderManifest {
+            graders: vec![crucible_core::Grader {
+                id: "harbor_verifier".to_string(),
+                kind: GraderKind::Deterministic,
+            }],
+        };
+        let runner = RunnerSpec {
+            kind: RunnerKind::HarborTask,
+            corpus: CorpusSpec::HarborTasks {
+                config: HarborRunConfig {
+                    agent: "oracle".to_string(),
+                    model: None,
+                    job_timeout_ms: None,
+                    resource_envelope: None,
+                },
+                tasks: vec![HarborTaskSpec {
+                    task_id: "never-reached".to_string(),
+                    task_dir: "also-never-reached".to_string(),
+                }],
+            },
+        };
+
+        let err = run_harbor_task(
+            &spec,
+            &runner,
+            Path::new("/etc/spec-is-not-read.json"),
+            Path::new("/etc/crucible-harbor-output-is-not-created"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("job output directory"));
+        assert!(err.to_string().contains("outside $HOME"));
+        assert!(err.to_string().contains("RewardFileNotFoundError"));
     }
 
     #[test]

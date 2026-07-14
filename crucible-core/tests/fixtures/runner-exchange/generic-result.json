@@ -1,0 +1,49 @@
+{
+  "schema_version": "crucible.runner_exchange_result.v1",
+  "exchange_id": "exchange-generic-001",
+  "adapter": {
+    "name": "stdio-example",
+    "version": "1.0.0",
+    "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "candidate": {
+    "kind": "model",
+    "harness": "raw-api",
+    "harness_version": "1",
+    "model": {
+      "provider": "example-provider",
+      "name": "example-model"
+    },
+    "prompt_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "status": "success",
+  "output": {
+    "summary": "completed",
+    "primary_artifact": "artifacts/output.txt",
+    "metadata": {}
+  },
+  "evidence": [
+    {
+      "kind": "final_state",
+      "path": "artifacts/output.txt",
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "media_type": "text/plain"
+    }
+  ],
+  "usage": {
+    "input_tokens": 80,
+    "output_tokens": 20,
+    "cache_tokens": 0,
+    "cost_usd": 0.0001,
+    "latency_ms": 900
+  },
+  "error": null,
+  "provenance": {
+    "response_model": "example-model",
+    "started_at": "2026-07-13T20:00:00Z",
+    "finished_at": "2026-07-13T20:00:01Z"
+  },
+  "adapter_payload": {
+    "request_id": "example-123"
+  }
+}

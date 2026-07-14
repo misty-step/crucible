@@ -114,6 +114,7 @@ pub mod key;
 pub mod label;
 pub mod measure;
 pub mod provenance;
+pub mod runner_exchange;
 pub mod spec;
 pub mod trace;
 
@@ -159,6 +160,13 @@ pub use measure::{
 };
 pub use provenance::{
     EvaluationCard, Provenance, RunRecord, RunScore, EVALUATION_CARD_SCHEMA, RUN_RECORD_SCHEMA,
+};
+pub use runner_exchange::{
+    AdapterIdentity, CandidateIdentity, CandidateKind, EvidenceReference, ExchangeAuthority,
+    ExchangeError, ExchangeInput, ExchangeLimits, ExchangeModelIdentity, ExchangeOutput,
+    ExchangeRequestProvenance, ExchangeResultProvenance, ExchangeStatus, ExchangeTrustRequirements,
+    ExchangeUsage, ExchangeValidationError, NetworkAuthority, RunnerExchangeRequest,
+    RunnerExchangeResult, RUNNER_EXCHANGE_REQUEST_SCHEMA, RUNNER_EXCHANGE_RESULT_SCHEMA,
 };
 pub use spec::{
     AgenticJudgeConfig, AgenticJudgeTask, Aggregate, AggregationMethod, CerberusReceiptTask,
