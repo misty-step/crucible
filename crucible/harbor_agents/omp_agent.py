@@ -143,7 +143,7 @@ class OmpAgent(BaseInstalledAgent):
 
         input_tokens = 0
         output_tokens = 0
-        cache_read_tokens = 0
+        cached = 0
         cost_usd = 0.0
         for line in output_file.read_text().splitlines():
             try:
@@ -158,10 +158,10 @@ class OmpAgent(BaseInstalledAgent):
             usage = message.get("usage") or {}
             input_tokens += usage.get("input", 0)
             output_tokens += usage.get("output", 0)
-            cache_read_tokens += usage.get("cacheRead", 0)
+            cached += usage.get("cacheRead", 0)
             cost_usd += (usage.get("cost") or {}).get("total", 0.0)
 
-        context.n_input_tokens = input_tokens + cache_read_tokens
+        context.n_input_tokens = input_tokens + cached
         context.n_output_tokens = output_tokens
-        context.n_cache_tokens = cache_read_tokens
+        context.n_cache_tokens = cached
         context.cost_usd = cost_usd if cost_usd > 0 else None

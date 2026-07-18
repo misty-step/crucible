@@ -784,6 +784,12 @@ fn resolve_harbor_spec_dir(spec_path: &Path) -> anyhow::Result<PathBuf> {
 
 fn harbor_pythonpath(spec_dir: &Path) -> anyhow::Result<std::ffi::OsString> {
     let mut paths = vec![spec_dir.to_path_buf()];
+    // Also include the repo root (parent of the EvalSpec directory) so that
+    // repo-level Python modules (e.g., crucible.harbor_agents) are importable
+    // when `agent_import_path` targets a module inside the repo.
+    if let Some(repo_root) = spec_dir.parent() {
+        paths.push(repo_root.to_path_buf());
+    }
     if let Some(existing) = std::env::var_os("PYTHONPATH") {
         paths.extend(std::env::split_paths(&existing));
     }
@@ -3490,9 +3496,12 @@ mod tests {
             .expect("custom Harbor runs set child-only PYTHONPATH");
         let paths: Vec<PathBuf> = std::env::split_paths(pythonpath).collect();
         assert_eq!(paths.first(), Some(&spec_dir.to_path_buf()));
+        let expected_repo_root = spec_dir.parent().map(Path::to_path_buf);
+        assert_eq!(paths.get(1), expected_repo_root.as_ref());
+        let inherited_offset = if expected_repo_root.is_some() { 2 } else { 1 };
         if let Some(existing) = std::env::var_os("PYTHONPATH") {
             let inherited: Vec<PathBuf> = std::env::split_paths(&existing).collect();
-            assert_eq!(&paths[1..], inherited.as_slice());
+            assert_eq!(&paths[inherited_offset..], inherited.as_slice());
         }
     }
 

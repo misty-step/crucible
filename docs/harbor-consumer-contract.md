@@ -61,7 +61,9 @@ harbor run -p <task_dir> --agent-import-path <module:Class> -o <task_jobs_dir> -
 
 When `agent_import_path` is set, Crucible resolves the EvalSpec's parent directory
 as the custom module import root and supplies it to the Harbor host process through a
-child-process-only `PYTHONPATH` (prepended to any existing `PYTHONPATH`). The
+child-process-only `PYTHONPATH`, together with the parent of that directory (the repo
+root) so that repo-level Python modules (e.g., `crucible.harbor_agents`) are importable.
+The `PYTHONPATH` is prepended to any existing `PYTHONPATH`. The
 required `agent` value remains the stable receipt/config identity label. Blank import
 paths are rejected before Harbor starts. When declared, `model` adds `-m <model>`. Crucible applies a wall-clock timeout
 to the whole subprocess. Each task gets a cleared, disjoint job directory;
