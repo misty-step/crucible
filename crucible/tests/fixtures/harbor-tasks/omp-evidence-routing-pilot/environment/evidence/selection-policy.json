@@ -1,0 +1,28 @@
+{
+  "eligible_status": "ready",
+  "priority_order": ["p0", "p1", "p2", "p3"],
+  "requirements": {
+    "acceptance_count_min": 1,
+    "all_blocked_by_must_have_status": "done"
+  },
+  "tie_breakers": [
+    "most_nonterminal_cards_in_blocks",
+    "oldest_created_at",
+    "lexicographically_smallest_id"
+  ],
+  "required_reason_codes_in_order": [
+    "ready",
+    "acceptance_present",
+    "dependencies_satisfied",
+    "highest_priority"
+  ],
+  "rejection_codes": {
+    "wrong_status": "wrong_status",
+    "missing_acceptance": "missing_acceptance",
+    "blocked_dependency": "blocked_dependency"
+  },
+  "required_rejection_audits": [
+    "crucible-no-criteria-hotfix",
+    "crucible-harness-review-sweep"
+  ]
+}

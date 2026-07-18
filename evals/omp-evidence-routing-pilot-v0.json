@@ -1,0 +1,44 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "omp-evidence-routing-pilot-v0",
+  "task": "chief-executive-evidence-routing",
+  "inputs": "A frozen public Powder-style board snapshot plus an explicit dependency and priority policy",
+  "outputs": "An OMP-produced decision.json selecting the next claimable card and auditing two tempting rejections",
+  "graders": {
+    "graders": [
+      {
+        "id": "harbor_policy_oracle",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "decision": "Can the real OMP harness complete one canonical evidence-routing task under two model-only configurations and persist a comparable receipt? This one-task pilot qualifies the seam; it cannot establish a routing policy.",
+  "runner": {
+    "kind": "harbor_task",
+    "corpus": {
+      "source": "harbor_tasks",
+      "config": {
+        "agent": "omp",
+        "agent_import_path": "crucible.harbor_agents.omp_agent:OmpAgent",
+        "model": "openrouter/openai/gpt-5.4-nano",
+        "job_timeout_ms": 900000,
+        "resource_envelope": {
+          "cpu_millicores": 2000,
+          "memory_mb": 2048,
+          "headroom_percent": 50
+        }
+      },
+      "tasks": [
+        {
+          "task_id": "omp-evidence-routing-pilot",
+          "task_dir": "../crucible/tests/fixtures/harbor-tasks/omp-evidence-routing-pilot"
+        }
+      ]
+    }
+  }
+}

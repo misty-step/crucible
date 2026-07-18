@@ -685,6 +685,7 @@ mod tests {
             CorpusSpec::HarborTasks {
                 config: HarborRunConfig {
                     agent: "claude-code".to_string(),
+                    agent_import_path: None,
                     model: Some("anthropic/claude-opus-4".to_string()),
                     job_timeout_ms: None,
                     resource_envelope: None,

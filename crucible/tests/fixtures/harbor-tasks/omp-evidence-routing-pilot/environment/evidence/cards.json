@@ -1,0 +1,81 @@
+{
+  "snapshot_id": "crucible-capability-program-pilot-2026-07-18",
+  "cards": [
+    {
+      "id": "crucible-no-criteria-hotfix",
+      "status": "ready",
+      "priority": "p0",
+      "acceptance_count": 0,
+      "created_at": 1784400000,
+      "blocked_by": [],
+      "blocks": []
+    },
+    {
+      "id": "crucible-already-shipped",
+      "status": "shipped",
+      "priority": "p0",
+      "acceptance_count": 4,
+      "created_at": 1784000000,
+      "blocked_by": [],
+      "blocks": []
+    },
+    {
+      "id": "crucible-harness-review-sweep",
+      "status": "ready",
+      "priority": "p1",
+      "acceptance_count": 6,
+      "created_at": 1784100000,
+      "blocked_by": ["crucible-review-bench-corpus-v1"],
+      "blocks": []
+    },
+    {
+      "id": "crucible-review-bench-corpus-v1",
+      "status": "ready",
+      "priority": "p1",
+      "acceptance_count": 6,
+      "created_at": 1784050000,
+      "blocked_by": ["crucible-rescue-pr-preview-arena"],
+      "blocks": ["crucible-harness-review-sweep"]
+    },
+    {
+      "id": "crucible-rescue-pr-preview-arena",
+      "status": "backlog",
+      "priority": "p0",
+      "acceptance_count": 3,
+      "created_at": 1783900000,
+      "blocked_by": [],
+      "blocks": ["crucible-review-bench-corpus-v1"]
+    },
+    {
+      "id": "crucible-omp-harbor-adapter",
+      "status": "ready",
+      "priority": "p1",
+      "acceptance_count": 5,
+      "created_at": 1784406173,
+      "blocked_by": [],
+      "blocks": [
+        "crucible-orchestrator-dispatch-eval",
+        "crucible-omp-coding-execution-eval",
+        "crucible-harness-review-sweep"
+      ]
+    },
+    {
+      "id": "crucible-doc-cleanup",
+      "status": "ready",
+      "priority": "p2",
+      "acceptance_count": 3,
+      "created_at": 1783800000,
+      "blocked_by": [],
+      "blocks": []
+    },
+    {
+      "id": "crucible-901",
+      "status": "backlog",
+      "priority": "p1",
+      "acceptance_count": 5,
+      "created_at": 1783000000,
+      "blocked_by": ["crucible-omp-harbor-adapter"],
+      "blocks": []
+    }
+  ]
+}

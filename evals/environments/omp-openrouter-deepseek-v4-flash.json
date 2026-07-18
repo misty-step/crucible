@@ -1,0 +1,6 @@
+{
+  "schema_version": "crucible.environment.v1",
+  "id": "omp-openrouter-deepseek-v4-flash",
+  "description": "OMP in Harbor using DeepSeek V4 Flash through OpenRouter; model-only challenger for the evidence-routing seam pilot.",
+  "model": "openrouter/deepseek/deepseek-v4-flash"
+}

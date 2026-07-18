@@ -53,12 +53,22 @@ Harbor cannot collect `reward.txt`. It invokes one synchronous process per task:
 harbor run -p <task_dir> -a <agent> -o <task_jobs_dir> --job-name run -y
 ```
 
-When declared, `model` adds `-m <model>`. Crucible applies a wall-clock timeout
+A custom agent instead uses exactly one import-selection flag:
+
+```text
+harbor run -p <task_dir> --agent-import-path <module:Class> -o <task_jobs_dir> --job-name run -y
+```
+
+When `agent_import_path` is set, Crucible resolves the EvalSpec's parent directory
+as the custom module import root and supplies it to the Harbor host process through a
+child-process-only `PYTHONPATH` (prepended to any existing `PYTHONPATH`). The
+required `agent` value remains the stable receipt/config identity label. Blank import
+paths are rejected before Harbor starts. When declared, `model` adds `-m <model>`. Crucible applies a wall-clock timeout
 to the whole subprocess. Each task gets a cleared, disjoint job directory;
 Harbor and Docker own container teardown and the in-container sandbox. The
 mechanical directory guarantees and their limits are in [docs/AGENTS.md](AGENTS.md).
 
-The `HarborRunConfig` currently applies only `agent`, `model`, and
+The `HarborRunConfig` currently applies `agent`, optional `agent_import_path`, `model`, and
 `job_timeout_ms`. A declared `resource_envelope` is persisted for comparison
 caveats but is not translated into Harbor CPU or memory flags. Reasoning
 effort, agent kwargs, tools, skills, MCPs, memory, network allowlists, and role
@@ -68,7 +78,8 @@ topology cannot yet be applied or identity-hashed by this runner.
 
 The runner writes `crucible.harbor_run_evidence.v1` with:
 
-- agent, optional requested model, and optional declared resource envelope;
+- agent identity, optional custom `agent_import_path`, optional requested model, and
+  optional declared resource envelope;
 - Wilson score and task totals;
 - task id and resolved task path;
 - full reward and reward breakdown;

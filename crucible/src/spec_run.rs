@@ -606,12 +606,24 @@ fn run_harbor_task(
             Ok((task, task_dir))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+    validate_harbor_agent_selection(config)?;
+    let spec_dir = config
+        .agent_import_path
+        .as_ref()
+        .map(|_| resolve_harbor_spec_dir(spec_path))
+        .transpose()?;
     check_harbor_available()?;
 
     let jobs_root = out.join("harbor-jobs");
     let mut task_results = Vec::with_capacity(tasks.len());
     for (task, task_dir) in prepared_tasks {
-        task_results.push(run_one_harbor_task(config, task, &task_dir, &jobs_root)?);
+        task_results.push(run_one_harbor_task(
+            config,
+            task,
+            &task_dir,
+            &jobs_root,
+            spec_dir.as_deref(),
+        )?);
     }
 
     let passed = task_results.iter().filter(|result| result.passed).count() as u64;
@@ -625,6 +637,7 @@ fn run_harbor_task(
             spec: spec_path.display().to_string(),
             runner: runner.kind,
             agent: config.agent.clone(),
+            agent_import_path: config.agent_import_path.clone(),
             model: config.model.clone(),
             resource_envelope: config.resource_envelope,
             score: &score,
@@ -746,24 +759,61 @@ fn prepare_harbor_job_dir(jobs_root: &Path, task_id: &str) -> anyhow::Result<std
     Ok(job_dir)
 }
 
-fn run_one_harbor_task(
+fn validate_harbor_agent_selection(config: &HarborRunConfig) -> anyhow::Result<()> {
+    if config
+        .agent_import_path
+        .as_deref()
+        .is_some_and(|path| path.trim().is_empty())
+    {
+        anyhow::bail!("harbor agent_import_path must not be blank");
+    }
+    Ok(())
+}
+
+fn resolve_harbor_spec_dir(spec_path: &Path) -> anyhow::Result<PathBuf> {
+    let parent = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    let absolute = std::path::absolute(parent)
+        .with_context(|| format!("resolving Harbor spec directory {}", parent.display()))?;
+    std::fs::canonicalize(&absolute).with_context(|| {
+        format!(
+            "canonicalizing Harbor spec directory {}",
+            absolute.display()
+        )
+    })
+}
+
+fn harbor_pythonpath(spec_dir: &Path) -> anyhow::Result<std::ffi::OsString> {
+    let mut paths = vec![spec_dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PYTHONPATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(paths).context("constructing Harbor child PYTHONPATH")
+}
+
+fn build_harbor_command(
     config: &HarborRunConfig,
-    task: &HarborTaskSpec,
     task_dir: &Path,
-    jobs_root: &Path,
-) -> anyhow::Result<HarborTaskResult> {
-    let jobs_dir = jobs_root.join(&task.task_id);
-    let job_dir = prepare_harbor_job_dir(jobs_root, &task.task_id)?;
+    jobs_dir: &Path,
+    spec_dir: Option<&Path>,
+) -> anyhow::Result<Command> {
+    validate_harbor_agent_selection(config)?;
 
     let mut command = Command::new("harbor");
+    command.arg("run").arg("-p").arg(task_dir);
+    match &config.agent_import_path {
+        Some(import_path) => {
+            let spec_dir = spec_dir
+                .context("custom Harbor agent imports require the EvalSpec parent directory")?;
+            command.arg("--agent-import-path").arg(import_path);
+            command.env("PYTHONPATH", harbor_pythonpath(spec_dir)?);
+        }
+        None => {
+            command.arg("-a").arg(&config.agent);
+        }
+    }
     command
-        .arg("run")
-        .arg("-p")
-        .arg(task_dir)
-        .arg("-a")
-        .arg(&config.agent)
         .arg("-o")
-        .arg(&jobs_dir)
+        .arg(jobs_dir)
         .arg("--job-name")
         .arg(HARBOR_JOB_NAME)
         // Auto-confirm host-environment-access prompts: this subprocess has
@@ -773,6 +823,21 @@ fn run_one_harbor_task(
     if let Some(model) = &config.model {
         command.arg("-m").arg(model);
     }
+    Ok(command)
+}
+
+fn run_one_harbor_task(
+    config: &HarborRunConfig,
+    task: &HarborTaskSpec,
+    task_dir: &Path,
+    jobs_root: &Path,
+    spec_dir: Option<&Path>,
+) -> anyhow::Result<HarborTaskResult> {
+    let jobs_dir = jobs_root.join(&task.task_id);
+    // Build and validate the command before creating the job directory or
+    // spawning Harbor, so malformed custom-agent paths fail closed.
+    let mut command = build_harbor_command(config, task_dir, &jobs_dir, spec_dir)?;
+    let job_dir = prepare_harbor_job_dir(jobs_root, &task.task_id)?;
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -836,7 +901,6 @@ fn run_one_harbor_task(
     let result_json = trial_result.result_json;
 
     let outcome = derive_harbor_outcome(&result_json, &task.task_id)?;
-    let exception = outcome.exception;
     let reward = outcome.reward;
     let reward_breakdown = outcome.reward_breakdown;
     let passed = outcome.passed;
@@ -875,7 +939,6 @@ fn run_one_harbor_task(
         latency_ms,
         verifier_summary,
         artifacts,
-        exception,
         evidence_json: result_json,
     })
 }
@@ -885,13 +948,12 @@ struct HarborOutcome {
     passed: bool,
     reward: f64,
     reward_breakdown: serde_json::Value,
-    exception: Option<serde_json::Value>,
 }
 
 /// Derive pass/fail and the primary reward from one Harbor trial `result.json`
 /// (pure function over already-parsed JSON, so this is testable without
-/// spawning `harbor` or Docker). `exception_info` non-null always fails the
-/// task regardless of any reward value Harbor still reported. Otherwise the
+/// spawning `harbor` or Docker). A non-null `exception_info` refuses the run:
+/// an agent/environment failure is not a scored model failure. Otherwise the
 /// primary reward is `verifier_result.rewards["reward"]` — Harbor's own
 /// convention, also the shape this runner's fixtures declare — falling back
 /// to the sole entry when a task names its reward differently but declares
@@ -904,10 +966,14 @@ fn derive_harbor_outcome(
     result_json: &serde_json::Value,
     task_id: &str,
 ) -> anyhow::Result<HarborOutcome> {
-    let exception = result_json
+    if let Some(exception) = result_json
         .get("exception_info")
-        .filter(|v| !v.is_null())
-        .cloned();
+        .filter(|value| !value.is_null())
+    {
+        anyhow::bail!(
+            "task {task_id:?}: Harbor reported an agent/environment exception, so no score is defensible: {exception}"
+        );
+    }
     let rewards = result_json
         .get("verifier_result")
         .and_then(|v| v.get("rewards"))
@@ -915,14 +981,6 @@ fn derive_harbor_outcome(
         .cloned()
         .unwrap_or_default();
     let reward_breakdown = serde_json::Value::Object(rewards.clone());
-    if exception.is_some() {
-        return Ok(HarborOutcome {
-            passed: false,
-            reward: 0.0,
-            reward_breakdown,
-            exception,
-        });
-    }
     let reward = match rewards.get("reward").and_then(serde_json::Value::as_f64) {
         Some(reward) => reward,
         None if rewards.len() == 1 => rewards
@@ -943,7 +1001,6 @@ fn derive_harbor_outcome(
         passed: reward >= 1.0,
         reward,
         reward_breakdown,
-        exception: None,
     })
 }
 
@@ -1008,6 +1065,8 @@ struct HarborRunEvidence<'a> {
     runner: RunnerKind,
     agent: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    agent_import_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     /// The sandbox's declared [`crucible_core::ResourceEnvelope`] (backlog
     /// 974), when the corpus author configured one.
@@ -1032,8 +1091,6 @@ struct HarborTaskResult {
     verifier_summary: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     artifacts: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    exception: Option<serde_json::Value>,
     evidence_json: serde_json::Value,
 }
 
@@ -3214,7 +3271,6 @@ mod tests {
         let outcome = derive_harbor_outcome(&result_json, "crucible-smoke").unwrap();
         assert!(outcome.passed);
         assert_eq!(outcome.reward, 1.0);
-        assert!(outcome.exception.is_none());
         assert_eq!(outcome.reward_breakdown, serde_json::json!({"reward": 1.0}));
     }
 
@@ -3230,18 +3286,14 @@ mod tests {
     }
 
     #[test]
-    fn derive_harbor_outcome_exception_always_fails_regardless_of_reward() {
-        // Even if Harbor still reported a reward alongside an exception, a
-        // non-null exception_info is an unconditional fail (the agent or
-        // environment crashed; the reward, if any, isn't trustworthy).
+    fn derive_harbor_outcome_refuses_exception_instead_of_scoring_it() {
         let result_json = serde_json::json!({
             "exception_info": {"exception_type": "TimeoutError", "exception_message": "agent timed out"},
             "verifier_result": { "rewards": { "reward": 1.0 } }
         });
-        let outcome = derive_harbor_outcome(&result_json, "wedged-task").unwrap();
-        assert!(!outcome.passed);
-        assert_eq!(outcome.reward, 0.0);
-        assert!(outcome.exception.is_some());
+        let error = derive_harbor_outcome(&result_json, "wedged-task").unwrap_err();
+        assert!(error.to_string().contains("no score is defensible"));
+        assert!(error.to_string().contains("wedged-task"));
     }
 
     #[test]
@@ -3314,6 +3366,7 @@ mod tests {
             corpus: CorpusSpec::HarborTasks {
                 config: HarborRunConfig {
                     agent: "oracle".to_string(),
+                    agent_import_path: None,
                     model: None,
                     job_timeout_ms: None,
                     resource_envelope: None,
@@ -3335,6 +3388,132 @@ mod tests {
         assert!(err.to_string().contains("job output directory"));
         assert!(err.to_string().contains("outside $HOME"));
         assert!(err.to_string().contains("RewardFileNotFoundError"));
+    }
+
+    #[test]
+    fn harbor_command_uses_exactly_one_named_agent_flag() {
+        let config = HarborRunConfig {
+            agent: "oracle".to_string(),
+            agent_import_path: None,
+            model: Some("openai/gpt-4o".to_string()),
+            job_timeout_ms: None,
+            resource_envelope: None,
+        };
+        let command = build_harbor_command(
+            &config,
+            Path::new("/tmp/task"),
+            Path::new("/tmp/jobs/task"),
+            None,
+        )
+        .unwrap();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "run",
+                "-p",
+                "/tmp/task",
+                "-a",
+                "oracle",
+                "-o",
+                "/tmp/jobs/task",
+                "--job-name",
+                "run",
+                "-y",
+                "-m",
+                "openai/gpt-4o",
+            ]
+        );
+        assert!(
+            command
+                .get_args()
+                .all(|arg| arg != std::ffi::OsStr::new("--agent-import-path")),
+            "named Harbor runs must not receive a custom import flag"
+        );
+        assert!(
+            command
+                .get_envs()
+                .all(|(key, _)| key != std::ffi::OsStr::new("PYTHONPATH")),
+            "named Harbor runs must not rewrite PYTHONPATH"
+        );
+    }
+
+    #[test]
+    fn harbor_command_uses_custom_agent_and_spec_directory_pythonpath() {
+        let config = HarborRunConfig {
+            agent: "omp-local-label".to_string(),
+            agent_import_path: Some("omp_harbor_agent:OmpLocal".to_string()),
+            model: None,
+            job_timeout_ms: None,
+            resource_envelope: None,
+        };
+        let spec_dir = Path::new("/tmp/eval-spec");
+        let command = build_harbor_command(
+            &config,
+            Path::new("/tmp/task"),
+            Path::new("/tmp/jobs/task"),
+            Some(spec_dir),
+        )
+        .unwrap();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "run",
+                "-p",
+                "/tmp/task",
+                "--agent-import-path",
+                "omp_harbor_agent:OmpLocal",
+                "-o",
+                "/tmp/jobs/task",
+                "--job-name",
+                "run",
+                "-y",
+            ]
+        );
+        assert!(
+            command
+                .get_args()
+                .all(|arg| arg != std::ffi::OsStr::new("-a")),
+            "custom Harbor runs must not receive the named agent flag"
+        );
+        let pythonpath = command
+            .get_envs()
+            .find(|(key, _)| key.to_string_lossy() == "PYTHONPATH")
+            .and_then(|(_, value)| value)
+            .expect("custom Harbor runs set child-only PYTHONPATH");
+        let paths: Vec<PathBuf> = std::env::split_paths(pythonpath).collect();
+        assert_eq!(paths.first(), Some(&spec_dir.to_path_buf()));
+        if let Some(existing) = std::env::var_os("PYTHONPATH") {
+            let inherited: Vec<PathBuf> = std::env::split_paths(&existing).collect();
+            assert_eq!(&paths[1..], inherited.as_slice());
+        }
+    }
+
+    #[test]
+    fn harbor_command_rejects_blank_custom_agent_import_before_spawn() {
+        let config = HarborRunConfig {
+            agent: "omp-local-label".to_string(),
+            agent_import_path: Some("   ".to_string()),
+            model: None,
+            job_timeout_ms: None,
+            resource_envelope: None,
+        };
+        let err = build_harbor_command(
+            &config,
+            Path::new("/tmp/task"),
+            Path::new("/tmp/jobs/task"),
+            Some(Path::new("/tmp/eval-spec")),
+        )
+        .expect_err("blank custom import paths must fail before spawn");
+        assert!(err.to_string().contains("agent_import_path"));
+        assert!(err.to_string().contains("blank"));
     }
 
     #[test]

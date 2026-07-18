@@ -180,6 +180,7 @@ fn import_harbor(args: &HarborImportArgs) -> anyhow::Result<HarborImportReport> 
             corpus: CorpusSpec::HarborTasks {
                 config: HarborRunConfig {
                     agent: args.agent.clone(),
+                    agent_import_path: None,
                     model: args.model.clone(),
                     job_timeout_ms: None,
                     resource_envelope: None,

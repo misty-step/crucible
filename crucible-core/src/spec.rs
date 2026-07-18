@@ -437,14 +437,23 @@ pub struct AgenticJudgeTask {
 }
 
 /// Shared Harbor invocation config for a `harbor_task` runner's corpus
-/// (backlog/Powder crucible-034): the agent and (optional) model every task in
-/// the corpus runs with, one `harbor run` subprocess per task.
+/// (backlog/Powder crucible-034): the required agent identity label and optional
+/// model for one `harbor run` subprocess per task. A custom agent import path can
+/// replace the named Harbor agent selection without changing that identity label.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HarborRunConfig {
-    /// Harbor agent name, e.g. `oracle` (applies the task's reference
-    /// solution, zero model cost) or a real coding agent Harbor ships
-    /// (`claude-code`, `codex`, ...).
+    /// Required stable Harbor agent identity label, e.g. `oracle` or `omp`,
+    /// retained in receipts and config identity. When `agent_import_path` is
+    /// absent, this label is also passed to Harbor via `-a`; custom imports use
+    /// only `--agent-import-path` and do not pass this label to Harbor.
     pub agent: String,
+    /// Optional Python import path for a custom Harbor agent class, formatted as
+    /// `<module>:<Class>` (for example, `omp_harbor_agent:OmpLocal`). When set,
+    /// the Harbor host process imports this class with the EvalSpec parent
+    /// directory as its child-process-only `PYTHONPATH` root; `agent` remains
+    /// the stable receipt/config identity label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_import_path: Option<String>,
     /// Model slug passed to Harbor's `--model`, when the agent needs one.
     /// `None` for agents like `oracle` that don't call a model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1107,6 +1116,7 @@ mod tests {
         let corpus = CorpusSpec::HarborTasks {
             config: HarborRunConfig {
                 agent: "oracle".to_string(),
+                agent_import_path: None,
                 model: None,
                 job_timeout_ms: None,
                 resource_envelope: None,
@@ -1122,8 +1132,10 @@ mod tests {
             "corpus source is stable: {json}"
         );
         assert!(
-            !json.contains("model") && !json.contains("job_timeout_ms"),
-            "absent model/job_timeout_ms are omitted, not written as null: {json}"
+            !json.contains("model")
+                && !json.contains("job_timeout_ms")
+                && !json.contains("agent_import_path"),
+            "absent optional fields are omitted, not written as null: {json}"
         );
         let back: CorpusSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(back, corpus);
@@ -1133,6 +1145,7 @@ mod tests {
     fn harbor_run_config_round_trips_model_and_timeout() {
         let config = HarborRunConfig {
             agent: "claude-code".to_string(),
+            agent_import_path: Some("omp_harbor_agent:OmpLocal".to_string()),
             model: Some("anthropic/claude-opus-4".to_string()),
             job_timeout_ms: Some(120_000),
             resource_envelope: Some(ResourceEnvelope {
@@ -1147,6 +1160,10 @@ mod tests {
             "{json}"
         );
         assert!(json.contains(r#""job_timeout_ms":120000"#), "{json}");
+        assert!(
+            json.contains(r#""agent_import_path":"omp_harbor_agent:OmpLocal""#),
+            "{json}"
+        );
         assert!(json.contains(r#""cpu_millicores":2000"#), "{json}");
         assert!(json.contains(r#""memory_mb":4096"#), "{json}");
         assert!(json.contains(r#""headroom_percent":50"#), "{json}");
@@ -1161,6 +1178,7 @@ mod tests {
         assert_eq!(config.model, None);
         assert_eq!(config.job_timeout_ms, None);
         assert_eq!(config.resource_envelope, None);
+        assert_eq!(config.agent_import_path, None);
     }
 
     #[test]
