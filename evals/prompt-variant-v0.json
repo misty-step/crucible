@@ -1,0 +1,55 @@
+{
+  "schema_version": "crucible.eval_spec.v1",
+  "id": "prompt-variant-v0",
+  "task": "prompt-variant-smoke",
+  "inputs": "One authored prompt benchmark run under named system-prompt variants.",
+  "outputs": "Model text graded by a deterministic contains rubric.",
+  "graders": {
+    "graders": [
+      {
+        "id": "contains_marker",
+        "kind": "deterministic"
+      }
+    ]
+  },
+  "aggregation": "proportion",
+  "uncertainty": {
+    "method": "wilson",
+    "confidence": 0.95
+  },
+  "decision": "Compare skill-on and skill-off system prompts under one paired task corpus.",
+  "runner": {
+    "kind": "prompt_benchmark",
+    "corpus": {
+      "source": "prompt_benchmark",
+      "config": {
+        "provider": "open_router",
+        "model": "openrouter/auto",
+        "system_prompt": "Answer the user directly.",
+        "prompt_variants": [
+          {
+            "id": "skill_off",
+            "system_prompt": "Answer the user directly."
+          },
+          {
+            "id": "skill_on",
+            "system_prompt": "Use the repository skill, then answer the user directly."
+          }
+        ],
+        "credential_env": "OPENROUTER_API_KEY",
+        "max_tokens": 24,
+        "temperature": 0
+      },
+      "tasks": [
+        {
+          "task_id": "marker-echo",
+          "prompt": "Reply with one short sentence that includes this exact marker: crucible-prompt-variant",
+          "expectation": {
+            "kind": "contains",
+            "value": "crucible-prompt-variant"
+          }
+        }
+      ]
+    }
+  }
+}

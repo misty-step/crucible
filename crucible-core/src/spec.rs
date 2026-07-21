@@ -206,6 +206,19 @@ pub enum ModelProvider {
     OpenRouter,
 }
 
+/// One named system-prompt variant for a prompt benchmark comparison.
+///
+/// Variants live inside the authored model config so the task corpus and benchmark
+/// id stay unchanged across a prompt-axis experiment. The CLI applies one variant
+/// as a pure config transform; the selected name is persisted in run evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptVariant {
+    /// Stable name used by `crucible run --prompt-variant`.
+    pub id: String,
+    /// Complete system prompt sent for every task in this variant.
+    pub system_prompt: String,
+}
+
 /// Model config for a prompt benchmark runner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptModelConfig {
@@ -213,8 +226,13 @@ pub struct PromptModelConfig {
     pub provider: ModelProvider,
     /// Provider model slug, e.g. `openai/gpt-4o-mini`.
     pub model: String,
-    /// System prompt shared by every task in this benchmark.
+    /// System prompt shared by every task in this benchmark when no named variant
+    /// is selected.
     pub system_prompt: String,
+    /// Named system-prompt variants for a prompt-axis experiment. Empty preserves
+    /// the pre-variant schema and ordinary single-config execution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompt_variants: Vec<PromptVariant>,
     /// Environment variable that contains the provider credential.
     #[serde(default = "default_openrouter_credential_env")]
     pub credential_env: String,
@@ -256,6 +274,111 @@ pub struct PromptModelConfig {
 
 fn default_openrouter_credential_env() -> String {
     "OPENROUTER_API_KEY".to_string()
+}
+
+/// Why a named prompt variant could not be validated or applied.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PromptVariantError {
+    #[error("prompt variant id is empty")]
+    EmptyId,
+    #[error("prompt variant {0:?} has an empty system_prompt")]
+    EmptySystemPrompt(String),
+    #[error("prompt variant id {0:?} is declared more than once")]
+    DuplicateId(String),
+    #[error("prompt variants {0:?} and {1:?} have identical system_prompt bodies")]
+    DuplicateSystemPrompt(String, String),
+    #[error("prompt variant id \"all\" is reserved for selecting every variant")]
+    ReservedId,
+    #[error("prompt variant {0:?} is not declared")]
+    UnknownVariant(String),
+    #[error("prompt variants are supported only for a prompt_benchmark runner, not {0:?}")]
+    UnsupportedRunner(RunnerKind),
+}
+
+impl EvalSpec {
+    /// Validate the named prompt variants carried by this spec's prompt config.
+    /// Empty declarations preserve ordinary single-prompt execution.
+    pub fn validate_prompt_variants(&self) -> Result<(), PromptVariantError> {
+        let Some(runner) = &self.runner else {
+            if self_has_prompt_variants(self) {
+                return Err(PromptVariantError::UnsupportedRunner(RunnerKind::KeyRecall));
+            }
+            return Ok(());
+        };
+        if runner.kind != RunnerKind::PromptBenchmark {
+            if self_has_prompt_variants(self) {
+                return Err(PromptVariantError::UnsupportedRunner(runner.kind));
+            }
+            return Ok(());
+        }
+        let CorpusSpec::PromptBenchmark { config, .. } = &runner.corpus else {
+            return Ok(());
+        };
+        validate_prompt_variant_list(&config.prompt_variants)
+    }
+
+    /// Return a copy of this spec with one named variant's system prompt selected.
+    /// The benchmark id, authored tasks, rubric, and variant declaration remain
+    /// unchanged; only the prompt-benchmark invocation config is transformed.
+    pub fn apply_prompt_variant(&self, variant_id: &str) -> Result<Self, PromptVariantError> {
+        self.validate_prompt_variants()?;
+        let Some(runner) = &self.runner else {
+            return Err(PromptVariantError::UnsupportedRunner(RunnerKind::KeyRecall));
+        };
+        let CorpusSpec::PromptBenchmark { config, tasks } = &runner.corpus else {
+            return Err(PromptVariantError::UnsupportedRunner(runner.kind));
+        };
+        let variant = config
+            .prompt_variants
+            .iter()
+            .find(|variant| variant.id == variant_id)
+            .ok_or_else(|| PromptVariantError::UnknownVariant(variant_id.to_string()))?;
+        let mut transformed = self.clone();
+        transformed.runner = Some(RunnerSpec {
+            kind: runner.kind,
+            corpus: CorpusSpec::PromptBenchmark {
+                config: PromptModelConfig {
+                    system_prompt: variant.system_prompt.clone(),
+                    ..config.clone()
+                },
+                tasks: tasks.clone(),
+            },
+        });
+        Ok(transformed)
+    }
+}
+
+fn self_has_prompt_variants(spec: &EvalSpec) -> bool {
+    matches!(
+        spec.runner.as_ref().map(|runner| &runner.corpus),
+        Some(CorpusSpec::PromptBenchmark { config, .. }) if !config.prompt_variants.is_empty()
+    )
+}
+
+fn validate_prompt_variant_list(variants: &[PromptVariant]) -> Result<(), PromptVariantError> {
+    let mut ids = std::collections::HashSet::new();
+    let mut prompts = std::collections::HashMap::new();
+    for variant in variants {
+        if variant.id.trim().is_empty() {
+            return Err(PromptVariantError::EmptyId);
+        }
+        if variant.id == "all" {
+            return Err(PromptVariantError::ReservedId);
+        }
+        if variant.system_prompt.trim().is_empty() {
+            return Err(PromptVariantError::EmptySystemPrompt(variant.id.clone()));
+        }
+        if !ids.insert(variant.id.as_str()) {
+            return Err(PromptVariantError::DuplicateId(variant.id.clone()));
+        }
+        if let Some(previous_id) = prompts.insert(variant.system_prompt.as_str(), variant.id.as_str()) {
+            return Err(PromptVariantError::DuplicateSystemPrompt(
+                previous_id.to_string(),
+                variant.id.clone(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// One authored prompt task plus a deterministic rubric.
@@ -940,6 +1063,7 @@ mod tests {
                 harness: None,
                 tool_allowlist: Vec::new(),
                 request_timeout_seconds: None,
+                prompt_variants: Vec::new(),
             },
             tasks: vec![PromptBenchmarkTask {
                 task_id: "exact-word".to_string(),
@@ -1045,7 +1169,8 @@ mod tests {
             harness: Some("claude-code".to_string()),
             tool_allowlist: vec!["bash".to_string(), "web_search".to_string()],
             request_timeout_seconds: None,
-        };
+            prompt_variants: Vec::new(),
+            };
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains(r#""harness":"claude-code""#), "{json}");
         assert!(
@@ -1084,7 +1209,8 @@ mod tests {
             harness: None,
             tool_allowlist: Vec::new(),
             request_timeout_seconds: Some(900),
-        };
+            prompt_variants: Vec::new(),
+            };
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains(r#""request_timeout_seconds":900"#), "{json}");
         let back: PromptModelConfig = serde_json::from_str(&json).unwrap();
@@ -1109,6 +1235,199 @@ mod tests {
             !json.contains("request_timeout_seconds"),
             "absent request_timeout_seconds is omitted, not written as null: {json}"
         );
+    }
+
+    #[test]
+    fn prompt_variants_round_trip_and_apply_without_changing_tasks() {
+        let base_config = PromptModelConfig {
+            provider: ModelProvider::OpenRouter,
+            model: "openai/gpt-4o-mini".to_string(),
+            system_prompt: "bare".to_string(),
+            prompt_variants: vec![
+                PromptVariant {
+                    id: "skill_off".to_string(),
+                    system_prompt: "bare".to_string(),
+                },
+                PromptVariant {
+                    id: "skill_on".to_string(),
+                    system_prompt: "Use the skill.".to_string(),
+                },
+            ],
+            credential_env: "OPENROUTER_API_KEY".to_string(),
+            max_output_units: None,
+            temperature: Some(0),
+            harness: None,
+            tool_allowlist: Vec::new(),
+            request_timeout_seconds: None,
+        };
+        let tasks = vec![PromptBenchmarkTask {
+            task_id: "marker".to_string(),
+            class: None,
+            summary: None,
+            context_file: None,
+            prompt: "Reply marker".to_string(),
+            expectation: PromptExpectation::Contains {
+                value: "marker".to_string(),
+            },
+            tracked: Vec::new(),
+        }];
+        let spec = EvalSpec {
+            schema_version: EVAL_SPEC_SCHEMA.to_string(),
+            id: "prompt-variants-v0".to_string(),
+            title: None,
+            context: None,
+            task: "prompt benchmark".to_string(),
+            inputs: String::new(),
+            outputs: String::new(),
+            fixtures: Vec::new(),
+            graders: GraderManifest {
+                graders: vec![Grader {
+                    id: "deterministic".to_string(),
+                    kind: GraderKind::Deterministic,
+                }],
+            },
+            baselines: Vec::new(),
+            aggregation: AggregationMethod::Proportion,
+            uncertainty: UncertaintyRule::default(),
+            decision: String::new(),
+            min_effect_of_interest: None,
+            runner: Some(RunnerSpec {
+                kind: RunnerKind::PromptBenchmark,
+                corpus: CorpusSpec::PromptBenchmark {
+                    config: base_config,
+                    tasks: tasks.clone(),
+                },
+            }),
+        };
+        spec.validate_prompt_variants().unwrap();
+        let transformed = spec.apply_prompt_variant("skill_on").unwrap();
+        let CorpusSpec::PromptBenchmark { config, tasks: transformed_tasks } = transformed.runner.unwrap().corpus else {
+            panic!("expected prompt benchmark corpus");
+        };
+        assert_eq!(config.system_prompt, "Use the skill.");
+        assert_eq!(config.prompt_variants.len(), 2);
+        assert_eq!(transformed_tasks, tasks);
+        let json = serde_json::to_string(&spec).unwrap();
+        let back: EvalSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, spec);
+    }
+
+    #[test]
+    fn prompt_variants_refuse_duplicates_empty_values_and_unsupported_runners() {
+        let mut config = PromptModelConfig {
+            provider: ModelProvider::OpenRouter,
+            model: "openai/gpt-4o-mini".to_string(),
+            system_prompt: "bare".to_string(),
+            prompt_variants: vec![
+                PromptVariant {
+                    id: "same".to_string(),
+                    system_prompt: "one".to_string(),
+                },
+                PromptVariant {
+                    id: "same".to_string(),
+                    system_prompt: "two".to_string(),
+                },
+            ],
+            credential_env: "OPENROUTER_API_KEY".to_string(),
+            max_output_units: None,
+            temperature: None,
+            harness: None,
+            tool_allowlist: Vec::new(),
+            request_timeout_seconds: None,
+        };
+        let prompt_spec = EvalSpec {
+            schema_version: EVAL_SPEC_SCHEMA.to_string(),
+            id: "variants".to_string(),
+            title: None,
+            context: None,
+            task: "prompt".to_string(),
+            inputs: String::new(),
+            outputs: String::new(),
+            fixtures: Vec::new(),
+            graders: GraderManifest {
+                graders: vec![Grader {
+                    id: "deterministic".to_string(),
+                    kind: GraderKind::Deterministic,
+                }],
+            },
+            baselines: Vec::new(),
+            aggregation: AggregationMethod::Proportion,
+            uncertainty: UncertaintyRule::default(),
+            decision: String::new(),
+            min_effect_of_interest: None,
+            runner: Some(RunnerSpec {
+                kind: RunnerKind::PromptBenchmark,
+                corpus: CorpusSpec::PromptBenchmark {
+                    config: config.clone(),
+                    tasks: Vec::new(),
+                },
+            }),
+        };
+        assert!(matches!(
+            prompt_spec.validate_prompt_variants(),
+            Err(PromptVariantError::DuplicateId(_))
+        ));
+        config.prompt_variants[1].id = "other".to_string();
+        config.prompt_variants[1].system_prompt = config.prompt_variants[0].system_prompt.clone();
+        let duplicate_prompt_spec = EvalSpec {
+            runner: Some(RunnerSpec {
+                kind: RunnerKind::PromptBenchmark,
+                corpus: CorpusSpec::PromptBenchmark {
+                    config: config.clone(),
+                    tasks: Vec::new(),
+                },
+            }),
+            ..prompt_spec.clone()
+        };
+        assert!(matches!(
+            duplicate_prompt_spec.validate_prompt_variants(),
+            Err(PromptVariantError::DuplicateSystemPrompt(_, _))
+        ));
+        config.prompt_variants[0].id = "all".to_string();
+        let reserved_spec = EvalSpec {
+            runner: Some(RunnerSpec {
+                kind: RunnerKind::PromptBenchmark,
+                corpus: CorpusSpec::PromptBenchmark {
+                    config: config.clone(),
+                    tasks: Vec::new(),
+                },
+            }),
+            ..prompt_spec.clone()
+        };
+        assert!(matches!(
+            reserved_spec.validate_prompt_variants(),
+            Err(PromptVariantError::ReservedId)
+        ));
+        config.prompt_variants[0].id.clear();
+        let unsupported_config = config.clone();
+        let empty_spec = EvalSpec {
+            runner: Some(RunnerSpec {
+                kind: RunnerKind::PromptBenchmark,
+                corpus: CorpusSpec::PromptBenchmark {
+                    config,
+                    tasks: Vec::new(),
+                },
+            }),
+            ..prompt_spec.clone()
+        };
+        assert!(matches!(
+            empty_spec.validate_prompt_variants(),
+            Err(PromptVariantError::EmptyId)
+        ));
+        let unsupported = EvalSpec {
+            runner: Some(RunnerSpec {
+                kind: RunnerKind::KeyRecall,
+                corpus: CorpusSpec::PromptBenchmark {
+                    config: unsupported_config,
+                    tasks: Vec::new(),
+                },
+            }),
+            ..empty_spec
+        };
+        assert!(matches!(
+            unsupported.validate_prompt_variants(),
+            Err(PromptVariantError::UnsupportedRunner(RunnerKind::KeyRecall))
+        ));
     }
 
     #[test]

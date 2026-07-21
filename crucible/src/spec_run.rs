@@ -36,12 +36,21 @@ pub(crate) struct RunOptions {
     pub prompt_system_prompt: Option<String>,
     pub prompt_max_output_units: Option<u32>,
     pub prompt_temperature: Option<u32>,
+    /// Named prompt variant selected by a matrix run; persisted in evidence.
+    pub prompt_variant: Option<String>,
 }
 
 impl RunOptions {
     pub(crate) fn with_prompt_model(model: impl Into<String>) -> Self {
         Self {
             prompt_model: Some(model.into()),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn with_prompt_variant(variant: impl Into<String>) -> Self {
+        Self {
+            prompt_variant: Some(variant.into()),
             ..Self::default()
         }
     }
@@ -136,6 +145,8 @@ pub(crate) fn required_grader_kind(runner_kind: RunnerKind) -> GraderKind {
 /// `baselines` remains genuinely unenforced — not claimed honest here).
 pub(crate) fn preflight_spec(spec: &EvalSpec, runner_kind: RunnerKind) -> anyhow::Result<()> {
     let label = runner_kind_label(runner_kind);
+    spec.validate_prompt_variants()
+        .with_context(|| format!("{label} runner prompt variant declaration is invalid"))?;
     if spec.aggregation != AggregationMethod::Proportion {
         anyhow::bail!(
             "{label} runner requires aggregation=proportion, got {:?}",
@@ -1116,6 +1127,11 @@ fn run_prompt_benchmark(
     // made — not mid-grading after tasks have already spent real API calls.
     check_prompt_regexes(tasks)?;
     check_prompt_tracked_ids(tasks)?;
+    if let Some(variant_id) = options.prompt_variant.as_deref() {
+        if !config.prompt_variants.iter().any(|variant| variant.id == variant_id) {
+            anyhow::bail!("prompt variant {:?} is not declared in the spec", variant_id);
+        }
+    }
     let effective_config = prompt_config_with_overrides(config, options);
     let client = OpenRouterClient::from_config(&effective_config)?;
     run_prompt_benchmark_with_client(
@@ -1126,6 +1142,7 @@ fn run_prompt_benchmark(
         &effective_config,
         tasks,
         &client,
+        options.prompt_variant.as_deref(),
     )
 }
 
@@ -1155,6 +1172,11 @@ fn prompt_config_with_overrides(
     }
     if let Some(temperature) = options.prompt_temperature {
         config.temperature = Some(temperature);
+    }
+    if let Some(variant_id) = options.prompt_variant.as_deref() {
+        if let Some(variant) = config.prompt_variants.iter().find(|variant| variant.id == variant_id) {
+            config.system_prompt = variant.system_prompt.clone();
+        }
     }
     config
 }
@@ -1214,6 +1236,7 @@ fn run_prompt_benchmark_with_client(
     config: &PromptModelConfig,
     tasks: &[PromptBenchmarkTask],
     model_client: &(dyn ModelClient + Sync),
+    prompt_variant: Option<&str>,
 ) -> anyhow::Result<EvalReport> {
     if config.provider != ModelProvider::OpenRouter {
         anyhow::bail!(
@@ -1244,6 +1267,7 @@ fn run_prompt_benchmark_with_client(
             harness: config.harness.clone(),
             tool_allowlist: config.tool_allowlist.clone(),
             system_prompt_hash: stable_hash(&[&config.system_prompt]),
+            prompt_variant,
             score: &score,
             totals: PromptTotals {
                 tasks: tasks.len() as u64,
@@ -2899,6 +2923,8 @@ struct PromptRunEvidence<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tool_allowlist: Vec<String>,
     system_prompt_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_variant: Option<&'a str>,
     score: &'a Score,
     totals: PromptTotals,
     tasks: &'a [PromptTaskResult],
@@ -3793,7 +3819,8 @@ mod tests {
             harness: None,
             tool_allowlist: Vec::new(),
             request_timeout_seconds: None,
-        };
+            prompt_variants: Vec::new(),
+            };
 
         let effective =
             prompt_config_with_overrides(&config, &RunOptions::with_prompt_model("test/model"));
@@ -3936,6 +3963,12 @@ mod tests {
                     harness: Some("claude-code".to_string()),
                     tool_allowlist: vec!["bash".to_string(), "web_search".to_string()],
                     request_timeout_seconds: None,
+                    prompt_variants: vec![
+                        crucible_core::PromptVariant {
+                            id: "skill_on".to_string(),
+                            system_prompt: "Use the skill.".to_string(),
+                        },
+                    ],
                 },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "exact".to_string(),
@@ -3972,6 +4005,7 @@ mod tests {
             &FakeModelClient {
                 output: "crucible-smoke",
             },
+            Some("skill_on"),
         )
         .expect("prompt benchmark runs");
 
@@ -4000,6 +4034,7 @@ mod tests {
         assert_eq!(evidence["tasks"][0]["class"], "format_adherence");
         assert_eq!(evidence["tasks"][0]["total_tokens"], 10);
         assert_eq!(evidence["max_output_units"], 8);
+        assert_eq!(evidence["prompt_variant"], "skill_on");
         assert_eq!(
             evidence["harness"], "claude-code",
             "the config's harness identity flows through to evidence: {evidence}"
@@ -4115,7 +4150,8 @@ mod tests {
             harness: None,
             tool_allowlist: Vec::new(),
             request_timeout_seconds: None,
-        };
+            prompt_variants: Vec::new(),
+            };
         let runner = RunnerSpec {
             kind: RunnerKind::PromptBenchmark,
             corpus: CorpusSpec::PromptBenchmark {
@@ -4129,7 +4165,7 @@ mod tests {
         let client = ConcurrencyProbeClient::new(Duration::from_millis(40), "probe-ok");
         let started = Instant::now();
         let report = run_prompt_benchmark_with_client(
-            &spec, &runner, &spec_path, &temp, &config, &tasks, &client,
+            &spec, &runner, &spec_path, &temp, &config, &tasks, &client, None,
         )
         .expect("prompt benchmark runs concurrently");
         let elapsed = started.elapsed();
@@ -4203,12 +4239,14 @@ mod tests {
             harness: Some("claude-code".to_string()),
             tool_allowlist: vec!["bash".to_string()],
             request_timeout_seconds: None,
-        };
+            prompt_variants: Vec::new(),
+            };
         let options = RunOptions {
             prompt_model: Some("test/model-b".to_string()),
             prompt_system_prompt: Some("Use terse answers.".to_string()),
             prompt_max_output_units: Some(32),
             prompt_temperature: Some(1),
+            prompt_variant: None,
         };
 
         let effective = prompt_config_with_overrides(&config, &options);
@@ -4369,7 +4407,8 @@ mod tests {
                     harness: None,
                     tool_allowlist: Vec::new(),
                     request_timeout_seconds: None,
-                },
+                    prompt_variants: Vec::new(),
+            },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "broken".to_string(),
                     class: None,

@@ -137,6 +137,7 @@ mod mcp;
 mod publish;
 mod run_fanout;
 mod run_matrix;
+mod run_prompt_variants;
 mod run_store;
 mod serve;
 mod spec_run;
@@ -327,8 +328,15 @@ enum Command {
         /// "run eval X in env A vs env B" workbench loop.
         #[arg(long = "env", value_name = "ENV_JSON")]
         envs: Vec<PathBuf>,
-        /// Significance threshold for the paired McNemar verdict rendered by
-        /// the `--env` matrix comparison.
+        /// Run the prompt-benchmark spec once per selected named system-prompt
+        /// variant. Repeatable and comma-separated. Use `all` to run every declared
+        /// variant; the first is the baseline and every
+        /// later variant is compared against it. This axis cannot be combined
+        /// with `--model`, `--models`, or `--env`.
+        #[arg(long = "prompt-variant", value_name = "ID", visible_alias = "prompt-variants")]
+        prompt_variants: Vec<String>,
+        /// Significance threshold for the paired McNemar verdict rendered by the
+        /// `--env` or `--prompt-variant` matrix comparison.
         #[arg(long, value_name = "ALPHA", default_value_t = run_store::DEFAULT_ALPHA)]
         alpha: f64,
         /// SQLite run ledger path. Defaults to CRUCIBLE_DB when set and
@@ -521,6 +529,10 @@ enum RunsCommand {
         /// runs share prompt task fixtures.
         #[arg(long, value_name = "ALPHA", default_value_t = run_store::DEFAULT_ALPHA)]
         alpha: f64,
+        /// Require a paired McNemar result over shared task rows. Without this
+        /// flag, compare may fall back to a descriptive latest-run delta.
+        #[arg(long)]
+        paired: bool,
         /// Write a findings journal JSON file. The journal contains a finding
         /// only when this comparison's paired verdict is a statistical signal.
         #[arg(long, value_name = "PATH")]
@@ -665,6 +677,7 @@ fn main() -> ExitCode {
             model,
             models,
             envs,
+            prompt_variants,
             alpha,
             db,
         } => run_eval(
@@ -676,6 +689,7 @@ fn main() -> ExitCode {
             model.as_deref(),
             models.as_deref(),
             &envs,
+            &prompt_variants,
             alpha,
             &db.unwrap_or_else(run_store::default_db_path),
         ),
@@ -730,18 +744,38 @@ fn run_eval(
     model: Option<&str>,
     models: Option<&str>,
     envs: &[PathBuf],
+    prompt_variants: &[String],
     alpha: f64,
     db: &Path,
 ) -> anyhow::Result<()> {
-    let override_flags = [model.is_some(), models.is_some(), !envs.is_empty()];
+    let override_flags = [
+        model.is_some(),
+        models.is_some(),
+        !envs.is_empty(),
+        !prompt_variants.is_empty(),
+    ];
     if override_flags.iter().filter(|set| **set).count() > 1 {
-        anyhow::bail!("--model, --models, and --env are mutually exclusive");
+        anyhow::bail!("--model, --models, --env, and --prompt-variant are mutually exclusive");
     }
     if !envs.is_empty() {
         if eval != eval_run::RunEval::All {
             anyhow::bail!("--env selects a declared spec and cannot be combined with --eval");
         }
         return run_matrix::run(spec, out, json, strict_tracked, envs, alpha, db);
+    }
+    if !prompt_variants.is_empty() {
+        if eval != eval_run::RunEval::All {
+            anyhow::bail!("--prompt-variant selects a declared spec and cannot be combined with --eval");
+        }
+        return run_prompt_variants::run(
+            spec,
+            out,
+            json,
+            strict_tracked,
+            prompt_variants,
+            alpha,
+            db,
+        );
     }
     if let Some(models) = models {
         return run_fanout::run(spec, eval, out, json, strict_tracked, models, db);
@@ -943,6 +977,7 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             left,
             right,
             alpha,
+            paired,
             findings_out,
             strict,
             json,
@@ -950,6 +985,9 @@ fn run_runs(command: RunsCommand) -> anyhow::Result<()> {
             let db = db.unwrap_or_else(run_store::default_db_path);
             let comparison =
                 run_store::compare_configs(&db, &benchmark, &left, &right, alpha, strict)?;
+            if paired && comparison.paired.is_none() {
+                anyhow::bail!("--paired requested but the two runs share no comparable task rows");
+            }
             let findings_receipt = if let Some(path) = findings_out.as_deref() {
                 let repro_command =
                     runs_compare_repro_command(&db, &benchmark, &left, &right, alpha);

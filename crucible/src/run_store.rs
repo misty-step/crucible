@@ -340,13 +340,14 @@ pub struct ConfigComparison {
     /// Backlog 974: which identity axis (or axes) the observed delta is
     /// attributable to, derived from the actual diff between `left`/`right`
     /// — never assumed from the query strings. `"model_delta"` when only
-    /// `model` differs, `"harness_delta"` when only `harness` differs,
+    /// `model` differs, `"harness_delta"` when only `harness` differs, and
+    /// `"prompt_delta"` when only the persisted system-prompt hash differs.
     /// `"config_delta"` otherwise (zero, or two-or-more, axes differ —
     /// unattributable to any single one; see `attribution_note`).
     pub attribution: &'static str,
     /// Present alongside `attribution: "config_delta"`, explaining exactly
-    /// which axes differed. `None` for `model_delta`/`harness_delta`, where
-    /// the label alone already says which single axis moved.
+    /// which axes differed. `None` for `model_delta`/`harness_delta`/`prompt_delta`,
+    /// where the label alone already says which single axis moved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attribution_note: Option<String>,
     /// Backlog 974: set for an env-backed (`harbor_task`) comparison whose
@@ -1441,15 +1442,19 @@ fn attribution_for(left_run: &StoredRun, right_run: &StoredRun) -> (&'static str
     if left_run.scoring_id != right_run.scoring_id {
         differing.push("scoring (grader/rubric)");
     }
+    if system_prompt_hash(&left_run.config_id) != system_prompt_hash(&right_run.config_id) {
+        differing.push("system_prompt");
+    }
 
     match differing.as_slice() {
         ["model"] => ("model_delta", None),
         ["harness"] => ("harness_delta", None),
+        ["system_prompt"] => ("prompt_delta", None),
         [] => (
             "config_delta",
             Some(
                 "Unattributable: left and right resolved to runs with identical identity axes \
-                 (model, harness, tool_allowlist, scoring) — any observed delta is noise, not a \
+                 (model, harness, tool_allowlist, system_prompt, scoring) — any observed delta is noise, not a \
                  config difference."
                     .to_string(),
             ),
@@ -1475,6 +1480,14 @@ fn attribution_for(left_run: &StoredRun, right_run: &StoredRun) -> (&'static str
 /// mismatch; an undeclared envelope on either side means the comparison
 /// never controlled for infra at all, which only matters when the delta is
 /// small enough that infra noise alone could plausibly explain it.
+
+fn system_prompt_hash(config_id: &str) -> &str {
+    config_id
+        .split_once(":prompt=")
+        .and_then(|(_, rest)| rest.split_once(":scoring=").map(|(hash, _)| hash))
+        .unwrap_or("")
+}
+
 fn resource_envelope_caveat(
     left_run: &StoredRun,
     right_run: &StoredRun,
@@ -3247,6 +3260,17 @@ mod tests {
         }
     }
 
+    fn set_system_prompt_hash(report: &RunReport, hash: &str) {
+        let evidence_path = Path::new(&report.evals[0].artifacts[1]);
+        let mut evidence: Value = serde_json::from_str(
+            &std::fs::read_to_string(evidence_path).expect("read prompt evidence"),
+        )
+        .expect("parse prompt evidence");
+        evidence["system_prompt_hash"] = serde_json::json!(hash);
+        std::fs::write(evidence_path, serde_json::to_string_pretty(&evidence).unwrap())
+            .expect("rewrite prompt evidence");
+    }
+
     fn add_tracked_result(report: &RunReport, check_id: &str, passed: bool) {
         let evidence_path = Path::new(&report.evals[0].artifacts[1]);
         let mut evidence: Value = serde_json::from_str(
@@ -4092,6 +4116,42 @@ mod tests {
         .expect("compare configs");
         assert_eq!(comparison.attribution, "model_delta");
         assert!(comparison.attribution_note.is_none());
+    }
+
+    #[test]
+    fn compare_configs_labels_prompt_delta_when_only_system_prompt_differs() {
+        let root = temp_dir("attrib-prompt-delta");
+        let db = root.join("runs.sqlite");
+        let left = prompt_report(&root, "test/model", false);
+        set_system_prompt_hash(&left, "fnv1a64:skill-off");
+        persist_report(&db, &left).expect("persist prompt-off run");
+        let right_root = temp_dir("attrib-prompt-delta-right");
+        let right = prompt_report(&right_root, "test/model", true);
+        set_system_prompt_hash(&right, "fnv1a64:skill-on");
+        persist_report(&db, &right).expect("persist prompt-on run");
+
+        let list = list_runs(
+            &db,
+            RunListFilter {
+                benchmark: Some("prompt-smoke-v0"),
+                ..Default::default()
+            },
+        )
+        .expect("list prompt variant runs");
+        assert_eq!(list.runs.len(), 2);
+        let mut configs: Vec<String> = list
+            .runs
+            .iter()
+            .map(|run| run.config_id.clone())
+            .collect();
+        configs.sort();
+        assert_ne!(configs[0], configs[1]);
+        assert!(configs[0].contains(":prompt="));
+        let comparison = compare_configs(&db, "prompt-smoke-v0", &configs[0], &configs[1], 0.05, true)
+            .expect("compare prompt variants");
+        assert_eq!(comparison.attribution, "prompt_delta");
+        assert!(comparison.attribution_note.is_none());
+        assert!(comparison.paired.is_some(), "shared task rows stay paired");
     }
 
     #[test]

@@ -1847,6 +1847,7 @@ fn run_controlled_comparison(
             prompt_system_prompt: runner.system_prompt,
             prompt_max_output_units: runner.max_output_units,
             prompt_temperature: runner.temperature,
+            prompt_variant: None,
         };
         let report = spec_run::run_with_options(spec_path, Some(&output_dir), &options)?;
         let stored = run_store::persist_report(db_path, &report)?;

@@ -357,6 +357,7 @@ mod tests {
                         harness: None,
                         tool_allowlist: Vec::new(),
                         request_timeout_seconds: None,
+                        prompt_variants: Vec::new(),
                     },
                     tasks: vec![PromptBenchmarkTask {
                         task_id: "t".to_string(),

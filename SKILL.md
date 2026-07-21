@@ -207,6 +207,53 @@ cargo run -p crucible -- run evals/prompt-smoke-v0.json \
   --json
 ```
 
+### Compare Named System-Prompt Variants
+
+A prompt benchmark can declare named system-prompt variants inside its existing
+`runner.corpus.config` object. Keep one `id`, one authored task list, and
+one task corpus. Each variant has an `id` and a complete `system_prompt`:
+
+```json
+"prompt_variants": [
+  {"id": "skill_off", "system_prompt": "Answer the user directly."},
+  {"id": "skill_on", "system_prompt": "Use the repository skill, then answer directly."}
+]
+```
+
+Run every declared variant (the first is the baseline) with `--prompt-variant all`:
+
+```sh
+cargo run -p crucible -- run evals/prompt-variant-v0.json \
+  --prompt-variant all \
+  --out runs/local/prompt-variant-v0 \
+  --db runs/local/prompt-variant-v0.sqlite \
+  --json
+```
+
+Run selected variants by repeating the flag or by passing a comma-separated list:
+```sh
+cargo run -p crucible -- run evals/prompt-variant-v0.json \
+  --prompt-variant skill_off --prompt-variant skill_on \
+  --db runs/local/prompt-variant-v0.sqlite \
+  --json
+```
+
+The command writes one run row per variant under the same benchmark id and emits
+baseline-vs-challenger comparisons. `runs compare --paired` over those rows uses
+McNemar's test and reports `attribution: "prompt_delta"` when the persisted
+system-prompt identity is the only changed axis. Do not combine `--prompt-variant` with
+`--model`, `--models`, or `--env`; that would mix prompt and invocation axes.
+
+```sh
+cargo run -p crucible -- runs compare \
+  --benchmark prompt-variant-v0 \
+  --left <baseline-config-id> \
+  --right <challenger-config-id> \
+  --paired \
+  --db runs/local/prompt-variant-v0.sqlite \
+  --json
+```
+
 This is the first author-and-run engine slice: Crucible owns the authored prompt
 benchmark, makes the live model call, grades the text with a deterministic
 rubric, writes `prompt-run.json` evidence under `runs/`, and persists the run
