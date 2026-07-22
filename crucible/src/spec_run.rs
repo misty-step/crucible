@@ -1128,15 +1128,21 @@ fn run_prompt_benchmark(
     check_prompt_regexes(tasks)?;
     check_prompt_tracked_ids(tasks)?;
     if let Some(variant_id) = options.prompt_variant.as_deref() {
-        if !config.prompt_variants.iter().any(|variant| variant.id == variant_id) {
-            anyhow::bail!("prompt variant {:?} is not declared in the spec", variant_id);
+        if !config
+            .prompt_variants
+            .iter()
+            .any(|variant| variant.id == variant_id)
+        {
+            anyhow::bail!(
+                "prompt variant {:?} is not declared in the spec",
+                variant_id
+            );
         }
     }
     let effective_config = prompt_config_with_overrides(config, options);
     let client = OpenRouterClient::from_config(&effective_config)?;
     run_prompt_benchmark_with_client(
         spec,
-        runner,
         spec_path,
         out,
         &effective_config,
@@ -1174,7 +1180,11 @@ fn prompt_config_with_overrides(
         config.temperature = Some(temperature);
     }
     if let Some(variant_id) = options.prompt_variant.as_deref() {
-        if let Some(variant) = config.prompt_variants.iter().find(|variant| variant.id == variant_id) {
+        if let Some(variant) = config
+            .prompt_variants
+            .iter()
+            .find(|variant| variant.id == variant_id)
+        {
             config.system_prompt = variant.system_prompt.clone();
         }
     }
@@ -1230,7 +1240,6 @@ const PROMPT_TASK_CONCURRENCY: usize = 4;
 
 fn run_prompt_benchmark_with_client(
     spec: &EvalSpec,
-    runner: &RunnerSpec,
     spec_path: &Path,
     out: &Path,
     config: &PromptModelConfig,
@@ -1259,7 +1268,7 @@ fn run_prompt_benchmark_with_client(
             schema_version: "crucible.prompt_run_evidence.v1",
             spec_id: spec_id(spec, spec_path),
             spec: spec_path.display().to_string(),
-            runner: runner.kind,
+            runner: RunnerKind::PromptBenchmark,
             provider: config.provider,
             model: config.model.clone(),
             temperature: config.temperature,
@@ -2317,9 +2326,7 @@ fn resolve_openrouter_endpoint(raw: Option<&str>) -> anyhow::Result<reqwest::Url
     }
     let is_https = url.scheme().eq_ignore_ascii_case("https");
     let is_local_http = url.scheme().eq_ignore_ascii_case("http")
-        && url
-            .host_str()
-            .is_some_and(is_non_public_http_host);
+        && url.host_str().is_some_and(is_non_public_http_host);
     if !is_https && !is_local_http {
         anyhow::bail!(
             "{OPENROUTER_BASE_URL_ENV} must use HTTPS (HTTP is allowed only for private test or broker routes)"
@@ -2361,9 +2368,7 @@ fn is_non_public_http_host(host: &str) -> bool {
         }
         std::net::IpAddr::V6(address) => {
             let first = address.segments()[0];
-            address.is_loopback()
-                || (first & 0xfe00) == 0xfc00
-                || (first & 0xffc0) == 0xfe80
+            address.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
         }
     }
 }
@@ -2398,9 +2403,8 @@ impl OpenRouterClient {
         let api_key = std::env::var(credential_env).with_context(|| {
             format!("{credential_env} is not set; this runner requires a BYOK OpenRouter key")
         })?;
-        let endpoint = resolve_openrouter_endpoint(
-            std::env::var(OPENROUTER_BASE_URL_ENV).ok().as_deref(),
-        )?;
+        let endpoint =
+            resolve_openrouter_endpoint(std::env::var(OPENROUTER_BASE_URL_ENV).ok().as_deref())?;
         let http = reqwest::blocking::Client::builder()
             .timeout(timeout)
             .build()
@@ -3335,7 +3339,9 @@ mod tests {
             let error = super::resolve_openrouter_endpoint(Some(root))
                 .expect_err("completion endpoint must not be treated as an API root");
             assert!(
-                error.to_string().contains("OPENROUTER_BASE_URL expects an API root"),
+                error
+                    .to_string()
+                    .contains("OPENROUTER_BASE_URL expects an API root"),
                 "error should explain the API-root contract"
             );
         }
@@ -3525,7 +3531,8 @@ mod tests {
                 let count = std::io::Read::read(&mut stream, &mut chunk).expect("read request");
                 assert!(count > 0, "client closed before sending request headers");
                 request.extend_from_slice(&chunk[..count]);
-                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                {
                     break position + 4;
                 }
             };
@@ -3541,7 +3548,8 @@ mod tests {
                 .unwrap_or(0);
             while request.len() < header_end + content_length {
                 let mut chunk = [0_u8; 4096];
-                let count = std::io::Read::read(&mut stream, &mut chunk).expect("read request body");
+                let count =
+                    std::io::Read::read(&mut stream, &mut chunk).expect("read request body");
                 assert!(count > 0, "client closed before sending request body");
                 request.extend_from_slice(&chunk[..count]);
             }
@@ -3562,11 +3570,9 @@ mod tests {
             format!("http://{address}/proxy/https/openrouter.ai/api/v1/"),
         );
         std::env::set_var("CRUCIBLE_WIRE_TEST_KEY", "unit-test-bearer");
-        let client = OpenRouterClient::with_timeout(
-            "CRUCIBLE_WIRE_TEST_KEY",
-            Duration::from_secs(5),
-        )
-        .expect("build loopback OpenRouter client");
+        let client =
+            OpenRouterClient::with_timeout("CRUCIBLE_WIRE_TEST_KEY", Duration::from_secs(5))
+                .expect("build loopback OpenRouter client");
         let response = client
             .complete(ModelRequest {
                 model: "test/model",
@@ -3589,7 +3595,8 @@ mod tests {
         );
         let authorization = request.lines().find_map(|line| {
             line.split_once(':').and_then(|(name, value)| {
-                name.eq_ignore_ascii_case("authorization").then_some(value.trim())
+                name.eq_ignore_ascii_case("authorization")
+                    .then_some(value.trim())
             })
         });
         assert_eq!(authorization, Some("Bearer unit-test-bearer"));
@@ -4183,7 +4190,7 @@ mod tests {
             tool_allowlist: Vec::new(),
             request_timeout_seconds: None,
             prompt_variants: Vec::new(),
-            };
+        };
 
         let effective =
             prompt_config_with_overrides(&config, &RunOptions::with_prompt_model("test/model"));
@@ -4326,12 +4333,10 @@ mod tests {
                     harness: Some("claude-code".to_string()),
                     tool_allowlist: vec!["bash".to_string(), "web_search".to_string()],
                     request_timeout_seconds: None,
-                    prompt_variants: vec![
-                        crucible_core::PromptVariant {
-                            id: "skill_on".to_string(),
-                            system_prompt: "Use the skill.".to_string(),
-                        },
-                    ],
+                    prompt_variants: vec![crucible_core::PromptVariant {
+                        id: "skill_on".to_string(),
+                        system_prompt: "Use the skill.".to_string(),
+                    }],
                 },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "exact".to_string(),
@@ -4354,7 +4359,6 @@ mod tests {
 
         let report = run_prompt_benchmark_with_client(
             &spec,
-            &runner,
             &spec_path,
             &temp,
             match &runner.corpus {
@@ -4514,13 +4518,6 @@ mod tests {
             tool_allowlist: Vec::new(),
             request_timeout_seconds: None,
             prompt_variants: Vec::new(),
-            };
-        let runner = RunnerSpec {
-            kind: RunnerKind::PromptBenchmark,
-            corpus: CorpusSpec::PromptBenchmark {
-                config: config.clone(),
-                tasks: tasks.clone(),
-            },
         };
 
         // 8 tasks * 40ms each: fully sequential takes >= 320ms; bounded
@@ -4528,7 +4525,7 @@ mod tests {
         let client = ConcurrencyProbeClient::new(Duration::from_millis(40), "probe-ok");
         let started = Instant::now();
         let report = run_prompt_benchmark_with_client(
-            &spec, &runner, &spec_path, &temp, &config, &tasks, &client, None,
+            &spec, &spec_path, &temp, &config, &tasks, &client, None,
         )
         .expect("prompt benchmark runs concurrently");
         let elapsed = started.elapsed();
@@ -4603,7 +4600,7 @@ mod tests {
             tool_allowlist: vec!["bash".to_string()],
             request_timeout_seconds: None,
             prompt_variants: Vec::new(),
-            };
+        };
         let options = RunOptions {
             prompt_model: Some("test/model-b".to_string()),
             prompt_system_prompt: Some("Use terse answers.".to_string()),
@@ -4771,7 +4768,7 @@ mod tests {
                     tool_allowlist: Vec::new(),
                     request_timeout_seconds: None,
                     prompt_variants: Vec::new(),
-            },
+                },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "broken".to_string(),
                     class: None,

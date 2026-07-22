@@ -333,7 +333,11 @@ enum Command {
         /// variant; the first is the baseline and every
         /// later variant is compared against it. This axis cannot be combined
         /// with `--model`, `--models`, or `--env`.
-        #[arg(long = "prompt-variant", value_name = "ID", visible_alias = "prompt-variants")]
+        #[arg(
+            long = "prompt-variant",
+            value_name = "ID",
+            visible_alias = "prompt-variants"
+        )]
         prompt_variants: Vec<String>,
         /// Significance threshold for the paired McNemar verdict rendered by the
         /// `--env` or `--prompt-variant` matrix comparison.
@@ -765,7 +769,9 @@ fn run_eval(
     }
     if !prompt_variants.is_empty() {
         if eval != eval_run::RunEval::All {
-            anyhow::bail!("--prompt-variant selects a declared spec and cannot be combined with --eval");
+            anyhow::bail!(
+                "--prompt-variant selects a declared spec and cannot be combined with --eval"
+            );
         }
         return run_prompt_variants::run(
             spec,

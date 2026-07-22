@@ -1472,6 +1472,13 @@ fn attribution_for(left_run: &StoredRun, right_run: &StoredRun) -> (&'static str
     }
 }
 
+fn system_prompt_hash(config_id: &str) -> &str {
+    config_id
+        .split_once(":prompt=")
+        .and_then(|(_, rest)| rest.split_once(":scoring=").map(|(hash, _)| hash))
+        .unwrap_or("")
+}
+
 /// Backlog 974: Anthropic's infrastructure-noise finding (Feb 2026) — a
 /// container's CPU/RAM headroom-vs-limit configuration ALONE produced a 6
 /// percentage-point swing (p<0.01) on Terminal-Bench 2.0, larger than the
@@ -1480,14 +1487,6 @@ fn attribution_for(left_run: &StoredRun, right_run: &StoredRun) -> (&'static str
 /// mismatch; an undeclared envelope on either side means the comparison
 /// never controlled for infra at all, which only matters when the delta is
 /// small enough that infra noise alone could plausibly explain it.
-
-fn system_prompt_hash(config_id: &str) -> &str {
-    config_id
-        .split_once(":prompt=")
-        .and_then(|(_, rest)| rest.split_once(":scoring=").map(|(hash, _)| hash))
-        .unwrap_or("")
-}
-
 fn resource_envelope_caveat(
     left_run: &StoredRun,
     right_run: &StoredRun,
@@ -3267,8 +3266,11 @@ mod tests {
         )
         .expect("parse prompt evidence");
         evidence["system_prompt_hash"] = serde_json::json!(hash);
-        std::fs::write(evidence_path, serde_json::to_string_pretty(&evidence).unwrap())
-            .expect("rewrite prompt evidence");
+        std::fs::write(
+            evidence_path,
+            serde_json::to_string_pretty(&evidence).unwrap(),
+        )
+        .expect("rewrite prompt evidence");
     }
 
     fn add_tracked_result(report: &RunReport, check_id: &str, passed: bool) {
@@ -4139,16 +4141,13 @@ mod tests {
         )
         .expect("list prompt variant runs");
         assert_eq!(list.runs.len(), 2);
-        let mut configs: Vec<String> = list
-            .runs
-            .iter()
-            .map(|run| run.config_id.clone())
-            .collect();
+        let mut configs: Vec<String> = list.runs.iter().map(|run| run.config_id.clone()).collect();
         configs.sort();
         assert_ne!(configs[0], configs[1]);
         assert!(configs[0].contains(":prompt="));
-        let comparison = compare_configs(&db, "prompt-smoke-v0", &configs[0], &configs[1], 0.05, true)
-            .expect("compare prompt variants");
+        let comparison =
+            compare_configs(&db, "prompt-smoke-v0", &configs[0], &configs[1], 0.05, true)
+                .expect("compare prompt variants");
         assert_eq!(comparison.attribution, "prompt_delta");
         assert!(comparison.attribution_note.is_none());
         assert!(comparison.paired.is_some(), "shared task rows stay paired");

@@ -662,7 +662,7 @@ mod tests {
                     tool_allowlist: Vec::new(),
                     request_timeout_seconds: None,
                     prompt_variants: Vec::new(),
-            },
+                },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "broken".to_string(),
                     class: None,
@@ -714,7 +714,7 @@ mod tests {
                     tool_allowlist: Vec::new(),
                     request_timeout_seconds: None,
                     prompt_variants: Vec::new(),
-            },
+                },
                 tasks: vec![PromptBenchmarkTask {
                     task_id: "tracked-task".to_string(),
                     class: None,

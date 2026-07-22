@@ -267,10 +267,7 @@ fn print_human(db: &Path, receipts: &[VariantReceipt], alpha: f64) -> anyhow::Re
     };
     for challenger in challengers {
         println!();
-        println!(
-            "comparison  baseline {} vs {}",
-            baseline.id, challenger.id
-        );
+        println!("comparison  baseline {} vs {}", baseline.id, challenger.id);
         let comparison = run_store::compare_configs(
             db,
             &baseline.benchmark_id,
@@ -317,7 +314,10 @@ mod tests {
         let spec = fixture_spec();
         let declared = vec!["skill_off".to_string(), "skill_on".to_string()];
         assert_eq!(select_variants(&spec, &[]).unwrap(), declared);
-        assert_eq!(select_variants(&spec, &["all".to_string()]).unwrap(), declared);
+        assert_eq!(
+            select_variants(&spec, &["all".to_string()]).unwrap(),
+            declared
+        );
         assert_eq!(
             select_variants(&spec, &["skill_on,skill_off".to_string()]).unwrap(),
             vec!["skill_on", "skill_off"]
@@ -329,7 +329,9 @@ mod tests {
         let spec = fixture_spec();
         for requested in [vec![String::new()], vec![",,".to_string()]] {
             let error = select_variants(&spec, &requested).expect_err("empty selector must fail");
-            assert!(error.to_string().contains("at least one non-empty variant id"));
+            assert!(error
+                .to_string()
+                .contains("at least one non-empty variant id"));
         }
         let error = select_variants(&spec, &["all,skill_off".to_string()])
             .expect_err("all cannot mix with named variants");

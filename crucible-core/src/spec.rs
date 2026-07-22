@@ -371,7 +371,9 @@ fn validate_prompt_variant_list(variants: &[PromptVariant]) -> Result<(), Prompt
         if !ids.insert(variant.id.as_str()) {
             return Err(PromptVariantError::DuplicateId(variant.id.clone()));
         }
-        if let Some(previous_id) = prompts.insert(variant.system_prompt.as_str(), variant.id.as_str()) {
+        if let Some(previous_id) =
+            prompts.insert(variant.system_prompt.as_str(), variant.id.as_str())
+        {
             return Err(PromptVariantError::DuplicateSystemPrompt(
                 previous_id.to_string(),
                 variant.id.clone(),
@@ -1170,7 +1172,7 @@ mod tests {
             tool_allowlist: vec!["bash".to_string(), "web_search".to_string()],
             request_timeout_seconds: None,
             prompt_variants: Vec::new(),
-            };
+        };
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains(r#""harness":"claude-code""#), "{json}");
         assert!(
@@ -1210,7 +1212,7 @@ mod tests {
             tool_allowlist: Vec::new(),
             request_timeout_seconds: Some(900),
             prompt_variants: Vec::new(),
-            };
+        };
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains(r#""request_timeout_seconds":900"#), "{json}");
         let back: PromptModelConfig = serde_json::from_str(&json).unwrap();
@@ -1301,7 +1303,11 @@ mod tests {
         };
         spec.validate_prompt_variants().unwrap();
         let transformed = spec.apply_prompt_variant("skill_on").unwrap();
-        let CorpusSpec::PromptBenchmark { config, tasks: transformed_tasks } = transformed.runner.unwrap().corpus else {
+        let CorpusSpec::PromptBenchmark {
+            config,
+            tasks: transformed_tasks,
+        } = transformed.runner.unwrap().corpus
+        else {
             panic!("expected prompt benchmark corpus");
         };
         assert_eq!(config.system_prompt, "Use the skill.");

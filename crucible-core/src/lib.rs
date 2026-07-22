@@ -172,7 +172,7 @@ pub use spec::{
     AgenticJudgeConfig, AgenticJudgeTask, Aggregate, AggregationMethod, CerberusReceiptTask,
     CorpusSpec, EvalSpec, FixtureRef, Grader, GraderKind, GraderManifest, HarborRunConfig,
     HarborTaskSpec, IntervalMethod, ModelProvider, PairedDelta, PromptBenchmarkTask,
-    PromptExpectation, PromptModelConfig, PromptVariant, PromptVariantError, ResourceEnvelope, RunnerKind, RunnerSpec, TrackedCheck,
-    UncertaintyRule, EVAL_SPEC_SCHEMA,
+    PromptExpectation, PromptModelConfig, PromptVariant, PromptVariantError, ResourceEnvelope,
+    RunnerKind, RunnerSpec, TrackedCheck, UncertaintyRule, EVAL_SPEC_SCHEMA,
 };
 pub use trace::{Trace, TraceStep, TRACE_SCHEMA};

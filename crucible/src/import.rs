@@ -251,7 +251,7 @@ fn import_promptfoo(args: &PromptfooImportArgs) -> anyhow::Result<ImportReport> 
                     tool_allowlist: Vec::new(),
                     request_timeout_seconds: None,
                     prompt_variants: Vec::new(),
-            },
+                },
                 tasks: projection.imported,
             },
         }),
