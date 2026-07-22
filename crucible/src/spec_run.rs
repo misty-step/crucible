@@ -2284,8 +2284,101 @@ trait ModelClient {
     fn complete(&self, request: ModelRequest<'_>) -> anyhow::Result<ModelResponse>;
 }
 
+const DEFAULT_OPENROUTER_API_ROOT: &str = "https://openrouter.ai/api/v1";
+const OPENROUTER_BASE_URL_ENV: &str = "OPENROUTER_BASE_URL";
+
+/// Resolve the OpenRouter-compatible API root into the one chat-completions
+/// endpoint used by both live model runners. The raw value is supplied by the
+/// caller so this function stays pure and easy to exercise without process
+/// environment state.
+fn resolve_openrouter_endpoint(raw: Option<&str>) -> anyhow::Result<reqwest::Url> {
+    let root = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_OPENROUTER_API_ROOT);
+    let mut url = reqwest::Url::parse(root)
+        .map_err(|_| anyhow::anyhow!("{OPENROUTER_BASE_URL_ENV} must be an absolute URL"))?;
+
+    let authority_start = root.find("://").map_or(0, |position| position + 3);
+    let authority_end = root[authority_start..]
+        .find(['/', '?', '#'])
+        .map_or(root.len(), |position| authority_start + position);
+    if root[authority_start..authority_end].contains('@')
+        || url.username() != ""
+        || url.password().is_some()
+    {
+        anyhow::bail!("{OPENROUTER_BASE_URL_ENV} must not contain credentials");
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        anyhow::bail!("{OPENROUTER_BASE_URL_ENV} must not contain a query or fragment");
+    }
+    if url.host_str().is_none() {
+        anyhow::bail!("{OPENROUTER_BASE_URL_ENV} must be an absolute URL");
+    }
+    let is_https = url.scheme().eq_ignore_ascii_case("https");
+    let is_local_http = url.scheme().eq_ignore_ascii_case("http")
+        && url
+            .host_str()
+            .is_some_and(is_non_public_http_host);
+    if !is_https && !is_local_http {
+        anyhow::bail!(
+            "{OPENROUTER_BASE_URL_ENV} must use HTTPS (HTTP is allowed only for private test or broker routes)"
+        );
+    }
+
+    let path = url.path().trim_end_matches('/');
+    if path.ends_with("/chat/completions") {
+        anyhow::bail!(
+            "{OPENROUTER_BASE_URL_ENV} expects an API root, not a chat completions endpoint"
+        );
+    }
+    let endpoint_path = if path.is_empty() {
+        "/chat/completions".to_string()
+    } else {
+        format!("{path}/chat/completions")
+    };
+    url.set_path(&endpoint_path);
+    Ok(url)
+}
+
+fn is_non_public_http_host(host: &str) -> bool {
+    let host = host.trim_matches(['[', ']']);
+    if host.eq_ignore_ascii_case("localhost") || is_tailscale_magic_dns_host(host) {
+        return true;
+    }
+    let Ok(address) = host.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    match address {
+        std::net::IpAddr::V4(address) => {
+            let [first, second, ..] = address.octets();
+            address.is_loopback()
+                || first == 10
+                || (first == 172 && (16..=31).contains(&second))
+                || (first == 192 && second == 168)
+                || (first == 169 && second == 254)
+                || (first == 100 && (64..=127).contains(&second))
+        }
+        std::net::IpAddr::V6(address) => {
+            let first = address.segments()[0];
+            address.is_loopback()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+fn is_tailscale_magic_dns_host(host: &str) -> bool {
+    let normalized = host.to_ascii_lowercase();
+    let Some(prefix) = normalized.strip_suffix(".ts.net") else {
+        return false;
+    };
+    !prefix.is_empty() && prefix.split('.').all(|label| !label.is_empty())
+}
+
 struct OpenRouterClient {
     api_key: String,
+    endpoint: reqwest::Url,
     http: reqwest::blocking::Client,
 }
 
@@ -2305,11 +2398,18 @@ impl OpenRouterClient {
         let api_key = std::env::var(credential_env).with_context(|| {
             format!("{credential_env} is not set; this runner requires a BYOK OpenRouter key")
         })?;
+        let endpoint = resolve_openrouter_endpoint(
+            std::env::var(OPENROUTER_BASE_URL_ENV).ok().as_deref(),
+        )?;
         let http = reqwest::blocking::Client::builder()
             .timeout(timeout)
             .build()
             .context("building OpenRouter HTTP client")?;
-        Ok(Self { api_key, http })
+        Ok(Self {
+            api_key,
+            endpoint,
+            http,
+        })
     }
 }
 
@@ -2368,7 +2468,7 @@ impl ModelClient for OpenRouterClient {
         };
         let response = self
             .http
-            .post("https://openrouter.ai/api/v1/chat/completions")
+            .post(self.endpoint.clone())
             .bearer_auth(&self.api_key)
             .header("HTTP-Referer", "https://github.com/misty-step/crucible")
             .header("X-OpenRouter-Title", "Crucible")
@@ -3196,6 +3296,119 @@ fn is_zero_usize(value: &usize) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn openrouter_endpoint_defaults_to_the_exact_legacy_endpoint() {
+        assert_eq!(
+            super::resolve_openrouter_endpoint(None)
+                .expect("default endpoint")
+                .as_str(),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+        assert_eq!(
+            super::resolve_openrouter_endpoint(Some("   "))
+                .expect("blank endpoint")
+                .as_str(),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn openrouter_endpoint_preserves_mint_path_prefix_and_trailing_slash() {
+        for root in [
+            "https://mint.example/proxy/https/openrouter.ai/api/v1",
+            "https://mint.example/proxy/https/openrouter.ai/api/v1/",
+        ] {
+            assert_eq!(
+                super::resolve_openrouter_endpoint(Some(root))
+                    .expect("Mint-compatible endpoint")
+                    .as_str(),
+                "https://mint.example/proxy/https/openrouter.ai/api/v1/chat/completions"
+            );
+        }
+    }
+
+    #[test]
+    fn openrouter_endpoint_rejects_completion_endpoint_roots() {
+        for root in [
+            "https://example.com/api/v1/chat/completions",
+            "https://example.com/api/v1/chat/completions/",
+        ] {
+            let error = super::resolve_openrouter_endpoint(Some(root))
+                .expect_err("completion endpoint must not be treated as an API root");
+            assert!(
+                error.to_string().contains("OPENROUTER_BASE_URL expects an API root"),
+                "error should explain the API-root contract"
+            );
+        }
+    }
+
+    #[test]
+    fn openrouter_endpoint_rejects_unsafe_roots() {
+        for root in [
+            "openrouter.ai/api/v1",
+            "https://user:password\x40example.com/api/v1",
+            "https://@example.com/api/v1",
+            "https://example.com/api/v1?token=placeholder",
+            "https://example.com/api/v1#fragment",
+            "http://example.com/api/v1",
+            "ftp://127.0.0.1/api/v1",
+        ] {
+            assert!(
+                super::resolve_openrouter_endpoint(Some(root)).is_err(),
+                "unsafe endpoint should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn openrouter_endpoint_allows_non_public_http_hosts() {
+        for root in [
+            "http://127.0.0.1:1234/proxy/openrouter",
+            "http://[::1]:1234/proxy/openrouter",
+            "http://localhost:1234/proxy/openrouter",
+            "http://10.0.0.2:1234/proxy/openrouter",
+            "http://172.16.0.2:1234/proxy/openrouter",
+            "http://192.168.0.2:1234/proxy/openrouter",
+            "http://169.254.1.2:1234/proxy/openrouter",
+            "http://[fe80::1]:1234/proxy/openrouter",
+            "http://100.108.0.89:4949/proxy/https/openrouter.ai/api/v1",
+        ] {
+            assert!(
+                super::resolve_openrouter_endpoint(Some(root)).is_ok(),
+                "non-public HTTP endpoint should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn openrouter_endpoint_allows_tailscale_magicdns_http() {
+        for root in [
+            "http://mint.tail5f5eb4.ts.net:4949/proxy/https/openrouter.ai/api/v1",
+            "http://MINT.TAIL5F5EB4.TS.NET:4949/proxy/https/openrouter.ai/api/v1",
+        ] {
+            assert!(
+                super::resolve_openrouter_endpoint(Some(root)).is_ok(),
+                "Tailscale MagicDNS HTTP endpoint should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn openrouter_endpoint_rejects_public_http_hosts() {
+        for root in [
+            "http://203.0.113.10:4949/proxy/https/openrouter.ai/api/v1",
+            "http://example.com:4949/proxy/https/openrouter.ai/api/v1",
+            "http://ts.net:4949/proxy/https/openrouter.ai/api/v1",
+            "http://.ts.net:4949/proxy/https/openrouter.ai/api/v1",
+            "http://mint..ts.net:4949/proxy/https/openrouter.ai/api/v1",
+        ] {
+            assert!(
+                super::resolve_openrouter_endpoint(Some(root)).is_err(),
+                "public or malformed HTTP endpoint should be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn request_timeout_resolution_spec_beats_env_beats_default() {
         // Env-mutating: serialized by taking a process-wide lock name unique
         // to this test's env var usage.
@@ -3234,6 +3447,156 @@ mod tests {
     }
 
     use super::*;
+
+    static OPENROUTER_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvVarRestore {
+        name: &'static str,
+        value: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarRestore {
+        fn new(name: &'static str) -> Self {
+            Self {
+                name,
+                value: std::env::var_os(name),
+            }
+        }
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            if let Some(value) = self.value.take() {
+                std::env::set_var(self.name, value);
+            } else {
+                std::env::remove_var(self.name);
+            }
+        }
+    }
+
+    #[test]
+    fn prompt_and_agentic_constructors_share_the_resolved_endpoint() {
+        let _guard = OPENROUTER_ENV_LOCK.lock().unwrap();
+        let _base_url_restore = EnvVarRestore::new(OPENROUTER_BASE_URL_ENV);
+        std::env::set_var(
+            OPENROUTER_BASE_URL_ENV,
+            "https://mint.example/proxy/https/openrouter.ai/api/v1/",
+        );
+        std::env::set_var("CRUCIBLE_PROMPT_TEST_KEY", "unit-test-prompt-key");
+        std::env::set_var("CRUCIBLE_AGENTIC_TEST_KEY", "unit-test-agentic-key");
+
+        let prompt = OpenRouterClient::from_config(&PromptModelConfig {
+            provider: ModelProvider::OpenRouter,
+            model: "test/model".to_string(),
+            system_prompt: "Answer exactly.".to_string(),
+            credential_env: "CRUCIBLE_PROMPT_TEST_KEY".to_string(),
+            max_output_units: Some(8),
+            temperature: Some(0),
+            harness: None,
+            tool_allowlist: Vec::new(),
+            request_timeout_seconds: Some(5),
+            prompt_variants: Vec::new(),
+        })
+        .expect("prompt benchmark constructor");
+        let agentic = OpenRouterClient::from_credential_env("CRUCIBLE_AGENTIC_TEST_KEY")
+            .expect("agentic judge constructor");
+
+        assert_eq!(prompt.endpoint, agentic.endpoint);
+        assert_eq!(
+            prompt.endpoint.as_str(),
+            "https://mint.example/proxy/https/openrouter.ai/api/v1/chat/completions"
+        );
+
+        std::env::remove_var("CRUCIBLE_PROMPT_TEST_KEY");
+        std::env::remove_var("CRUCIBLE_AGENTIC_TEST_KEY");
+    }
+
+    #[test]
+    fn openrouter_client_posts_to_the_override_with_bearer_auth() {
+        let _guard = OPENROUTER_ENV_LOCK.lock().unwrap();
+        let _base_url_restore = EnvVarRestore::new(OPENROUTER_BASE_URL_ENV);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
+        let address = listener.local_addr().expect("loopback server address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept OpenRouter request");
+            let mut request = Vec::new();
+            let header_end = loop {
+                let mut chunk = [0_u8; 4096];
+                let count = std::io::Read::read(&mut stream, &mut chunk).expect("read request");
+                assert!(count > 0, "client closed before sending request headers");
+                request.extend_from_slice(&chunk[..count]);
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break position + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("content length"))
+                    })
+                })
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let mut chunk = [0_u8; 4096];
+                let count = std::io::Read::read(&mut stream, &mut chunk).expect("read request body");
+                assert!(count > 0, "client closed before sending request body");
+                request.extend_from_slice(&chunk[..count]);
+            }
+
+            let response_body = r#"{"id":"wire-test","model":"test/model","choices":[{"message":{"content":"wire-ok"}}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            std::io::Write::write_all(&mut stream, response.as_bytes()).expect("write response");
+            String::from_utf8(request).expect("request is valid UTF-8")
+        });
+
+        std::env::remove_var("CRUCIBLE_OPENROUTER_FIXTURE_OUTPUT");
+        std::env::set_var(
+            OPENROUTER_BASE_URL_ENV,
+            format!("http://{address}/proxy/https/openrouter.ai/api/v1/"),
+        );
+        std::env::set_var("CRUCIBLE_WIRE_TEST_KEY", "unit-test-bearer");
+        let client = OpenRouterClient::with_timeout(
+            "CRUCIBLE_WIRE_TEST_KEY",
+            Duration::from_secs(5),
+        )
+        .expect("build loopback OpenRouter client");
+        let response = client
+            .complete(ModelRequest {
+                model: "test/model",
+                system_prompt: "Answer exactly.",
+                user_prompt: "Say wire-ok.",
+                max_output_units: Some(8),
+                temperature: Some(0),
+            })
+            .expect("loopback completion");
+        let request = server.join().expect("loopback server thread");
+
+        let request_line = request.lines().next().expect("request line");
+        assert_eq!(
+            request_line.split_whitespace().collect::<Vec<_>>(),
+            vec![
+                "POST",
+                "/proxy/https/openrouter.ai/api/v1/chat/completions",
+                "HTTP/1.1"
+            ]
+        );
+        let authorization = request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.eq_ignore_ascii_case("authorization").then_some(value.trim())
+            })
+        });
+        assert_eq!(authorization, Some("Bearer unit-test-bearer"));
+        assert_eq!(response.output, "wire-ok");
+
+        std::env::remove_var("CRUCIBLE_WIRE_TEST_KEY");
+    }
 
     fn minimal_spec(title: Option<&str>, task: &str) -> EvalSpec {
         EvalSpec {

@@ -207,6 +207,21 @@ cargo run -p crucible -- run evals/prompt-smoke-v0.json \
   --json
 ```
 
+To send the same OpenRouter-compatible request through Mint, set an absolute API
+root. The client appends the chat/completions path; keep the Mint path prefix and use
+placeholder variables only:
+
+```sh
+OPENROUTER_BASE_URL="$MINT_BASE_URL/proxy/https/openrouter.ai/api/v1" \
+OPENROUTER_API_KEY="$MINT_BROKER_CREDENTIAL" \
+cargo run -p crucible -- run evals/prompt-smoke-v0.json --json
+```
+
+The override must use HTTPS. HTTP is allowed only for localhost, loopback/private,
+link-local, 100.64.0.0/10 IP-literal, or Tailscale MagicDNS (.ts.net) test or
+broker routes. It must not contain credentials, a query, or a fragment. The same
+process-level override is used by the agentic judge below.
+
 ### Compare Named System-Prompt Variants
 
 A prompt benchmark can declare named system-prompt variants inside its existing
@@ -404,6 +419,9 @@ cargo run -p crucible -- run evals/agentic-judge-smoke-v0.json \
   --out runs/local/agentic-judge-smoke \
   --json
 ```
+
+Set OPENROUTER_BASE_URL as shown above when the agentic judge must use a
+Mint-compatible route. Do not append chat/completions yourself.
 
 If the judge rubber-stamps the canary (agrees it passes when the spec says it
 must not), the run refuses outright — no evidence is written, not even
